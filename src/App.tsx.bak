@@ -1,0 +1,21 @@
+import { useWorkspace } from "./store/workspaceStore";
+
+export default function App() {
+  const tabs = useWorkspace((s) => s.tabs);
+  const activeTabId = useWorkspace((s) => s.activeTabId);
+  const activeDebugContextId = useWorkspace((s) => s.activeDebugContextId);
+
+  return (
+    <div className="h-screen w-screen bg-zinc-950 text-zinc-300 flex items-center justify-center">
+      <div className="text-center space-y-2">
+        <h1 className="text-2xl font-bold text-blue-400">Craidd-Studio</h1>
+        <p className="text-zinc-500">Zustand is wired.</p>
+        <div className="text-xs text-zinc-600 mono space-y-1">
+          <div>Tabs open: {tabs.length}</div>
+          <div>Active tab: {activeTabId ?? "none"}</div>
+          <div>Debug context: {activeDebugContextId}</div>
+        </div>
+      </div>
+    </div>
+  );
+}

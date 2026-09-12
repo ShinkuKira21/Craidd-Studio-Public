@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --color-portico-bg: #09090b;
+  --color-portico-panel: #18181b;
+  --color-portico-border: #27272a;
+  --color-portico-text: #d4d4d8;
+  --color-portico-text-dim: #71717a;
+  --color-portico-accent: #3b82f6;
+
+  --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+}
+
+body {
+  background-color: var(--color-portico-bg);
+  color: var(--color-portico-text);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.scroll-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 3px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
