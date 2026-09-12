@@ -1,16 +1,14 @@
-import { useWorkspace } from "../../store/workspaceStore";
+import { useState } from "react";
 
 const items = [
-  { id: "explorer", title: "Explorer", icon: "M3 7h18M3 12h18M3 17h18" },
+  { id: "solution", title: "Solution Explorer", icon: "M3 7h18M3 12h18M3 17h18" },
   { id: "search", title: "Search", icon: "M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" },
   { id: "debug", title: "Run & Debug", icon: "M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" },
   { id: "settings", title: "Settings", icon: "M12 2v20M2 12h20" },
 ];
 
 export default function ActivityBar() {
-  const bottomTab = useWorkspace((s) => s.bottomTab);
-  const setBottomTab = useWorkspace((s) => s.setBottomTab);
-  const active = bottomTab === "debug" ? "debug" : "explorer";
+  const [active, setActive] = useState<string>("solution");
 
   return (
     <div className="w-11 bg-zinc-900 border-r border-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
@@ -20,9 +18,7 @@ export default function ActivityBar() {
           <button
             key={it.id}
             title={it.title}
-            onClick={() => {
-              if (it.id === "debug") setBottomTab("debug");
-            }}
+            onClick={() => setActive(it.id)}
             className={
               "w-8 h-8 rounded flex items-center justify-center transition-colors " +
               (isActive

@@ -37,13 +37,13 @@ export default function CommandPalette({
   if (!open) return null;
 
   const commands: Command[] = [
-    { id: "view.wordWrap",   label: "View: Toggle Word Wrap",      shortcut: "Alt+Z",  run: prefs.toggleWordWrap },
-    { id: "view.zoomIn",     label: "View: Zoom In",               shortcut: "Ctrl+=", run: prefs.zoomIn },
-    { id: "view.zoomOut",    label: "View: Zoom Out",              shortcut: "Ctrl+-", run: prefs.zoomOut },
-    { id: "view.resetZoom",  label: "View: Reset Zoom",            shortcut: "Ctrl+0", run: prefs.resetZoom },
-    { id: "view.sidebar",    label: "View: Toggle Primary Sidebar",shortcut: "Ctrl+B", run: prefs.toggleSidebar },
-    { id: "view.panel",      label: "View: Toggle Bottom Panel",   shortcut: "Ctrl+J", run: prefs.toggleBottomPanel },
-    { id: "view.debug",      label: "View: Toggle Debug Panel",                        run: prefs.toggleRightPanel },
+    { id: "view.wordWrap",  label: "View: Toggle Word Wrap",       shortcut: "Alt+Z",  run: prefs.toggleWordWrap },
+    { id: "view.zoomIn",    label: "View: Zoom In",                shortcut: "Ctrl+=", run: prefs.zoomIn },
+    { id: "view.zoomOut",   label: "View: Zoom Out",               shortcut: "Ctrl+-", run: prefs.zoomOut },
+    { id: "view.resetZoom", label: "View: Reset Zoom",             shortcut: "Ctrl+0", run: prefs.resetZoom },
+    { id: "view.sidebar",   label: "View: Toggle Sidebar",         shortcut: "Ctrl+B", run: prefs.toggleSidebar },
+    { id: "view.panel",     label: "View: Toggle Bottom Panel",    shortcut: "Ctrl+J", run: prefs.toggleBottomPanel },
+    { id: "view.debug",     label: "View: Toggle Debug Panel",                         run: prefs.toggleRightPanel },
   ];
 
   const filtered = query.trim()

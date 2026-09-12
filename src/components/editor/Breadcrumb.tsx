@@ -1,8 +1,9 @@
-import { useWorkspace } from "../../store/workspaceStore";
+import { useSolution } from "../../store/solutionStore";
 
-export default function Breadcrumb({ fileId }: { fileId: string | null }) {
-  const tabs = useWorkspace((s) => s.tabs);
-  const active = tabs.find((t) => t.fileId === fileId);
+export default function Breadcrumb() {
+  const tabs = useSolution((s) => s.tabs);
+  const activeFileId = useSolution((s) => s.activeFileId);
+  const active = tabs.find((t) => t.fileId === activeFileId);
 
   if (!active) {
     return (
@@ -12,23 +13,15 @@ export default function Breadcrumb({ fileId }: { fileId: string | null }) {
     );
   }
 
-  const parts = active.fileId.split("/").filter(Boolean);
-  const treeLabel = parts[0] === "rust-core" ? "Rust (Core)"
-                  : parts[0] === "ts-frontend" ? "TypeScript (Frontend)"
-                  : parts[0] === "config" ? "Config" : parts[0];
-  const rest = parts.slice(1);
-
-  const treeColor = parts[0] === "rust-core" ? "text-orange-400"
-                  : parts[0] === "ts-frontend" ? "text-blue-400"
-                  : "text-zinc-400";
+  const parts = active.fileId.split(/[\\/]/).filter(Boolean);
+  const last = parts.length > 3 ? parts.slice(-3) : parts;
 
   return (
     <div className="h-7 px-4 flex items-center gap-1 text-xs text-zinc-500 border-b border-zinc-900 shrink-0">
-      <span className={treeColor}>{treeLabel}</span>
-      {rest.map((p, i) => (
+      {last.map((p, i) => (
         <span key={i} className="flex items-center gap-1">
-          <span className="text-zinc-700">›</span>
-          <span className={i === rest.length - 1 ? "text-zinc-300" : ""}>{p}</span>
+          {i > 0 && <span className="text-zinc-700">›</span>}
+          <span className={i === last.length - 1 ? "text-zinc-300" : ""}>{p}</span>
         </span>
       ))}
     </div>
