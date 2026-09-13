@@ -1,14 +1,30 @@
-import { useEffect, useState } from "react";
+#!/usr/bin/env bash
+# Craidd-Studio — Phase 2.1.1: Fix SolutionExplorer.tsx (ternary branch destroyed by 2.1 patch)
+# Safe to re-run: overwrites the single broken file.
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+echo "▸ Applying Phase 2.1.1 (fix SolutionExplorer.tsx)..."
+
+mkdir -p src/components/sidebar/solution
+
+# ─────────────────────────────────────────────────────────
+# Rewrite SolutionExplorer.tsx with a valid ternary and
+# the full project + root context menus intact.
+# ─────────────────────────────────────────────────────────
+cat > src/components/sidebar/solution/SolutionExplorer.tsx << 'TSEOF'
+import { useState } from "react";
 import { useSolution } from "../../../store/solutionStore";
 import { languageMeta } from "../../../lib/languages";
-import type { Language, FileNode } from "../../../types/project";
+import type { Language } from "../../../types/project";
 import FileTree from "../FileTree";
 import SolutionBanner from "./SolutionBanner";
 import NewProjectDialog from "../../dialogs/NewProjectDialog";
 import DeclarePlaceholderDialog from "../../dialogs/DeclarePlaceholderDialog";
 import NewFileDialog, { type NewFileMode } from "../../dialogs/NewFileDialog";
 import NewFolderDialog from "../../dialogs/NewFolderDialog";
-import FineTuneDialog from "../../dialogs/FineTuneDialog";
 
 export default function SolutionExplorer() {
   const rootPath = useSolution((s) => s.rootPath);
@@ -25,18 +41,6 @@ export default function SolutionExplorer() {
   const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [declareTarget, setDeclareTarget] = useState<{ path: string; name: string } | null>(null);
-  const [fineTuneTarget, setFineTuneTarget] = useState<{ projectId: string; mode: "fine-tune" | "recalibrate" } | null>(null);
-  const [pendingFineTuneName, setPendingFineTuneName] = useState<string | null>(null);
-
-  // Auto-open Fine Tune for a freshly created project if requested.
-  useEffect(() => {
-    if (!pendingFineTuneName || !solution) return;
-    const created = solution.projects.find((p) => p.name === pendingFineTuneName);
-    if (created) {
-      setFineTuneTarget({ projectId: created.id, mode: "fine-tune" });
-      setPendingFineTuneName(null);
-    }
-  }, [pendingFineTuneName, solution]);
 
   const toggle = (id: string) =>
     setCollapsed((prev) => {
@@ -86,42 +90,6 @@ export default function SolutionExplorer() {
     return projectFolder === "." || projectFolder === ""
       ? rootPath
       : `${rootPath.replace(/\/+$/, "")}/${projectFolder.replace(/^\/+/, "")}`;
-  };
-
-  const configBasePath = (project: { folder: string; configEnabled: boolean; configDirectory?: string }) => {
-    if (!project.configEnabled) return null;
-    const base = projectBasePath(project.folder);
-    const dir = project.configDirectory;
-    if (!dir || dir === "." || dir === "") return base;
-    // Resolve relative to the project folder; ".." allowed by user
-    const baseParts = base.replace(/\/+$/, "").split("/").filter(Boolean);
-    const relParts = dir.replace(/^\/+/, "").split("/");
-    for (const part of relParts) {
-      if (part === "." || part === "") continue;
-      if (part === "..") baseParts.pop();
-      else baseParts.push(part);
-    }
-    return "/" + baseParts.join("/");
-  };
-
-  /**
-   * A project is "empty for our purposes" when the Fine Tune dialog
-   * would render zero non-.craidd rows in either root.
-   * Cheap heuristic: language tree or config tree has at least one child
-   * that isn't a .craidd.
-   */
-  const isProjectEmpty = (project: typeof solution.projects[number]) => {
-    const hasNonCraidd = (n: FileNode | null | undefined): boolean => {
-      if (!n || !n.children) return false;
-      for (const c of n.children) {
-        if (c.name.toLowerCase().endsWith(".craidd")) continue;
-        return true;
-      }
-      return false;
-    };
-    const langHit = hasNonCraidd(project.tree);
-    const cfgHit = project.configEnabled && hasNonCraidd(project.configTree);
-    return !langHit && !cfgHit;
   };
 
   return (
@@ -293,40 +261,6 @@ export default function SolutionExplorer() {
                   Add ▸ New Folder…
                 </button>
                 <div className="my-1 h-px bg-zinc-800" />
-                {(() => {
-                  const project = solution?.projects.find((p) => p.id === ctxMenu.projectId);
-                  const empty = !project || isProjectEmpty(project);
-                  const baseCls = "w-full px-3 py-1 text-left ";
-                  const enabledCls = "text-zinc-200 hover:bg-blue-700 hover:text-white";
-                  const disabledCls = "text-zinc-600 cursor-default";
-                  return (
-                    <>
-                      <button
-                        disabled={empty}
-                        onClick={() => {
-                          if (empty) return;
-                          setFineTuneTarget({ projectId: ctxMenu.projectId!, mode: "fine-tune" });
-                          setCtxMenu(null);
-                        }}
-                        className={baseCls + (empty ? disabledCls : enabledCls)}
-                      >
-                        Fine Tune…
-                      </button>
-                      <button
-                        disabled={empty}
-                        onClick={() => {
-                          if (empty) return;
-                          setFineTuneTarget({ projectId: ctxMenu.projectId!, mode: "recalibrate" });
-                          setCtxMenu(null);
-                        }}
-                        className={baseCls + (empty ? disabledCls : enabledCls)}
-                      >
-                        Recalibrate…
-                      </button>
-                    </>
-                  );
-                })()}
-                <div className="my-1 h-px bg-zinc-800" />
                 {!solution?.projects.find((p) => p.id === ctxMenu.projectId)?.configEnabled ? (
                   <button
                     onClick={() => { addConfigHere(ctxMenu.projectId!); setCtxMenu(null); }}
@@ -373,14 +307,7 @@ export default function SolutionExplorer() {
         </>
       )}
 
-      {newOpen && (
-        <NewProjectDialog
-          onClose={(opts) => {
-            setNewOpen(false);
-            if (opts?.fineTuneAfter) setPendingFineTuneName(opts.projectName ?? null);
-          }}
-        />
-      )}
+      {newOpen && <NewProjectDialog onClose={() => setNewOpen(false)} />}
       {newFileTarget && (
         <NewFileDialog
           parentPath={newFileTarget.parentPath}
@@ -402,24 +329,6 @@ export default function SolutionExplorer() {
           onClose={() => setDeclareTarget(null)}
         />
       )}
-      {fineTuneTarget && (() => {
-        const project = solution?.projects.find((p) => p.id === fineTuneTarget.projectId);
-        if (!project || !rootPath) return null;
-        const base = project.external
-          ? (project.path.startsWith("/")
-              ? project.path.slice(0, project.path.lastIndexOf("/"))
-              : `${rootPath.replace(/\/+$/, "")}/${project.path.slice(0, project.path.lastIndexOf("/"))}`)
-          : projectBasePath(project.folder);
-        return (
-          <FineTuneDialog
-            project={project}
-            projectBaseAbs={base}
-            configBaseAbs={configBasePath(project)}
-            mode={fineTuneTarget.mode}
-            onClose={() => setFineTuneTarget(null)}
-          />
-        );
-      })()}
     </div>
   );
 }
@@ -434,3 +343,24 @@ function relativePath(from: string, to: string): string {
   const parts = [...Array(ups).fill(".."), ...downs];
   return parts.join("/") || ".";
 }
+TSEOF
+
+echo ""
+echo "✓ Phase 2.1.1 applied."
+echo ""
+echo "  Fixed:"
+echo "    src/components/sidebar/solution/SolutionExplorer.tsx"
+echo "      — restored ternary falsy branch (root-level Add menu)"
+echo "      — kept nested project menu: Add ▸ New File / New Folder"
+echo "      — wired NewFileDialog / NewFolderDialog renders"
+echo "      — added Language + NewFileMode type imports"
+echo ""
+echo "Next:"
+echo "  # Vite dev server should hot-reload automatically."
+echo "  # If the parse error overlay is still showing, dismiss it (Esc) or restart:"
+echo "  npm run tauri dev"
+echo ""
+echo "  # In the running app, verify:"
+echo "  #   1. Right-click a project header → Refresh / Add ▸ New File / New Folder / Config"
+echo "  #   2. Right-click empty Solution Explorer space → Add → New Blank Project / Existing"
+echo "  #   3. Right-click a folder in File Discovery → New File / New Folder / Make This a Project"

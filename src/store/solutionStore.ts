@@ -7,7 +7,7 @@ import type {
   Language,
   ProjectKind,
 } from "../types/project";
-import { languageFromFilename, projectExtensions, projectWellKnownFiles, languageMeta } from "../lib/languages";
+import { languageFromFilename, monacoLanguageForFilename, projectExtensions, projectWellKnownFiles, languageMeta } from "../lib/languages";
 
 export interface AncestorInfo {
   clnPath: string;
@@ -34,6 +34,7 @@ interface SolutionState {
 
   bannerState: BannerState;
   bannerMessage: string | null;
+  rootMissing: boolean;
 
   pendingAncestor: AncestorInfo | null;
   pendingPath: string | null;
@@ -49,10 +50,13 @@ interface SolutionState {
 
   clearSolution: () => void;
   refreshDiscovery: () => Promise<void>;
+  clearRootMissing: () => void;
 
   addProject: (args: { name: string; language: Language; folder: string; kind?: ProjectKind }) => Promise<void>;
   addExistingProject: (craiddPath: string) => Promise<void>;
   createBlankProject: (args: { name: string; language: Language; subfolder: string }) => Promise<void>;
+  createFile: (parentPath: string, name: string, content?: string) => Promise<string>;
+  createFolder: (parentPath: string, name: string) => Promise<string>;
   declarePlaceholder: (projectPath: string, args: { name: string; language: Language; kind?: ProjectKind }) => Promise<void>;
 
   addConfigHere: (projectId: string) => Promise<void>;
@@ -150,7 +154,7 @@ async function populateTrees(
         configFolder = folderBase;
       }
     }
-    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], false);
+    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], true);
     next.configTree = tree;
     next.configTreeError = error;
   } else {
@@ -170,6 +174,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
   activeFileId: null,
   bannerState: "none",
   bannerMessage: null,
+  rootMissing: false,
   pendingAncestor: null,
   pendingPath: null,
   bannerAncestor: null,
@@ -182,6 +187,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
       rootPath: path,
       bannerState: "none",
       bannerMessage: null,
+      rootMissing: false,
       pendingAncestor: null,
       pendingPath: null,
       bannerAncestor: null,
@@ -292,6 +298,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
       rootPath: root,
       bannerState: "none",
       bannerMessage: null,
+      rootMissing: false,
       pendingAncestor: null,
       pendingPath: null,
       bannerAncestor: null,
@@ -442,11 +449,39 @@ export const useSolution = create<SolutionState>((set, get) => ({
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const discovery = await invoke<FileNode>("read_dir_tree", { path: state.rootPath });
-      set({ discovery });
+      set({ discovery, rootMissing: false });
     } catch (err) {
-      logErr("refreshDiscovery failed:", err);
+      const msg = String(err);
+      if (msg.includes("does not exist") || msg.includes("No such file")) {
+        logErr("refreshDiscovery: root folder is gone:", state.rootPath);
+        set({
+          rootMissing: true,
+          solution: null,
+          discovery: null,
+          tabs: [],
+          activeFileId: null,
+          bannerState: "none",
+          bannerMessage: null,
+        });
+      } else {
+        logErr("refreshDiscovery failed:", err);
+      }
     }
   },
+
+  clearRootMissing: () => set({
+    rootMissing: false,
+    rootPath: null,
+    solution: null,
+    discovery: null,
+    tabs: [],
+    activeFileId: null,
+    bannerState: "none",
+    bannerMessage: null,
+    pendingAncestor: null,
+    pendingPath: null,
+    bannerAncestor: null,
+  }),
 
   addProject: async ({ name, language, folder, kind }) => {
     const state = get();
@@ -565,6 +600,48 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const folder = subfolder.replace(/^\/+|\/+$/g, "");
     await invoke("create_project_folder", { root: state.rootPath, subfolder: folder });
     await get().addProject({ name, language, folder, kind: "application" });
+  },
+
+  createFile: async (parentPath, name, content = "") => {
+    const state = get();
+    const { invoke } = await import("@tauri-apps/api/core");
+    const cleanParent = parentPath.replace(/\/+$/, "");
+    const fullPath = `${cleanParent}/${name}`;
+
+    await invoke("write_file", { path: fullPath, content });
+
+    await get().refreshDiscovery();
+    if (state.solution) {
+      const solution = state.solution;
+      const refreshed: CraiddProject[] = [];
+      for (const pr of solution.projects) {
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+      }
+      set({ solution: { ...solution, projects: refreshed } });
+    }
+
+    await get().openFile(fullPath, name);
+    return fullPath;
+  },
+
+  createFolder: async (parentPath, name) => {
+    const state = get();
+    const { invoke } = await import("@tauri-apps/api/core");
+    const cleanParent = parentPath.replace(/\/+$/, "");
+    const fullPath = `${cleanParent}/${name}`;
+
+    await invoke("create_folder", { path: fullPath });
+
+    await get().refreshDiscovery();
+    if (state.solution) {
+      const solution = state.solution;
+      const refreshed: CraiddProject[] = [];
+      for (const pr of solution.projects) {
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+      }
+      set({ solution: { ...solution, projects: refreshed } });
+    }
+    return fullPath;
   },
 
   declarePlaceholder: async (projectPath, { name, language, kind }) => {
@@ -743,7 +820,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
     try {
       const content = await invoke<string>("read_file", { path: absolutePath });
       const language = languageFromFilename(fileName);
-      const tab: EditorTab = { fileId: absolutePath, name: fileName, language, content };
+      const monacoLanguage = monacoLanguageForFilename(fileName);
+      const tab: EditorTab = { fileId: absolutePath, name: fileName, language, monacoLanguage, content };
       set({ tabs: [...state.tabs, tab], activeFileId: absolutePath });
     } catch (err) {
       logErr("read_file failed:", err);

@@ -3,6 +3,8 @@ import { useSolution } from "../../../store/solutionStore";
 import type { FileNode } from "../../../types/project";
 import FileTree from "../FileTree";
 import MakeProjectDialog from "../../dialogs/MakeProjectDialog";
+import NewFileDialog from "../../dialogs/NewFileDialog";
+import NewFolderDialog from "../../dialogs/NewFolderDialog";
 
 export default function FileDiscovery() {
   const rootPath = useSolution((s) => s.rootPath);
@@ -10,6 +12,16 @@ export default function FileDiscovery() {
   const refreshDiscovery = useSolution((s) => s.refreshDiscovery);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; node: FileNode } | null>(null);
   const [dialogNode, setDialogNode] = useState<FileNode | null>(null);
+  const [newFileTarget, setNewFileTarget] = useState<{ parentPath: string } | null>(null);
+  const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
+
+  const absPathFor = (node: FileNode) => {
+    if (!rootPath) return "";
+    // Root node: return rootPath as-is. Appending node.name duplicates
+    // the folder when the root's name matches its parent path segment.
+    if (!node.path || node.path === ".") return rootPath;
+    return `${rootPath.replace(/\/+$/, "")}/${node.path.replace(/^\/+/, "")}`;
+  };
 
   return (
     <div className="flex flex-col min-h-0 border-t border-zinc-800" style={{ flex: "1 1 45%" }}>
@@ -38,12 +50,27 @@ export default function FileDiscovery() {
           <div style={{ left: ctxMenu.x, top: ctxMenu.y }}
                className="fixed z-50 min-w-[220px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 text-xs">
             {ctxMenu.node.kind === "folder" ? (
-              <button
-                onClick={() => { setDialogNode(ctxMenu.node); setCtxMenu(null); }}
-                className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
-              >
-                Make This a Project…
-              </button>
+              <>
+                <button
+                  onClick={() => { setNewFileTarget({ parentPath: absPathFor(ctxMenu.node) }); setCtxMenu(null); }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  New File…
+                </button>
+                <button
+                  onClick={() => { setNewFolderTarget({ parentPath: absPathFor(ctxMenu.node) }); setCtxMenu(null); }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  New Folder…
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                <button
+                  onClick={() => { setDialogNode(ctxMenu.node); setCtxMenu(null); }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  Make This a Project…
+                </button>
+              </>
             ) : (
               <div className="px-3 py-1 text-zinc-600 italic">(select a folder)</div>
             )}
@@ -52,6 +79,20 @@ export default function FileDiscovery() {
       )}
 
       {dialogNode && <MakeProjectDialog node={dialogNode} onClose={() => setDialogNode(null)} />}
+      {newFileTarget && (
+        <NewFileDialog
+          parentPath={newFileTarget.parentPath}
+          projectLanguage={null}
+          mode="raw"
+          onClose={() => setNewFileTarget(null)}
+        />
+      )}
+      {newFolderTarget && (
+        <NewFolderDialog
+          parentPath={newFolderTarget.parentPath}
+          onClose={() => setNewFolderTarget(null)}
+        />
+      )}
     </div>
   );
 }

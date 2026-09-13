@@ -1,7 +1,7 @@
 mod commands;
 mod types;
 
-use commands::fs::{read_dir_tree, read_dir_tree_filtered, read_file};
+use commands::fs::{read_dir_tree, read_dir_tree_filtered, read_file, write_file, create_folder};
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
     save_project, save_solution, scan_craidd_files,
@@ -16,6 +16,8 @@ pub fn run() {
             read_file,
             read_dir_tree,
             read_dir_tree_filtered,
+            write_file,
+            create_folder,
             find_ancestor_solution,
             scan_craidd_files,
             load_solution,

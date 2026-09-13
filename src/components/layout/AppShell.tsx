@@ -10,6 +10,7 @@ import BottomPanel from "../panels/BottomPanel";
 import ResizeHandle from "./ResizeHandle";
 import CommandPalette from "../command-palette/CommandPalette";
 import AncestorSolutionDialog from "../dialogs/AncestorSolutionDialog";
+import CriticalWorkspaceBanner from "./CriticalWorkspaceBanner";
 import { usePreferences } from "../../store/preferencesStore";
 import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
@@ -64,6 +65,7 @@ export default function AppShell() {
       <StatusBar />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <AncestorSolutionDialog />
+      <CriticalWorkspaceBanner />
     </div>
   );
 }

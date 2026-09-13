@@ -22,7 +22,7 @@ export default function CodeView() {
       <Editor
         height="100%"
         path={active.fileId}
-        language={active.language === "plaintext" ? "plaintext" : active.language}
+        language={active.monacoLanguage}
         value={active.content}
         theme="vs-dark"
         options={{

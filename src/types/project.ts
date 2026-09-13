@@ -60,5 +60,6 @@ export interface EditorTab {
   fileId: string;
   name: string;
   language: Language | "plaintext";
+  monacoLanguage: string;
   content: string;
 }

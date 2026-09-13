@@ -20,7 +20,6 @@ pub fn read_dir_tree(path: String) -> Result<FileNode, String> {
     build_tree(p, p, None).map_err(|e| format!("read_dir_tree({path}) failed: {e}"))
 }
 
-/// Read a tree, stopping at any subfolder that declares its own .craidd (boundary rule).
 #[tauri::command]
 pub fn read_dir_tree_filtered(
     path: String,
@@ -39,6 +38,34 @@ pub fn read_dir_tree_filtered(
         kind: "folder".to_string(),
         children: Some(vec![]),
     }))
+}
+
+/// Create a new file. Refuses if the file already exists.
+/// Creates parent directories if needed.
+#[tauri::command]
+pub fn write_file(path: String, content: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.exists() {
+        return Err(format!("File already exists: {path}"));
+    }
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create parent directory for {path}: {e}"))?;
+    }
+    fs::write(p, content)
+        .map_err(|e| format!("write_file({path}) failed: {e}"))
+}
+
+/// Create a new folder. Refuses if the folder already exists.
+/// Creates parent directories if needed.
+#[tauri::command]
+pub fn create_folder(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.exists() {
+        return Err(format!("Folder already exists: {path}"));
+    }
+    fs::create_dir_all(p)
+        .map_err(|e| format!("create_folder({path}) failed: {e}"))
 }
 
 fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String]) -> Option<FileNode> {
@@ -70,14 +97,12 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>) -> std::i
         return Ok(FileNode { id, name, path: rel, kind: "file".to_string(), children: None });
     }
 
-    // Boundary rule: if this folder has its own {foldername}.craidd and stop_at_craidd is enabled,
-    // and it's not the root itself, don't walk into it.
     if stop_at_craidd.is_some() && !rel.is_empty() {
         let self_craidd = current.join(format!("{}.craidd", name));
         if self_craidd.is_file() {
             return Ok(FileNode {
                 id, name, path: rel, kind: "folder".to_string(),
-                children: Some(vec![]),   // empty — the sub-project owns this
+                children: Some(vec![]),
             });
         }
     }
@@ -88,7 +113,6 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>) -> std::i
         let fname = p.file_name().unwrap_or_default().to_string_lossy().to_string();
         if p.is_dir() && IGNORE_DIRS.contains(&fname.as_str()) { continue; }
         if fname.starts_with('.') { continue; }
-        // Skip symlinks
         if let Ok(md) = fs::symlink_metadata(&p) {
             if md.file_type().is_symlink() { continue; }
         }
