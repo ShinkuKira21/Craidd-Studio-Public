@@ -53,9 +53,15 @@ export default function DeclarePlaceholderDialog({
           </label>
           <label className="block">
             <div className="text-zinc-400 mb-1">Language</div>
-            <select value={language} onChange={(e) => setLanguage(e.target.value as Language)} disabled={submitting}
-                    className="w-full bg-zinc-950 border border-zinc-700 rounded px-2 py-1.5 text-zinc-100 outline-none focus:border-blue-500 disabled:opacity-50">
-              {LANGUAGES.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value as Language)}
+              disabled={submitting}
+              className="w-full rounded px-2 py-1.5 outline-none disabled:opacity-50"
+            >
+              {LANGUAGES.map((l) => (
+                <option key={l.id} value={l.id}>{l.label}</option>
+              ))}
             </select>
           </label>
           {error && (

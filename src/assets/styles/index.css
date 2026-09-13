@@ -24,6 +24,8 @@ body {
   color: var(--color-portico-text);
   font-family: Inter, system-ui, sans-serif;
   font-size: 13px;
+  /* Tell the browser this is a dark UI so native widgets adapt */
+  color-scheme: dark;
 }
 
 .scroll-thin::-webkit-scrollbar {
@@ -36,4 +38,37 @@ body {
 }
 .scroll-thin::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ── Native control styling ──────────────────────────────
+   Selects and options default to light backgrounds on WebKit.
+   Force dark everywhere in the app. */
+
+select {
+  background-color: #09090b;
+  color: #f4f4f5;
+  border: 1px solid #3f3f46;
+  color-scheme: dark;
+}
+
+select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+select option {
+  background-color: #18181b;
+  color: #f4f4f5;
+}
+
+select option:checked,
+select option:hover {
+  background-color: #1d4ed8;
+  color: #ffffff;
+}
+
+/* Firefox dropdown caret color (WebKit ignores this, harmless) */
+select {
+  -webkit-appearance: none;
+  appearance: none;
 }
