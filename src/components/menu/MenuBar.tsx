@@ -2,13 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePreferences } from "../../store/preferencesStore";
 import { useSolution } from "../../store/solutionStore";
 
-interface MenuItem {
-  label: string;
-  shortcut?: string;
-  action?: () => void;
-  disabled?: boolean;
-  separator?: false;
-}
+interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; }
 interface MenuSeparator { separator: true; }
 type MenuEntry = MenuItem | MenuSeparator;
 interface Menu { label: string; items: MenuEntry[]; }
@@ -18,12 +12,12 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
   const openFolder = useSolution((s) => s.openFolder);
+  const openSolution = useSolution((s) => s.openSolution);
+  const heal = useSolution((s) => s.heal);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      if (barRef.current && !barRef.current.contains(e.target as Node)) {
-        setOpenMenu(null);
-      }
+      if (barRef.current && !barRef.current.contains(e.target as Node)) setOpenMenu(null);
     };
     window.addEventListener("mousedown", onClick);
     return () => window.removeEventListener("mousedown", onClick);
@@ -33,12 +27,40 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === "string") {
-        await openFolder(selected);
+      console.log("[craidd] picker returned:", selected);
+      if (typeof selected !== "string") return;
+
+      const result = await openFolder(selected);
+      console.log("[craidd] openFolder result:", result);
+
+      if (result.status === "loaded") {
+        const n = await heal();
+        if (n > 0) console.log(`[craidd] recovered ${n} orphan project(s)`);
       }
     } catch (err) {
       console.error("[craidd] Open Folder failed:", err);
-      alert("Failed to open folder. See console.");
+    }
+  };
+
+  const doOpenSolution = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Craidd Solution", extensions: ["cln"] }],
+      });
+      console.log("[craidd] picker returned:", selected);
+      if (typeof selected !== "string") return;
+
+      const result = await openSolution(selected);
+      console.log("[craidd] openSolution result:", result);
+
+      if (result.status === "loaded") {
+        const n = await heal();
+        if (n > 0) console.log(`[craidd] recovered ${n} orphan project(s)`);
+      }
+    } catch (err) {
+      console.error("[craidd] Open Solution failed:", err);
     }
   };
 
@@ -47,12 +69,9 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
       label: "File",
       items: [
         { label: "New Solution…", shortcut: "Ctrl+Shift+N", disabled: true },
-        { separator: true },
         { label: "Open Folder…", shortcut: "Ctrl+K Ctrl+O", action: doOpenFolder },
+        { label: "Open Solution…", shortcut: "Ctrl+Shift+O", action: doOpenSolution },
         { label: "Open Recent", disabled: true },
-        { separator: true },
-        { label: "Save", shortcut: "Ctrl+S", disabled: true },
-        { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: true },
         { separator: true },
         { label: "Exit", shortcut: "Ctrl+Q", disabled: true },
       ],
@@ -62,10 +81,6 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
       items: [
         { label: "Undo", shortcut: "Ctrl+Z", disabled: true },
         { label: "Redo", shortcut: "Ctrl+Y", disabled: true },
-        { separator: true },
-        { label: "Cut", shortcut: "Ctrl+X", disabled: true },
-        { label: "Copy", shortcut: "Ctrl+C", disabled: true },
-        { label: "Paste", shortcut: "Ctrl+V", disabled: true },
       ],
     },
     {
@@ -87,10 +102,8 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
     {
       label: "Project",
       items: [
-        { label: "Add New Project…", disabled: true },
-        { label: "Add Project From Folder…", disabled: true },
-        { separator: true },
-        { label: "Project Properties…", disabled: true },
+        { label: "Add → New Blank Project…", disabled: true },
+        { label: "Add → Existing Project…", disabled: true },
       ],
     },
     {
@@ -99,32 +112,21 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
         { label: "Start Debugging", shortcut: "F5", disabled: true },
         { label: "Run Without Debugging", shortcut: "Ctrl+F5", disabled: true },
         { label: "Stop", shortcut: "Shift+F5", disabled: true },
-        { separator: true },
-        { label: "Step Over", shortcut: "F10", disabled: true },
-        { label: "Step Into", shortcut: "F11", disabled: true },
-        { label: "Step Out", shortcut: "Shift+F11", disabled: true },
-        { separator: true },
-        { label: "Toggle Breakpoint", shortcut: "F9", disabled: true },
       ],
     },
     {
       label: "Help",
       items: [
-        { label: "About Craidd", action: () => alert("Craidd-Studio\nPhase 2.0 — Solutions & Projects\n\nA polyglot IDE.\nOne workspace. Many entrances.") },
+        { label: "About Craidd", action: () => alert("Craidd-Studio\nPhase 2.0.6.1\n\nA polyglot IDE.\nOne workspace. Many entrances.") },
       ],
     },
   ];
 
-  const isDisabled = (item: MenuEntry): item is MenuItem =>
-    "disabled" in item && !!item.disabled;
-  const isSeparator = (item: MenuEntry): item is MenuSeparator =>
-    "separator" in item && !!item.separator;
+  const isDisabled = (item: MenuEntry): item is MenuItem => "disabled" in item && !!item.disabled;
+  const isSeparator = (item: MenuEntry): item is MenuSeparator => "separator" in item && !!item.separator;
 
   return (
-    <div
-      ref={barRef}
-      className="h-7 bg-zinc-900 border-b border-zinc-800 flex items-center px-2 text-xs shrink-0 select-none"
-    >
+    <div ref={barRef} className="h-7 bg-zinc-900 border-b border-zinc-800 flex items-center px-2 text-xs shrink-0 select-none">
       {menus.map((menu) => {
         const isOpen = openMenu === menu.label;
         return (
@@ -132,43 +134,27 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
             <button
               onClick={() => setOpenMenu(isOpen ? null : menu.label)}
               onMouseEnter={() => openMenu && setOpenMenu(menu.label)}
-              className={
-                "px-2.5 py-1 rounded transition-colors " +
-                (isOpen ? "bg-zinc-800 text-zinc-100" : "text-zinc-300 hover:bg-zinc-800")
-              }
+              className={"px-2.5 py-1 rounded transition-colors " + (isOpen ? "bg-zinc-800 text-zinc-100" : "text-zinc-300 hover:bg-zinc-800")}
             >
               {menu.label}
             </button>
             {isOpen && (
               <div className="absolute top-full left-0 mt-0.5 min-w-[260px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 z-50">
                 {menu.items.map((item, i) => {
-                  if (isSeparator(item)) {
-                    return <div key={i} className="my-1 h-px bg-zinc-800" />;
-                  }
+                  if (isSeparator(item)) return <div key={i} className="my-1 h-px bg-zinc-800" />;
                   const disabled = isDisabled(item);
                   return (
                     <button
                       key={i}
                       disabled={disabled}
-                      onClick={() => {
-                        if (!disabled && item.action) {
-                          item.action();
-                          setOpenMenu(null);
-                        }
-                      }}
+                      onClick={() => { if (!disabled && item.action) { item.action(); setOpenMenu(null); } }}
                       className={
                         "w-full flex items-center justify-between gap-8 px-3 py-1 text-left transition-colors " +
-                        (disabled
-                          ? "text-zinc-600 cursor-default"
-                          : "text-zinc-200 hover:bg-blue-700 hover:text-white")
+                        (disabled ? "text-zinc-600 cursor-default" : "text-zinc-200 hover:bg-blue-700 hover:text-white")
                       }
                     >
                       <span>{item.label}</span>
-                      {item.shortcut && (
-                        <span className={"text-[10px] " + (disabled ? "text-zinc-700" : "text-zinc-500")}>
-                          {item.shortcut}
-                        </span>
-                      )}
+                      {item.shortcut && <span className={"text-[10px] " + (disabled ? "text-zinc-700" : "text-zinc-500")}>{item.shortcut}</span>}
                     </button>
                   );
                 })}

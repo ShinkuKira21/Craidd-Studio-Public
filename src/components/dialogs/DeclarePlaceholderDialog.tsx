@@ -1,23 +1,30 @@
 import { useState } from "react";
-import type { FileNode, Language } from "../../types/project";
+import type { Language } from "../../types/project";
 import { LANGUAGES } from "../../lib/languages";
 import { useSolution } from "../../store/solutionStore";
 
-export default function MakeProjectDialog({ node, onClose }: { node: FileNode; onClose: () => void }) {
-  const addProject = useSolution((s) => s.addProject);
-  const [name, setName] = useState(node.name);
+export default function DeclarePlaceholderDialog({
+  projectPath,
+  guessedName,
+  onClose,
+}: {
+  projectPath: string;
+  guessedName: string;
+  onClose: () => void;
+}) {
+  const declarePlaceholder = useSolution((s) => s.declarePlaceholder);
+  const [name, setName] = useState(guessedName);
   const [language, setLanguage] = useState<Language>("rust");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    setError(null);
     setSubmitting(true);
+    setError(null);
     try {
-      await addProject({ name: name.trim() || node.name, language, folder: node.path || "." });
+      await declarePlaceholder(projectPath, { name, language, kind: "application" });
       onClose();
     } catch (err) {
-      console.error("[craidd] MakeProjectDialog failed:", err);
       setError(String(err));
     } finally {
       setSubmitting(false);
@@ -29,11 +36,15 @@ export default function MakeProjectDialog({ node, onClose }: { node: FileNode; o
       <div onClick={(e) => e.stopPropagation()}
            className="w-[440px] bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden">
         <div className="px-4 py-3 border-b border-zinc-800 text-sm text-zinc-200 font-medium">
-          Make This a Project
+          Declare Missing Project
         </div>
         <div className="px-4 py-4 space-y-3 text-xs">
           <div className="text-zinc-500">
-            Folder: <span className="text-zinc-300 font-mono">{node.path || "."}</span>
+            Path: <span className="font-mono text-zinc-300">{projectPath}</span>
+          </div>
+          <div className="text-zinc-500 leading-5 bg-zinc-950/50 border border-zinc-800 rounded px-3 py-2">
+            The .craidd file at this path is missing. This typically happens after a fresh git clone
+            when the .craidd is gitignored. Declare it here to recreate the file.
           </div>
           <label className="block">
             <div className="text-zinc-400 mb-1">Project name</div>
@@ -47,19 +58,20 @@ export default function MakeProjectDialog({ node, onClose }: { node: FileNode; o
               {LANGUAGES.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
             </select>
           </label>
-          <div className="text-zinc-500 text-[11px] leading-5 pt-3 border-t border-zinc-800">
-            A <span className="font-mono text-zinc-300">{node.name}.craidd</span> file will be written
-            inside <span className="font-mono text-zinc-300">{node.path || "."}/</span>, and the solution
-            file will be created or updated.
-          </div>
-          {error && <div className="text-red-400 text-[11px] bg-red-950/40 border border-red-900/60 rounded px-2 py-1.5">{error}</div>}
+          {error && (
+            <div className="text-red-400 text-[11px] bg-red-950/40 border border-red-900/60 rounded px-2 py-1.5">
+              {error}
+            </div>
+          )}
         </div>
         <div className="px-4 py-3 border-t border-zinc-800 flex justify-end gap-2">
           <button onClick={onClose} disabled={submitting}
-                  className="px-3 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Cancel</button>
+                  className="px-3 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">
+            Cancel
+          </button>
           <button onClick={submit} disabled={submitting || !name.trim()}
                   className="px-3 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 text-white disabled:opacity-50">
-            {submitting ? "Creating…" : "Create Project"}
+            {submitting ? "Declaring…" : "Declare Project"}
           </button>
         </div>
       </div>

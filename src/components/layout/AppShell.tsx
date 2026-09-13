@@ -9,6 +9,7 @@ import DebugSidebar from "../panels/DebugSidebar";
 import BottomPanel from "../panels/BottomPanel";
 import ResizeHandle from "./ResizeHandle";
 import CommandPalette from "../command-palette/CommandPalette";
+import AncestorSolutionDialog from "../dialogs/AncestorSolutionDialog";
 import { usePreferences } from "../../store/preferencesStore";
 import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
@@ -35,16 +36,10 @@ export default function AppShell() {
 
       <div className="flex-1 flex min-h-0">
         <ActivityBar />
-
         {sidebarVisible && (
           <>
-            <div style={{ width: sidebarWidth }} className="h-full shrink-0">
-              <Sidebar />
-            </div>
-            <ResizeHandle
-              orientation="vertical"
-              onDrag={(delta) => setSidebarWidth(sidebarWidth + delta)}
-            />
+            <div style={{ width: sidebarWidth }} className="h-full shrink-0"><Sidebar /></div>
+            <ResizeHandle orientation="vertical" onDrag={(delta) => setSidebarWidth(sidebarWidth + delta)} />
           </>
         )}
 
@@ -52,33 +47,23 @@ export default function AppShell() {
           <EditorPane />
           {bottomPanelVisible && (
             <>
-              <ResizeHandle
-                orientation="horizontal"
-                onDrag={(delta) => setBottomPanelHeight(bottomPanelHeight - delta)}
-              />
-              <div style={{ height: bottomPanelHeight }} className="shrink-0">
-                <BottomPanel />
-              </div>
+              <ResizeHandle orientation="horizontal" onDrag={(delta) => setBottomPanelHeight(bottomPanelHeight - delta)} />
+              <div style={{ height: bottomPanelHeight }} className="shrink-0"><BottomPanel /></div>
             </>
           )}
         </div>
 
         {rightPanelVisible && (
           <>
-            <ResizeHandle
-              orientation="vertical"
-              onDrag={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
-            />
-            <div style={{ width: rightPanelWidth }} className="h-full shrink-0">
-              <DebugSidebar />
-            </div>
+            <ResizeHandle orientation="vertical" onDrag={(delta) => setRightPanelWidth(rightPanelWidth - delta)} />
+            <div style={{ width: rightPanelWidth }} className="h-full shrink-0"><DebugSidebar /></div>
           </>
         )}
       </div>
 
       <StatusBar />
-
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <AncestorSolutionDialog />
     </div>
   );
 }

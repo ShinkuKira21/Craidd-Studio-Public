@@ -7,46 +7,43 @@ export type Language =
   | "csharp"
   | "config";
 
-/** A filter spec (extensions + exact filenames). */
-export interface FilterSpec {
-  extensions: string[];
-  wellKnownFiles: string[];
-}
+export type ProjectKind = "application" | "library" | "test";
 
-/**
- * A declared project.
- *
- * One .craidd per folder. The same file can describe:
- *   - a source project (has `language`)
- *   - a config section (has `configEnabled === true`)
- *   - a standalone config (configEnabled=true, language=null)
- */
 export interface CraiddProject {
   id: string;
   name: string;
   language: Language | null;      // null = config-only
-  root: string;
-  path: string;                   // relative path to the .craidd
-  folder: string;                 // relative folder from solution root
+  root: string;                   // relative to the .craidd's own folder
+  kind: ProjectKind;
+  path: string;                   // path to the .craidd, relative to solution root (or absolute)
+  folder: string;                 // folder relative to solution root (or absolute), for display
 
-  // Config section (may be absent)
   configEnabled: boolean;
-  configName?: string;            // display name for the config subsection
-  configDirectory?: string;       // relative to the .craidd's own folder
-  configInclude?: string[];       // user-supplied override (globs; simple suffix match for now)
+  configName?: string;
+  configDirectory?: string;
 
   // Runtime-only
-  tree?: FileNode | null;         // source tree
+  missing?: boolean;              // true when .craidd file is not on disk
+  external?: boolean;             // true when path escapes the solution root
+  tree?: FileNode | null;
   treeError?: string | null;
-  configTree?: FileNode | null;   // config tree (same folder by default)
+  configTree?: FileNode | null;
   configTreeError?: string | null;
+}
+
+export interface BuildEntry {
+  target: string;                 // path to the .craidd
+  method?: string;                // "cargo" | "npm" | "cmake" | "dotnet" | ...
+  command?: string;
+  cwd?: string;
 }
 
 export interface CraiddSolution {
   name: string;
-  root: string;
+  root: string;                   // absolute path to the solution root
   projects: CraiddProject[];
-  runDefault?: string;
+  build: BuildEntry[];
+  runDefault?: string;            // path to the .craidd
   debugDefault?: string;
   autostart: string[];
 }
