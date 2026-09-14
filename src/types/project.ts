@@ -7,6 +7,12 @@ export type Language =
   | "csharp"
   | "config";
 
+export type Framework =
+  | "standard"
+  | "tauri"
+  | "aspnet"
+  | "cmake";
+
 export type ProjectKind = "application" | "library" | "test";
 
 export interface CraiddProject {
@@ -15,6 +21,7 @@ export interface CraiddProject {
   language: Language | null;      // null = config-only
   root: string;                   // relative to the .craidd's own folder
   kind: ProjectKind;
+  framework?: Framework;          // undefined === "standard"
   path: string;                   // path to the .craidd, relative to solution root (or absolute)
   folder: string;                 // folder relative to solution root (or absolute), for display
 

@@ -1,196 +1,312 @@
 # Design: Solution Orchestration
 
-**Status:** Placeholder. Not yet designed in full.
-**Applies to:** Phase 3+.
-**Governs:** How `.cln` declares what a solution does — build, run, debug.
+**Status:** Planned. Not yet built.
+**Scope:** What a `.cln` file contains, and how it drives build, run,
+and debug.
+**Governs:** Phase 3 (build orchestration, debug contexts).
 
 ---
 
-## Why this document exists
+## The thesis
 
-In Phase 2.1.3, we sketched the polyglot story concretely for the first
-time. The clearest example was Tauri:
+**`.cln` is orchestration, not configuration.**
 
-- The backend is Rust, built with `cargo build`.
-- The frontend is TypeScript, served by `npm run dev`.
-- The combined dev flow is `npm run tauri dev`, which starts both.
-- The debugger attaches to the WebView through CDP.
+It says which projects belong to this solution, how they are built, how
+they are run, and how they are debugged. It does not say what any
+project *is* (that is `.craidd`) or where tools live (that is
+preferences).
 
-That is four different things, and none of them belong in `.craidd`.
-They belong to the solution — the thing that knows how the pieces fit.
-
-`.cln` is the file that will hold this. Its schema already exists for
-the simplest case (`[[build]]` entries, `[run] default`, `[debug]
-default`). This document will define the full schema when Phase 3
-designs it.
-
-**This document is a placeholder.** It captures the shape of what we
-sketched, so that the shape is not lost. The specifics will be written
-when Phase 3 begins.
+A `.cln` is the solution's runtime story. Portable. Committable. The
+same `.cln` on two machines produces the same build, run, and debug
+targets — using whatever tools each machine has.
 
 ---
 
-## The three-file boundary, restated
+## What already exists
 
-- `.craidd` says *what a project is*. (See `design-project-identity.md`.)
-- `~/.craidd-studio/user_preferences.toml` says *what the machine has*.
-  (See `philosophy-tool-discovery.md`.)
-- `.cln` says *how the solution orchestrates the tools to build, run, and
-  debug*.
+`.cln` already holds:
 
-The `.cln` is the only file that references more than one project. It is
-the only file that describes actions across the solution. It is the file
-that makes a polyglot project into a polyglot *system*.
+    [solution]
+    name = "tauri-app"
+    version = "1.0"
+
+    projects = [
+      "src-tauri/src-tauri.craidd",
+      "src/src.craidd",
+    ]
+
+    [[build]]
+    target = "src-tauri/src-tauri.craidd"
+    method = "cargo"
+    command = "cargo build --release"
+
+    [run]
+    default = "src-tauri/src-tauri.craidd"
+
+    [debug]
+    default = "src-tauri/src-tauri.craidd"
+    autostart = []
+
+This works today — the loader parses it, the store keeps it, the
+sidebar shows it. It has never been exercised because build and debug
+have not been built.
 
 ---
 
-## What `.cln` will hold (sketch)
+## What this document is adding
 
-The current schema supports the simplest case:
+Two concepts, both deferred to Phase 3:
 
-+++toml
-[solution]
-name = "tauri-app"
-version = "1.0"
-projects = [
-  "src-tauri/src-tauri.craidd",
-  "src/src.craidd",
-]
+1. **Named run configurations.** A solution can have multiple ways to
+   run it. `npm run tauri dev` for the whole app. `npm run dev` for the
+   frontend alone. `cargo run` for the Rust binary alone.
+2. **Named debug configurations.** A solution can have multiple debug
+   targets. The Rust backend, the TypeScript frontend, an attached
+   Chrome DevTools session.
 
-[[build]]
-target = "src-tauri/src-tauri.craidd"
-method = "cargo"
-command = "cargo build --release"
+These become the entries in the **debug context dropdown** — a
+long-planned UI element that finally has a reason to exist.
 
-[run]
-default = "src-tauri/src-tauri.craidd"
+---
 
-[debug]
-default = "src-tauri/src-tauri.craidd"
-autostart = []
-+++
+## Named configurations
 
-The full Phase 3 schema will extend this with:
+### Shape
 
-**Named run configurations:**
+    [[run.config]]
+    name = "Tauri (dev)"
+    project = "src-tauri"
+    command = "npm run tauri dev"
+    cwd = "."
 
-+++toml
-[[run.config]]
-name = "Tauri (dev)"
-project = "src-tauri"
-command = "npm run tauri dev"
+    [[run.config]]
+    name = "Frontend only"
+    project = "src"
+    command = "npm run dev"
+    cwd = "src"
 
-[[run.config]]
-name = "Frontend only"
-project = "src"
-command = "npm run dev"
-+++
+    [[run.config]]
+    name = "Rust backend"
+    project = "src-tauri"
+    command = "cargo run"
+    cwd = "src-tauri"
 
-**Named debug configurations:**
+    [[debug.config]]
+    name = "Rust backend (LLDB)"
+    project = "src-tauri"
+    adapter = "lldb"
+    command = "cargo run"
 
-+++toml
-[[debug.config]]
-name = "Backend (LLDB)"
-project = "src-tauri"
-adapter = "lldb-dap"
+    [[debug.config]]
+    name = "Frontend (web inspector)"
+    project = "src"
+    command = "npm run dev"
+    attach = "cdp://localhost:1420"
 
-[[debug.config]]
-name = "Frontend (CDP)"
-project = "src"
-adapter = "cdp"
-attach = "http://localhost:1420"
-+++
+    [[debug.config]]
+    name = "Full app (backend + frontend)"
+    project = "src-tauri"
+    command = "npm run tauri dev"
+    attach = "cdp://localhost:1420"
+    spawn = ["Frontend (web inspector)"]
 
-**Build orchestration across projects:**
+### What each field means
 
-+++toml
-[[build.pipeline]]
-name = "Release"
-steps = [
-  { target = "src-tauri", method = "cargo", args = ["build", "--release"] },
-  { target = "src",       method = "npm",   args = ["run", "build"] },
-]
-+++
+| Field | Meaning |
+|---|---|
+| `name` | The label in the dropdown. User-authored. |
+| `project` | Which `.craidd` this config runs against. |
+| `command` | The exact command to run, in `cwd`. |
+| `cwd` | Working directory, relative to solution root. |
+| `adapter` | Debug adapter to attach (Phase 3). `lldb`, `netcoredbg`, `cdp`. |
+| `attach` | Attach to a running process on this address (Phase 3). |
+| `spawn` | Start these other configs first (Phase 3). |
 
-None of this is designed yet. The point is that the `method` field names
-a *known* tool category (`cargo`, `npm`, `dotnet`, `cmake`), and Craidd
-knows how to invoke that category. The user does not write arbitrary
-shell strings. The user names a method and provides arguments.
+Not all fields apply to all configs. A run config has `command` and
+`cwd`. A debug config has `adapter` or `attach` or both.
 
 ---
 
 ## The debug context dropdown
 
-The toolbar already has a placeholder for this — the Run/Debug controls
-that say "arrive in Phase 3."
+The toolbar has a dropdown (currently a placeholder) that shows the
+active debug context. It becomes real when `[[run.config]]` and
+`[[debug.config]]` exist.
 
-When Phase 3 ships, this dropdown will be populated from `.cln`'s
-`[[run.config]]` and `[[debug.config]]` entries. Switching contexts
-changes what `F5`, `Ctrl+F5`, and the step controls do. This is the
-same pattern as CLion's Run Configurations and Rider's Run/Debug
-Configurations.
+    ┌─────────────────────────────────┐
+    │ Debug:  [Full app ▾]            │
+    └─────────────────────────────────┘
+              │
+              ├─ Rust backend (LLDB)
+              ├─ Frontend (web inspector)
+              ├─ Full app (backend + frontend)     ◀ active
+              └─ Edit configurations…
 
-The dropdown reads from `.cln`, not from preferences, not from `.craidd`.
-Same reasoning as everywhere else.
+**F5** runs the active debug config. **Ctrl+F5** runs the active run
+config. Switching contexts switches what F5 does.
 
----
+`Edit configurations…` opens a small editor for `[[run.config]]` and
+`[[debug.config]]` entries, writing back to `.cln`.
 
-## The Tauri example, made concrete
-
-A Tauri project's `.cln` (sketch, Phase 3):
-
-+++toml
-[solution]
-name = "tauri-app"
-projects = ["src-tauri/src-tauri.craidd", "src/src.craidd"]
-
-[[run.config]]
-name = "Tauri dev"
-project = "src-tauri"
-method = "npm"
-args = ["run", "tauri", "dev"]
-# craidd knows npm from preferences; knows Tauri dev flow from the
-# "tauri" framework on the Rust project.
-
-[[debug.config]]
-name = "WebView (CDP)"
-project = "src-tauri"
-method = "cdp-attach"
-port = 1420
-+++
-
-Pressing `F5` with "WebView (CDP)" selected:
-1. Craidd runs `npm run tauri dev` via the frontend project's `npm`
-   (from preferences).
-2. Tauri starts the Rust backend and serves the frontend.
-3. Craidd attaches a CDP client to port 1420.
-4. The WebView inspector opens as a debug pane inside Craidd.
-
-The user declared the run flow in `.cln`. The user's machine provided
-`npm` and `cargo` through preferences. The framework was declared as
-`tauri` in `.craidd`. Each fact lives in the right file.
-
-This is the polyglot story. It is why Craidd exists.
+This is how CLion works. This is how Rider works. This is how a proper
+IDE works.
 
 ---
 
-## What this document is not
+## The Tauri polyglot example, made concrete
 
-This document is not a design. It is a sketch. Nothing here is committed.
-When Phase 3 begins, this document will be rewritten with the actual
-schema, the actual commands, the actual flows.
+A Tauri v2 app has two projects:
 
-What matters now is that the *shape* is preserved:
+- `src-tauri/` — Rust, framework `tauri`
+- `src/` — TypeScript, framework `tauri`
 
-- `.cln` holds orchestration.
-- Tools are named, not scripted.
-- Machine facts stay in preferences.
-- Project identity stays in `.craidd`.
-- The debug context dropdown reads from `.cln`.
+**Building:**
 
-Everything else is negotiable.
+- `cargo build` in `src-tauri/`, driven by the `[[build]]` entry.
+- `npm run build` in `src/`, if the user wants a production frontend.
+- Or `npm run tauri build` from the solution root, which does both.
+
+**Running:**
+
+- `npm run tauri dev` — starts the Vite dev server, compiles Rust,
+  launches the window. The everyday case.
+- `npm run dev` — starts only the Vite dev server. Useful when the Rust
+  side is stable.
+
+**Debugging:**
+
+- Rust backend: LLDB attaches to the compiled binary. Breakpoints in
+  `.rs` files.
+- Frontend: Chrome DevTools Protocol attaches to the WebView's
+  inspector port. Breakpoints in `.tsx` files.
+- Full app: both at once. The Rust process is spawned by
+  `npm run tauri dev`; the frontend inspector attaches to the port
+  Vite opens.
+
+The debug context dropdown switches between them. This is the polyglot
+story, made real.
 
 ---
 
-*Last updated: Phase 2.1.3. Author: skira24.*
-*This document is a placeholder. Rewrite it when Phase 3 begins.*
+## ASP.NET, made concrete
+
+An ASP.NET project is a single C# project with `framework = "aspnet"`.
+
+**Running:**
+
+- `dotnet run` — starts Kestrel on the port in
+  `Properties/launchSettings.json`.
+
+**Debugging:**
+
+- `netcoredbg` attaches to the `dotnet` process.
+
+**Configurations:**
+
+    [[run.config]]
+    name = "ASP.NET (dev)"
+    project = "MyApi"
+    command = "dotnet run"
+    cwd = "."
+
+    [[debug.config]]
+    name = "ASP.NET (debug)"
+    project = "MyApi"
+    adapter = "netcoredbg"
+    command = "dotnet run"
+    cwd = "."
+
+The launch profile in `launchSettings.json` sets environment variables
+and ports. Craidd runs `dotnet run` exactly, and the profile takes over.
+No Craidd-specific ASP.NET knowledge required.
+
+---
+
+## C++ / CMake, made concrete
+
+A C++ project with `framework = "cmake"` and `kind = "library"`
+produces a shared object.
+
+**Building:**
+
+- `cmake --build build/` — builds the target declared in
+  `CMakeLists.txt`.
+
+**Running (for an `application` kind):**
+
+- `./build/myapp` — runs the built binary.
+
+**Debugging:**
+
+- LLDB attaches to the compiled binary.
+- For a `.so` loaded by another process (e.g., C# via P/Invoke), the
+  debug config attaches to the host process.
+
+**Configurations:**
+
+    [[run.config]]
+    name = "C++ app"
+    project = "native"
+    command = "./build/myapp"
+    cwd = "."
+
+    [[debug.config]]
+    name = "C++ app (LLDB)"
+    project = "native"
+    adapter = "lldb"
+    command = "./build/myapp"
+    cwd = "."
+
+Static libraries and managed C++ are out of scope for v1. `library`
+means `.so`.
+
+---
+
+## What this is not
+
+This document is a sketch, not a specification. Phase 3 will produce a
+fuller design when build orchestration is actually built. The TOML
+shapes above are illustrative of the direction, not commitments to
+specific field names or structures.
+
+What is committed:
+
+- Build, run, and debug configurations live in `.cln`, not `.craidd`.
+- Configurations are named.
+- The debug context dropdown is the UI for switching between them.
+- Every invocation is transparent (see
+  `docs/philosophy-tool-discovery.md`).
+- Tools are discovered, not bundled (same document).
+
+What is deferred to Phase 3:
+
+- Exact TOML field names and nesting.
+- The `Edit configurations…` UI.
+- Adapter registration and lifecycle.
+- The `spawn` mechanism for multi-process configs.
+- How configurations interact with the `[[build]]` entries that
+  already exist.
+
+---
+
+## Open questions for Phase 3
+
+- **Build vs run vs debug.** Currently `[[build]]` is a top-level array
+  and `[run]` / `[debug]` are tables with defaults. When named
+  configurations arrive, does `[[build]]` become `[[build.config]]`?
+  Does the existing `default` field survive?
+- **Ordering.** When multiple configs run (via `spawn`), what is the
+  ordering rule? Does the frontend wait for the backend, or do they
+  start in parallel?
+- **Lifecycle.** When a debug session ends, do spawned processes get
+  killed, or do they survive? What if the user closes the tab?
+- **Ports.** If a config expects a specific port and the port is
+  already in use, what happens? Detection, error, or silent failure?
+
+None of these need answers today. They need answers before Phase 3
+begins.
+
+---
+
+*Last updated: Phase 2.1.4. Author: skira24.*
+*This file is a sketch. Phase 3 will rewrite it as a specification.*

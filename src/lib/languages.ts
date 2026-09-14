@@ -1,4 +1,4 @@
-import type { Language } from "../types/project";
+import type { Language, Framework } from "../types/project";
 
 export interface LanguageMeta {
   id: Language;
@@ -149,3 +149,29 @@ export function monacoLanguageForFilename(name: string): string {
   }
 }
 
+
+/**
+ * The valid frameworks for a given language.
+ *
+ * v1 is a closed set: five languages, four frameworks. "standard" is
+ * available for every language. Everything else is out of scope — see
+ * docs/design-project-identity.md.
+ */
+export function frameworksFor(language: Language): Framework[] {
+  switch (language) {
+    case "rust":
+      return ["standard", "tauri"];
+    case "typescript":
+    case "javascript":
+      return ["standard", "tauri"];
+    case "csharp":
+      return ["standard", "aspnet"];
+    case "cpp":
+      return ["standard", "cmake"];
+    case "python":
+    case "config":
+      return ["standard"];
+    default:
+      return ["standard"];
+  }
+}
