@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useLayout } from "../../store/layoutStore";
 
-const items = [
+type View = "solution" | "search" | "debug" | "settings";
+
+const items: { id: View; title: string; icon: string }[] = [
   { id: "solution", title: "Solution Explorer", icon: "M3 7h18M3 12h18M3 17h18" },
   { id: "search", title: "Search", icon: "M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" },
   { id: "debug", title: "Run & Debug", icon: "M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" },
@@ -8,17 +10,19 @@ const items = [
 ];
 
 export default function ActivityBar() {
-  const [active, setActive] = useState<string>("solution");
+  const activeView = useLayout((s) => s.activeView);
+  const setActiveView = useLayout((s) => s.setActiveView);
+  const sidebarVisible = useLayout && true; // sidebar visibility is in preferences; keep click behavior simple
 
   return (
     <div className="w-11 bg-zinc-900 border-r border-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">
       {items.map((it) => {
-        const isActive = it.id === active;
+        const isActive = it.id === activeView;
         return (
           <button
             key={it.id}
             title={it.title}
-            onClick={() => setActive(it.id)}
+            onClick={() => setActiveView(it.id)}
             className={
               "w-8 h-8 rounded flex items-center justify-center transition-colors " +
               (isActive

@@ -2,6 +2,7 @@ mod commands;
 mod types;
 
 use commands::fs::{read_dir_tree, read_dir_tree_filtered, read_file, write_file, create_folder};
+use commands::search::search_in_path;
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
     save_project, save_solution, scan_craidd_files,
@@ -25,6 +26,7 @@ pub fn run() {
             save_project,
             save_solution,
             create_project_folder,
+            search_in_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

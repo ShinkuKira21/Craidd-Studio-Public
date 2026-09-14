@@ -1,6 +1,8 @@
 import { create } from "zustand";
 
 interface LayoutState {
+  activeView: "solution" | "search" | "debug" | "settings";
+  setActiveView: (v: "solution" | "search" | "debug" | "settings") => void;
   sidebarWidth: number;
   setSidebarWidth: (n: number) => void;
   rightPanelWidth: number;
@@ -14,6 +16,8 @@ interface LayoutState {
 }
 
 export const useLayout = create<LayoutState>((set) => ({
+  activeView: "solution",
+  setActiveView: (v) => set({ activeView: v }),
   sidebarWidth: 288,
   setSidebarWidth: (n) => set({ sidebarWidth: Math.max(180, Math.min(500, n)) }),
   rightPanelWidth: 288,
