@@ -1,8 +1,8 @@
 # Philosophy: Tool Discovery
 
-**Status:** Locked.
-**Scope:** How Craidd relates to the tools on the user's machine.
-**Governs:** Phase 2.5 (discovery), Phase 3 (LSP, DAP, build).
+**Status:** Design. Not yet implemented.
+**Applies to:** Phase 2.5 onward (discovery), Phase 3+ (build, run, debug).
+**Governs:** How Craidd relates to the tools on the user's machine.
 
 ---
 
@@ -10,319 +10,356 @@
 
 **Craidd owns no tools.**
 
-Craidd does not bundle a compiler, a runtime, a package manager, or a
-language server. It discovers what the user already has, records the
-answer, and orchestrates those tools exactly as a terminal would.
+Craidd does not bundle a compiler. It does not bundle a package manager. It
+does not bundle a runtime. It does not install anything, ever. Every tool
+Craidd uses — `cargo`, `dotnet`, `node`, `pnpm`, `clang`, `lldb`, `pyright`,
+`debugpy` — is a tool the user already has on their machine, or a tool the
+user must install themselves.
 
-This is not a limitation. It is the design.
+Craidd discovers these tools. It records what it found. It delegates to them.
+When they are missing, Craidd says so, explains how to install them if it
+knows, and gets out of the way.
+
+This is the entire relationship. Nothing more.
 
 ---
 
 ## Why
 
-Every IDE that bundles its toolchain pays for it three times:
+### 1. Because tools belong to the user
 
-1. **Install size.** Visual Studio ships gigabytes before you open a
-   project. Rider ships a JVM and eats 1.5 GB before your code loads.
+A Linux developer installs `rustup`, or `node` via `nvm`, or `dotnet` via
+their distro's package manager, or a preview SDK via Microsoft's own
+installer. These choices are theirs. Their paths, their versions, their
+alternatives systems (`update-alternatives`, `nvm`, `rustup toolchain`) are
+theirs. Craidd has no business shadowing any of it.
 
-2. **Drift.** The bundled toolchain and the system toolchain move apart
-   the moment either is updated. The user's `cargo` and the IDE's
-   `cargo` become different programs with the same name.
+### 2. Because bundling tools is a treadmill we cannot win
 
-3. **Platform lock.** A bundled toolchain ties the IDE to the platforms
-   the bundle targets. This is why Visual Studio is not a Linux product.
-   Not because Microsoft can't port it, but because the installer model
-   doesn't survive the port.
+Visual Studio bundles everything, and reinstalling it reinstalls the world.
+Rider bundles a JVM and a runtime and a C# toolchain, and every version
+drift between bundled and system becomes a support burden. Every IDE that
+bundles tools eventually fights the user's system.
 
-Craidd inverts all three:
+Craidd does not fight. It reads.
 
-- **Small.** A Tauri app over a React shell. Startup under a second.
-- **In sync.** Craidd runs the user's `cargo`, the user's `dotnet`, the
-  user's `clang`. Always. When the user updates the tool, Craidd sees
-  the update. There is no second copy.
-- **Linux-native.** Tools belong to the system. The IDE orchestrates,
-  it does not own.
+### 3. Because bundling tools breaks startup
 
----
+Loading a bundled toolchain means initializing a process, a runtime, a
+heap. That is hundreds of milliseconds before a window paints. Craidd
+launches in under a second because it launches nothing. Tools load when
+invoked, on demand, exactly the way a terminal does.
 
-## The three-file model
+### 4. Because the user is not a child
 
-Three files govern Craidd. Three scopes. Three concerns.
-
-| File | Scope | Contains | Portable? |
-|---|---|---|---|
-| `.craidd` | Project | Identity — what this project *is* | Yes |
-| `.cln` | Solution | Orchestration — how it runs | Yes |
-| `~/.craidd-studio/user_preferences.toml` | Machine | Toolchain facts | No |
-
-**The rule:** a project fact goes in `.craidd`. A solution fact goes in
-`.cln`. A machine fact goes in preferences. Never ambiguous.
-
-This document is about the third file. `.craidd` and `.cln` have their
-own documents.
+The user has a shell. They have `sudo`. They have a package manager and
+opinions about it. Craidd suggesting an install and letting the user decide
+is respect. Craidd running an install "for convenience" is not.
 
 ---
 
-## What lives in preferences
+## What Craidd knows about a tool
 
-Facts about *this machine*. Not facts about projects.
+For every tool Craidd uses, it records exactly:
 
-- **Toolchain locations.** Where `cargo` is, where `dotnet` is, where
-  `g++` is. Discovered, not authored.
-- **Toolchain versions.** What version each tool reports.
-- **User overrides.** "Use `pnpm` for Node on this machine, not `npm`."
-  Recorded once, applied everywhere.
++++toml
+[toolchains.rust]
+sdk = "cargo"
+path = "/usr/bin/cargo"
+version = "1.75.0"
+discovered_at = 1726238400
++++
 
-Nothing else. Preferences does not contain project names, build
-commands, debug configurations, or anything that belongs to a
-`.craidd` or `.cln`.
+Four fields. Nothing more.
 
-### Shape
+- **sdk** — the tool's identifier in Craidd's vocabulary (`cargo`, `dotnet`,
+  `node`, `clang`). Not the path. Not the command. Just the name.
+- **path** — the absolute path Craidd will invoke, if it invokes directly.
+  Some tools are shell commands (`cargo`) where `which` gives a path.
+  Some tools are always invoked via a runner (`dotnet`, `npm`) where the
+  runner is the "path" and the sdk name is its identifier.
+- **version** — the version string the tool reports. Recorded, displayed,
+  not compared. Craidd does not refuse to work because the version is
+  "unsupported." It reports what it found.
+- **discovered_at** — a Unix timestamp. For display. Not for logic.
 
-    [toolchains.rust]
-    sdk = "cargo"
-    path = "/usr/bin/cargo"
-    version = "1.75.0"
-    discovered_at = 1726238400
-
-    [toolchains.csharp]
-    sdk = "dotnet"
-    path = "/usr/bin/dotnet"
-    version = "8.0.404"
-    available = ["6.0.412", "7.0.410", "8.0.404"]
-    discovered_at = 1726238400
-
-    [toolchains.cpp]
-    compiler = "g++"
-    path = "/usr/bin/g++"
-    version = "13.2.0"
-    build_system = "cmake"
-    build_system_path = "/usr/bin/cmake"
-    build_system_version = "3.28.3"
-    discovered_at = 1726238400
-
-One entry per language. Written once, read on every relevant action,
-updated only on explicit refresh or failed invocation.
+Craidd never invents values. Everything in this record was read from the
+machine.
 
 ---
 
-## When discovery runs
+## Discovery
 
-**Discovery runs exactly once per language, at first use. Never at
-app launch. Never at solution open.**
+### When discovery runs
 
-"First use" means one of:
+**Exactly once per language, at first use.** Two triggers, no others.
 
-1. **Project creation.** The first time the user creates or declares a
-   project in that language. Discovery runs in the background. The
-   dialog closes immediately. A banner appears when discovery finishes.
-2. **First invocation.** The first time the user tries to build, run,
-   or debug a project in a language whose toolchain isn't cached.
-   Discovery runs synchronously — because we need the result to
-   invoke — takes roughly 300ms, and the result is cached.
+1. **Project creation.** When the user creates a new project or declares
+   an existing folder as a project, and the language is chosen, discovery
+   runs for that language. **In the background.** The dialog closes
+   immediately; the tree appears immediately; a small banner appears when
+   discovery completes.
 
-Re-probe only happens when:
+2. **First invocation.** The first time a build, run, or debug action
+   touches a language whose toolchain is not cached, discovery runs
+   synchronously (300ms or less), then the action proceeds.
 
-- The user clicks **Re-discover** in preferences.
-- An invocation fails with "not found" (stale path — the tool moved or
-  was uninstalled).
-- The user clicks **Refresh toolchain** on the project's context menu.
+Both triggers write to `~/.craidd-studio/user_preferences.toml`. Both are
+**one-time, ever, per language, per machine.**
 
-Three triggers, all explicit. No ambient re-probing.
+### When discovery does NOT run
 
-### Why this ordering matters
+- **On app launch.** Never. Zero cost.
+- **On opening a solution.** Never. Opening a solution is instant, always.
+- **On expanding a project tree.** Never.
+- **On switching between projects.** Never.
 
-Startup speed is the whole point of the architecture. If Craidd probed
-every toolchain on launch, a solution with Rust, C++, C#, and
-TypeScript would spend 1-2 seconds before the UI painted.
+### Re-discovery
 
-Instead:
+Discovery re-runs only when explicitly requested:
 
-- App launch: 0ms spent on discovery.
-- Open solution: 0ms spent on discovery.
-- Create a project: discovery for that one language, in the background,
-  never blocking.
-- Second project in the same language, same session: 0ms — cached.
-- Next session: read from preferences. 0ms.
+- The user clicks **"Auto Detect"** in the toolchain preferences panel.
+- An invocation fails with "command not found" or "no such file" — the
+  tool has moved or been uninstalled. Craidd re-probes once and updates
+  the record.
+- The user clicks **"Refresh Toolchain"** on a project's context menu.
 
-The latency budget is spent exactly once per language, ever, at the
-moment the user's action justifies it.
+Three triggers, all explicit or failure-driven. No ambient re-probing.
+
+### What discovery actually does
+
+For Rust: `which cargo`, then `cargo --version`. Two shell calls. ~50ms.
+
+For C#: `which dotnet`, then `dotnet --version`, then
+`dotnet --list-sdks`. Two to three shell calls. ~200–400ms.
+
+For Node: `which node`, `node --version`, then for package manager:
+`which pnpm`, `which yarn`, `which npm` — first one present wins, or the
+user's explicit preference. ~80ms.
+
+These calls are synchronous, cheap, and total. There is no daemon, no
+watcher, no service. Craidd runs a command and reads its output.
+
+---
+
+## Preference hierarchy
+
+When Craidd needs to know which tool to use, it resolves in this order:
+
+1. **Project override** (`.craidd` `[toolchain]` section — Phase 5+, not
+   currently planned; reserved for cases where a project declares it needs
+   a specific SDK version).
+2. **Solution override** (`.cln` — Phase 3+, for build entries that name a
+   specific SDK path).
+3. **User preference** (`~/.craidd-studio/user_preferences.toml`).
+4. **Auto-discovery** (run now, record result, use result).
+
+Layers 3 and 4 cover 99% of cases. Layers 1 and 2 are for future edge
+cases and are not implemented in the current phase.
+
+**Only layer 3 is written by the user in normal use.** They open the
+preferences panel, click a language, and either confirm what Craidd found
+or change it. The change is written to layer 3. From then on, layer 3
+wins.
+
+---
+
+## When a tool is missing
+
+Craidd shows the shell error, augmented with guidance when Craidd knows
+how to help.
+
+**Raw shell output is always shown.** If the user has a terminal open and
+types `cargo build` and there is no cargo, they see:
+
++++
+bash: cargo: command not found
++++
+
+Craidd shows the same thing, plus, when it knows:
+
++++
+cargo is not installed.
+
+To install Rust and cargo:
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+[ Copy to Clipboard ]   [ Open Terminal Here ]   [ Show Shell Error ]
++++
+
+**Craidd never runs the install.** The user copies, or opens a terminal,
+or ignores. All three are valid. Craidd does not take that decision from
+them.
+
+If Craidd does not know how to help on this user's distro, it shows only
+the shell error. No guessing, no "maybe try apt-get" when the system is
+Alpine. Honesty over helpfulness when the two conflict.
+
+### The distro question
+
+Craidd may detect the distro family (`apt`, `dnf`, `pacman`, `zypper`,
+`apk`) by reading `/etc/os-release`. It uses this only to choose which
+install command to *show*. It never runs any of them. Knowing is fine.
+Acting is not.
 
 ---
 
 ## The banner
 
-When discovery completes in the background, a non-modal banner appears
-in the corner of the main panel:
+When discovery completes, a small non-modal banner appears in the corner
+of the main panel:
 
-    Toolchain detected for C#:  dotnet 8.0.404  ·  [ View ]
++++
+Toolchain detected for C#:  dotnet 8.0.404  ·  [ View ]
++++
 
-On failure:
+Clicking **View** opens `File → Preferences → Toolchains → C#`, showing
+the discovered path, version, and available SDKs.
 
-    dotnet is not installed. C# projects will not build or run
-    until it is.  ·  [ Help ]   [ Dismiss ]
+If discovery failed:
 
-**View** opens the toolchain preferences panel, scrolled to that
-language.
++++
+dotnet is not installed. C# projects will not build or run until it is.
+· [ Help ]   [ Dismiss ]
++++
 
-**Help** opens a small panel that explains what to install and how, for
-the user's distro family, with a copy button. Craidd never runs the
-install.
+**Help** opens a small panel with install guidance, per the section above.
 
-The banner is dismissible. It fades after a while. It never blocks.
-
----
-
-## Missing tools
-
-When Craidd needs a tool that isn't installed, it does three things,
-in order:
-
-1. **Says what's missing.** Not "build failed." "cargo is not
-   installed."
-2. **Suggests an install command** for the user's distro family, with
-   a copy button.
-3. **Offers a terminal** opened in the right place.
-
-It does not install. Ever. Not on first launch, not on missing-tool
-detection, not "just for convenience." A user's package manager
-belongs to them. An IDE that installs packages is an IDE that can
-break a distro.
-
-The distinction: **Craidd suggests, the user acts.**
-
-### The failure mode we avoid
-
-We could know that the user is on Debian, that `apt` is present, and
-that `apt install rustup` would work. We do not run it. We show it.
-
-If Craidd were to install tools:
-
-- A wrong package selection could break the user's environment.
-- The user would have no record of what changed.
-- The IDE and the user would be in conflict over the machine.
-
-None of that. The IDE owns nothing, including the act of installing.
+Both banners auto-fade after a while if not interacted with. Neither
+blocks the user.
 
 ---
 
-## Transparency
+## The preferences panel
 
-Every tool invocation is logged. In the Output panel, before any
-output:
+`File → Preferences → Toolchains` — a list of languages. Clicking a
+language shows:
 
-    [14:32:07] Running build for project "Tauri V2" (rust)
-    [14:32:07] $ cargo build --release
-    [14:32:07] cwd: /path/to/src-tauri
-    [14:32:07] env: CARGO_TARGET_DIR=/path/to/target
-    [14:32:08] <build output>
++++
+Rust
 
-Three rules:
+  SDK:      cargo
+  Path:     /usr/bin/cargo
+  Version:  1.75.0
+  Detected: 2026-09-14 14:32
 
-1. **The exact command is shown.** Not a summary. The string Craidd
-   passed to the shell.
-2. **The exact cwd is shown.**
-3. **The exact environment is shown.**
+  [ Auto Detect ]   [ Choose Path… ]
 
-This is VS Code's principle. It is the single biggest difference
-between a magic IDE and an honest one. It costs nothing, and it
-prevents entire classes of "why did that happen."
+C#
 
-### What Craidd never does
+  SDK:      dotnet
+  Path:     /usr/bin/dotnet
+  Version:  8.0.404
+  Available SDKs:  6.0.412, 7.0.410, 8.0.404
+  Detected: 2026-09-14 14:33
 
-- **Never rewrites the user's command.** If the command is wrong, the
-  user fixes it.
-- **Never runs a command the user didn't see.** Every invocation is
-  logged first, then run.
-- **Never hides output.** If the build fails, the raw error is visible
-  alongside any Craidd-formatted summary.
+  [ Auto Detect ]   [ Choose Path… ]
++++
 
----
+**Auto Detect** re-runs discovery, shows what it found, lets the user
+accept or reject.
 
-## The "Auto Detect" button
+**Choose Path…** opens a file picker. Whatever the user chooses becomes
+the recorded path. Craidd uses it without further validation beyond "does
+this file exist and is it executable."
 
-The toolchain preferences panel has an **Auto Detect** button per
-language. It runs discovery again, synchronously, and shows the result
-inline.
-
-This is for the user who wants to know what Craidd thinks, or who just
-installed a new SDK and wants Craidd to notice without waiting for a
-failure.
-
-It is not the default path. The default path is: Craidd discovers when
-it needs to, caches, and moves on. The button exists so the user has a
-handle, not because the user has to use it.
+**Nothing else is configurable.** No build commands. No run commands. No
+toolchain strings. Those belong to `.cln` (Phase 3) and to Craidd's own
+code.
 
 ---
 
-## What discovery knows, and what it doesn't
+## What Craidd never does
 
-Discovery knows **presence**: which of `cargo`, `dotnet`, `g++`,
-`cmake` are on `PATH`, and what version each reports.
+- **Never installs.** No `apt install`, no `npm install -g`, no `rustup`,
+  no installer script. Ever. Even if the user clicks a button that would
+  obviously benefit from it.
+- **Never bundles a runtime.** No hidden JVM. No embedded Node. No
+  vendored dotnet.
+- **Never rewrites commands.** If `.cln` says run `cargo build --release`,
+  Craidd runs exactly that, in exactly the declared `cwd`, with exactly
+  the declared environment. No "improvements." No substitutions.
+- **Never hides the shell error.** Augment, yes. Replace, no. If Craidd's
+  guidance doesn't apply, the user sees the raw error and figures it out —
+  same as if they were in a terminal.
+- **Never probes at launch.** No tool runs until the user's action
+  requires it.
+- **Never trusts a cached path blindly.** If an invocation fails, the
+  cache is invalidated and re-probed on next use.
+- **Never assumes a package manager.** If the user has not chosen one,
+  Craidd looks for `pnpm`, then `yarn`, then `npm`, in that order. If
+  none is present, it says so.
+- **Never touches `~/.bashrc`, `~/.zshrc`, `/etc/profile`, or any shell
+  configuration.** Not once, not ever, for any reason.
 
-Discovery does **not** know:
+---
 
-- Which package manager installed the tool.
-- Which distro the user is on. It can detect this, but it does not act
-  on it.
-- Whether the tool is up to date.
-- Whether the user wants to use a different version.
+## What this costs, and why it is worth it
 
-Those are the user's concerns. Discovery is a fact-finder, not an
-advisor.
+**Cost 1 — Setup friction.** A user who installs Craidd on a fresh Linux
+system and opens a Rust project will not have the Rust toolchain
+installed. Craidd will say "cargo not found," and the user must install
+it. This is real friction.
+
+**Mitigation:** The banner, the install guidance, the "Open Terminal
+Here" button, and the fact that any Linux developer who opens a Rust
+project almost certainly has Rust installed. The friction exists mostly
+on fresh systems and mostly resolves itself the first time the user tries
+to build.
+
+**Cost 2 — No "it just works."** Visual Studio installs a .NET SDK when
+you install Visual Studio. If you install Craidd and expect .NET to work,
+it won't, unless you already have it.
+
+**Mitigation:** This is a *feature* for the audience Craidd serves. A
+polyglot developer with three or four toolchains already configured does
+not want an IDE that installs its own shadow copies. They want an IDE
+that uses their tools. Craidd does.
+
+**Cost 3 — Less control over the environment.** Craidd cannot optimize
+the toolchain. It cannot ship a patched compiler, or a specific version
+guaranteed to work with its own code. It lives with whatever the user has.
+
+**Mitigation:** This is also a feature. The alternative is an IDE that
+breaks when the user upgrades a tool, or that refuses to use a preview
+SDK the user needs. Craidd tries what the user has, and reports the
+version, and trusts the user.
+
+The costs are the price of the philosophy. We pay them.
 
 ---
 
 ## What this buys us
 
-- **Startup under a second.** No tools loaded, no daemons, no probes.
-  The IDE is a React app over a Tauri shell. It opens at Vite speed.
-- **Zero system risk.** Craidd never modifies the user's machine. It
-  cannot break a distro.
-- **Works on any Linux.** Ubuntu, Fedora, Arch, Alpine, NixOS — as long
-  as the tools are on `PATH`, Craidd works. No install matrix to
-  maintain.
-- **Drift-free.** The tools Craidd runs are the same tools the user
-  runs in their terminal. Always.
-- **The user stays in control.** Which tools, which versions, which
-  package manager. All the user's choices, not Craidd's.
+- **Startup speed.** Nothing launches until the user's action requires
+  it. The IDE opens at the speed of the UI, not the speed of a toolchain.
+- **No install footprint.** Craidd is the size of its own binary. No
+  bundled runtimes, no vendored tools, no multi-gigabyte installer.
+- **Works on any Linux.** Debian, Fedora, Arch, Alpine, NixOS, whatever.
+  Craidd reads what is present and does not assume a package manager, an
+  init system, or a directory layout.
+- **No version treadmill.** When the user updates Rust, Craidd sees the
+  new version on next discovery. No update cycle, no coordination, no
+  "please update to support the new compiler."
+- **No security surface.** Craidd does not download tools. It does not
+  execute installers. It runs what the user has, exactly as the user's
+  shell would run it.
+- **Composability.** Every tool Craidd uses is a tool the user can use
+  from a terminal, in their own scripts, in their own CI. Craidd does not
+  invent a parallel world. It orchestrates the existing one.
 
 ---
 
-## What this costs us
+## The one rule that governs everything
 
-- **Setup friction.** A user on a fresh machine has to install their
-  toolchain before Craidd can build anything. Visual Studio would have
-  installed it for them. We don't. The mitigation is the missing-tool
-  UX: Craidd tells the user exactly what to install and offers a copy
-  button. The path from "missing tool" to "working build" is short and
-  clear. It just isn't automatic.
-- **No bundled fallback.** If the user doesn't have `cargo` and doesn't
-  want to install it, Craidd can't build their Rust project. That is
-  correct behavior. The alternative — bundling — is the thing we
-  rejected at the top.
+> **Craidd does not own tools. Craidd discovers them, records them, and
+> delegates to them. When they are missing, Craidd says so and gets out
+> of the way. Craidd never installs, never bundles, never rewrites, never
+> hides.**
 
-Both costs are accepted. The philosophy is worth them.
+Everything in this document is a consequence of that rule.
 
 ---
 
-## Out of scope, deliberately
-
-- **User-authored detection rules.**
-- **User-authored toolchain commands.**
-- **A `.vscode/`-style config directory.**
-- **Bundled toolchains.**
-- **Automatic installs.**
-
-Craidd supports a defined set of languages and frameworks. Discovery
-and delegation are the mechanism. Everything outside that set is out
-of scope, not "coming soon." A user with a stack outside this set is a
-VS Code user, and that is fine.
-
-If we ever revisit this: revisit it after the supported set works end
-to end with LSP, build, and debug. Not before.
-
----
-
-*Last updated: Phase 2.1.4. Author: skira24.*
-*This file is a philosophy. It changes only by rewriting it.*
+*Last updated: Phase 2.1.3. Author: skira24.*
+*This document is a philosophy. It governs the phases that follow it.*

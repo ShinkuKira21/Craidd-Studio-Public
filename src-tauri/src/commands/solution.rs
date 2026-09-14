@@ -221,7 +221,6 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             language: None,
             root: ".".into(),
             kind: "application".into(),
-            framework: None,
             path: rel.to_string(),
             folder,
             config_enabled: false,
@@ -246,7 +245,6 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             language: None,
             root: ".".into(),
             kind: "application".into(),
-            framework: None,
             path: rel.to_string(),
             folder,
             config_enabled: false,
@@ -283,9 +281,6 @@ fn load_craidd_file(full: &Path) -> Result<CraiddProject, String> {
     let kind = project_sec
         .and_then(|p| p.get("kind")).and_then(|v| v.as_str()).unwrap_or("application").to_string();
 
-    let framework = project_sec
-        .and_then(|p| p.get("framework")).and_then(|v| v.as_str()).map(String::from);
-
     let config_enabled = config_sec.is_some();
     let config_name = config_sec
         .and_then(|c| c.get("name")).and_then(|v| v.as_str()).map(String::from);
@@ -300,7 +295,6 @@ fn load_craidd_file(full: &Path) -> Result<CraiddProject, String> {
         language,
         root,
         kind,
-        framework,
         path: full.to_string_lossy().to_string(),
         folder: ".".into(),
         config_enabled,
@@ -347,9 +341,6 @@ pub fn save_project(root: String, project: CraiddProject) -> Result<(), String> 
         text.push_str(&format!("root = \"{}\"\n", escape(&project.root)));
         if project.kind != "application" {
             text.push_str(&format!("kind = \"{}\"\n", escape(&project.kind)));
-        }
-        if let Some(fw) = &project.framework {
-            text.push_str(&format!("framework = \"{}\"\n", escape(fw)));
         }
     } else if let Some(ep) = &existing_project {
         if let Some(tbl) = ep.as_table() {

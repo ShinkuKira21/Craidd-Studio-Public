@@ -10,9 +10,6 @@ pub struct CraiddProject {
     pub root: String,
     #[serde(default = "default_kind")]
     pub kind: String,
-
-    #[serde(default)]
-    pub framework: Option<String>,
     pub path: String,
     pub folder: String,
 

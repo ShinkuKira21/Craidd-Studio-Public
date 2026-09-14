@@ -1,341 +1,370 @@
 # Design: Project Identity
 
-**Status:** Locked.
-**Scope:** What a `.craidd` file contains, and what it means.
-**Governs:** Phase 2.1.4 (schema), Phase 2.4 (membership), Phase 2.5 (detection).
+**Status:** Design. Partially implemented (schema fields), not yet used.
+**Applies to:** Phase 2.1.4 (schema), Phase 2.5 (detection + dialog).
+**Governs:** What a `.craidd` file is, what it declares, and where every
+other kind of fact lives.
 
 ---
 
-## The thesis
+## The three-file model
 
-**`.craidd` is a marker, not a manifest.**
+Craidd has three files, three scopes, three concerns. Everything else is
+built on this split.
 
-It says what a folder *is*. It does not say how to build it, how to run
-it, which tools to use, or where those tools live. Those are facts
-about a solution (`.cln`) or a machine (preferences).
+| File | Scope | Contains | Portable? |
+|---|---|---|---|
+| `.craidd` | Project | Identity — what this project *is* | Yes |
+| `.cln` | Solution | Orchestration — how the solution *runs* | Yes |
+| `~/.craidd-studio/user_preferences.toml` | Machine | Facts — what tools *exist here* | No |
 
-A `.craidd` should be small enough to read in five seconds.
+The rule for what belongs where:
 
----
+- **A fact about the project** → `.craidd`.
+- **A fact about the solution** → `.cln`.
+- **A fact about this machine** → preferences.
 
-## The shape
-
-    [project]
-    name = "src-tauri"
-    language = "rust"
-    framework = "tauri"
-    kind = "application"
-    root = "."
-
-Five fields. Every one is a fact about *what this project is*,
-portable across machines, meaningful in git.
-
-Later phases add `[membership]`:
-
-    [membership]
-    main = ["src/**/*.rs", "Cargo.toml"]
-    config = ["tauri.conf.json"]
-
-And that is the whole file. Nothing else ever goes in `.craidd`. No
-build commands. No toolchain paths. No debug configs. If a fact belongs
-to the solution or the machine, it goes in `.cln` or preferences.
+A fact that is true on every machine where the project exists belongs in
+`.craidd` or `.cln`. A fact that is only true on one machine belongs in
+preferences. Nothing is ever ambiguous under this rule.
 
 ---
 
-## Language
+## `.craidd` is a marker
 
-Closed enum. Five values.
+The guiding principle: **`.craidd` should be so small it could be a sticky
+note.**
 
-    export type Language =
-      | "rust"
-      | "typescript"
-      | "javascript"
-      | "csharp"
-      | "cpp";
+A complete, valid `.craidd`:
 
-`typescript` and `javascript` are separate language IDs because the
-ecosystem distinguishes them, but they share the same frameworks and
-interop: a TypeScript project can include `.js` files, and vice versa.
++++toml
+[project]
+name = "src-tauri"
+language = "rust"
+framework = "tauri"
+kind = "application"
+root = "."
++++
 
-### No Custom
+Five lines. That is all.
 
-There is no "Custom Language" option. Craidd supports a defined set.
-Everything outside it is out of scope. The user with a language we
-don't support is a VS Code user, and that is fine.
+It says: this folder is a Rust Tauri application, and its source root is
+the folder itself. Nothing else.
 
-See *Out of scope, deliberately* at the end of this document for the
-full reasoning.
+### What `.craidd` contains
 
----
+**Required:**
 
-## Framework
+- `name` — human-readable project name.
+- `language` — one of the supported language enums.
 
-Closed enum. Four values.
+**Optional:**
 
-    export type Framework =
-      | "standard"
-      | "tauri"
-      | "aspnet"
-      | "cmake";
+- `framework` — a framework profile for this language. Defaults to
+  `"standard"` if omitted.
+- `kind` — `application`, `library`, `test`. Defaults to `"application"`.
+- `root` — path to the source root relative to the `.craidd` file.
+  Defaults to `"."`.
 
-`standard` means "no specific framework — the language's default
-toolchain." Every language supports `standard`.
+**Later (Phase 2.1.3+, not yet implemented):**
 
-`frameworksFor(language)` returns the valid frameworks for a language:
+- `[membership]` — the Fine Tune persistence. Which files belong to the
+  project, which belong to its config, which belong to neither.
+- `[config]` — the config facet declaration, for projects that have one.
 
-| Language | Frameworks |
-|---|---|
-| rust | `standard`, `tauri` |
-| typescript | `standard`, `tauri` |
-| javascript | `standard`, `tauri` |
-| csharp | `standard`, `aspnet` |
-| cpp | `standard`, `cmake` |
+### What `.craidd` does NOT contain
 
-### What framework means
+- **No toolchain paths.** Where `cargo` lives is a fact about the machine.
+- **No build commands.** `cargo build` is Craidd's knowledge, not the
+  user's declaration. If the user needs a custom build, that goes in
+  `.cln`.
+- **No run commands.** Same reason. `.cln` territory.
+- **No debug configurations.** Same reason. `.cln` territory.
+- **No environment variables.** Same reason. `.cln` territory.
+- **No paths outside the project.** The `.craidd` describes itself, not
+  its relationship to the solution. That is `.cln`'s job.
 
-Framework is the **ecosystem profile** of a project. It determines:
-
-- Which template to use when creating a project.
-- Which detection signals to look for.
-- Which build commands make sense.
-- Which LSP and debugger configuration applies.
-- What "Run" means for this project.
-
-A C# console app and a C# ASP.NET app share a language but differ in
-framework. Framework is the axis that captures this.
-
-### Tauri is one framework, two projects
-
-Tauri v2 spans a Rust project and a TypeScript project. Both declare
-`framework = "tauri"`. They are separate `.craidd` files, in separate
-folders, joined by the `.cln`'s project list. The framework value is
-how Craidd knows they belong together.
+If a user ever needs to put any of these in a `.craidd`, the answer is:
+that fact belongs in `.cln` or preferences, and the schema does not
+accommodate putting it here.
 
 ---
 
-## Kind
+## The language enum
 
-Closed enum. Three values now.
+Craidd supports seven languages, and only these:
 
-    export type ProjectKind = "application" | "library" | "test";
+| Value | Display | Extensions |
+|---|---|---|
+| `rust` | Rust | `rs` |
+| `typescript` | TypeScript | `ts`, `tsx`, `mts`, `cts`, `d.ts` |
+| `javascript` | JavaScript | `js`, `jsx`, `mjs`, `cjs` |
+| `python` | Python | `py` |
+| `cpp` | C++ | `cpp`, `cc`, `cxx`, `c`, `h`, `hpp`, `hxx` |
+| `csharp` | C# | `cs` |
+| `config` | Config | `json`, `toml`, `yaml`, `yml`, `ini`, `conf` |
 
-Kind is orthogonal to language and framework. A C++ CMake project can
-be an `application` or a `library`. A Rust Tauri project is always an
-`application`.
+Each language has an interop extension list (TS includes JS, C# includes
+C/C++ headers, Python includes C for extensions). Interop extensions
+appear in the project's tree but do not change the project's declared
+language.
 
-For C++ specifically, `library` in v1 means a shared object (`.so`).
-Static libraries (`.a`, `.lib`) and managed C++ are out of scope. See
-*Future kind values* below.
+**This list does not grow by user request.** It grows when Craidd
+implements full support for a new language — LSP, build, debug,
+templates. Adding `java` to the enum without any of those is a fake
+feature, and we do not ship fake features.
 
-### Future kind values
+---
 
-Not implemented. Recorded here so the axis does not get lost.
+## The framework enum
 
-- `shared_object` — when static and shared libraries need to be
-  distinguished as separate kinds. Currently `library` means `.so` for
-  C++, and no distinction is drawn.
-- `model` — a training script with checkpoints and metrics. See
-  `docs/future-idea-python.md`.
-- `service` — a long-running process with an endpoint.
-- `kernel` — performance-critical native code (CUDA, SIMD).
+Framework is a string, but the valid set is closed and enumerated per
+language. The initial set:
 
-Each is a value in the same enum when the phase that needs it arrives.
++++
+rust:       standard, tauri
+typescript: standard, vite, next
+javascript: standard
+python:     standard, django
+cpp:        standard, cmake, meson
+csharp:     standard, console, aspnet
+config:     standard
++++
+
+- `standard` is the default when nothing else is declared.
+- Every framework name is lowercase, no spaces, no version numbers.
+  `tauri` not `Tauri`, not `tauri-2`.
+- A framework implies a toolchain and a set of build/run conventions that
+  Craidd knows. `tauri` implies `cargo` for the backend and `npm`/`pnpm`
+  for the frontend and a CDP debug attach for the WebView.
+- A framework does not change the language. A Tauri project is a Rust
+  project whose framework is `tauri`.
+
+**A project whose stack does not fit any framework in this list is out of
+scope.** The user should use VS Code, or declare the project as
+`standard`, or wait until the framework is added. This is deliberate (see
+below).
 
 ---
 
 ## Detection
 
-When the user says "Make This a Project," Craidd reads the folder's
-contents and proposes a language and framework. The user confirms or
-corrects.
+Detection runs only in one flow: **"Make This a Project"**, when the user
+declares an existing folder as a project. It reads manifests on disk and
+suggests language and framework.
 
-**Detection reads declarations, not extensions.**
+### Signals, by confidence
 
-A `.csproj` file with `<Project Sdk="Microsoft.NET.Sdk.Web">` is the
-framework *declaring what it is*. Reading it is not guessing. A folder
-with `.cs` files and no `.csproj` is a folder with some C# in it.
-Suggesting C# there would be guessing.
+**High confidence — the manifest declares itself:**
 
-### The table
+| Signal | Suggests |
+|---|---|
+| `Cargo.toml` + `tauri.conf.json` in same folder | Rust / tauri |
+| `Cargo.toml` alone | Rust / standard |
+| `*.csproj` with `Sdk="Microsoft.NET.Sdk.Web"` | C# / aspnet |
+| `*.csproj` with `Sdk="Microsoft.NET.Sdk"` + `OutputType=Exe` | C# / console |
+| `*.csproj` with `Sdk="Microsoft.NET.Sdk"` alone | C# / standard |
+| `package.json` with `next` in deps | TypeScript / next |
+| `package.json` with `vite` in devDependencies | TypeScript / vite |
+| `package.json` alone | TypeScript / standard |
+| `CMakeLists.txt` | C++ / cmake |
+| `meson.build` | C++ / meson |
+| `pyproject.toml` with `[tool.poetry]` | Python / standard |
+| `manage.py` | Python / django |
 
-| Signal on disk | Suggests | Confidence |
-|---|---|---|
-| `Cargo.toml` + `tauri.conf.json` | Rust / Tauri | detected |
-| `Cargo.toml` alone | Rust / Standard | detected |
-| `.csproj` with `Sdk="Microsoft.NET.Sdk.Web"` | C# / ASP.NET | detected |
-| `.csproj` with `Sdk="Microsoft.NET.Sdk"` | C# / Standard | likely |
-| `package.json` with `@tauri-apps/*` in deps | TS / Tauri | detected |
-| `package.json` alone | TS / Standard | likely |
-| `CMakeLists.txt` | C++ / CMake | detected |
-| `.rs` files, no `Cargo.toml` | Rust / — | no signal |
-| `.cs` files, no `.csproj` | C# / — | no signal |
-| `.cpp` / `.h` files, no `CMakeLists.txt` | C++ / — | no signal |
+These are not inferences. A `.csproj` with `Sdk="Microsoft.NET.Sdk.Web"`
+*is* the framework declaring what it is. Reading it is reading a
+declaration, not guessing.
 
-### Confidence vocabulary
+**Medium confidence — strong convention:**
 
-Three levels. All three are visible in the dialog.
+| Signal | Suggests |
+|---|---|
+| `*.csproj` present but no `Sdk` attribute | C# / standard |
+| `*.toml` with `[package]` and `name` | Rust / standard (uncertain) |
 
-- **detected** — the framework declared itself. A manifest file is
-  present with an unambiguous signal. Trust it.
-- **likely** — the ecosystem's strong convention. A `package.json`
-  exists but does not name a framework. Suggest `standard` with a note.
-- **no signal** — no manifest file. Show the folder's contents and ask
-  the user to pick. Do not pre-fill.
+Medium signals are shown with the label **"likely"**, not **"detected ✓"**.
 
-The wording is honest. "Detected" and "likely" are different. The user
-should know which they are looking at.
+**Low confidence — extensions alone:**
 
-### Why detection is not inference
+| Signal | Suggests |
+|---|---|
+| `.rs` files, no `Cargo.toml` | Rust / — (flag: no manifest) |
+| `.cs` files, no `.csproj` | C# / — (flag: no project file) |
+| `.ts` files, no `package.json` | TypeScript / — (flag: no manifest) |
 
-We do not look at file extensions and guess. We look for declaration
-files — manifests, project files, config files — and read what they
-say. A `Cargo.toml` says "this is a Rust project." A `tauri.conf.json`
-says "this is a Tauri app." These are declarations, not hints.
+Low signals suggest a language but never a framework. The dialog says
+**"no signal"** for framework and lets the user choose.
 
-Extension-based inference is what every other IDE does, and it is why
-they are wrong about mixed-language projects. Craidd reads
-declarations.
+**No signal:** the folder has no recognizable manifests. Language field
+is empty, framework field is empty. The dialog cannot be submitted until
+the user picks a language.
 
----
+### Detection never runs in the background
 
-## Overfitting doesn't matter
+Detection runs only when the "Make This a Project" dialog opens. It reads
+manifests at the top level of the folder (not recursively) and returns
+its suggestions in under 20ms. There is no watcher, no cache, no
+background scan.
 
-Because detection is correctable.
+This is not the same as toolchain discovery, which is a separate concern
+(see `philosophy-tool-discovery.md`).
 
-A wrong guess is a suggestion, not a bug. The dialog shows what Craidd
-found. The user changes it if it is wrong. The correction is written to
-`.craidd`, and Craidd never proposes that wrong value for that project
-again.
+### Confidence is always shown
 
-This flips the entire problem: **Craidd does not have to be right. It
-has to be correctable.**
+The dialog labels every field:
 
-### The endgame
+- **`detected ✓`** — high confidence. A manifest declared it.
+- **`likely`** — medium confidence. A convention suggests it.
+- **`no signal`** — low confidence or nothing found. User must choose.
 
-The dialog becomes optional.
-
-Not because automation got smart enough to be trusted blind, but
-because it got smart enough that correcting it is rarely needed. The
-dialog stays — as the "Advanced…" escape hatch — but most of the time,
-the user does not open it.
-
-Three lines, three checkmarks, hit Enter:
-
-    Make This a Project
-
-    Language:    Rust                    ✓
-    Framework:   Tauri                   ✓
-    Toolchain:   cargo 1.75.0            ✓
-
-    [Advanced…]                  [Create Project]
-
-That is the destination. Everything else is the road.
+The wording is honest. The user knows exactly how much to trust each
+suggestion.
 
 ---
 
-## The three scopes
+## The "Make This a Project" dialog
 
-A fact's scope determines which file it lives in.
+When the user right-clicks a folder and chooses "Make This a Project," the
+dialog opens with detection results pre-filled:
 
-| Fact | Scope | File |
-|---|---|---|
-| Project name | Project | `.craidd` |
-| Language | Project | `.craidd` |
-| Framework | Project | `.craidd` |
-| Kind | Project | `.craidd` |
-| File membership | Project | `.craidd` (later) |
-| Which projects exist | Solution | `.cln` |
-| Build entries | Solution | `.cln` |
-| Run configurations | Solution | `.cln` (later) |
-| Debug configurations | Solution | `.cln` (later) |
-| Toolchain paths | Machine | preferences |
-| Toolchain versions | Machine | preferences |
-| User tool overrides | Machine | preferences |
++++
+Make This a Project
 
-**The rule:** a project fact goes in `.craidd`. A solution fact goes in
-`.cln`. A machine fact goes in preferences. Never ambiguous.
+Folder:      src-tauri/
+             Contents:  5 folders, 12 files
 
-### Why toolchain is not in `.craidd`
+Language:    [ Rust ▾ ]                    detected ✓
+             Cargo.toml found in this folder
 
-Because toolchain is not portable.
+Framework:   [ Tauri ▾ ]                   detected ✓
+             tauri.conf.json + Cargo.toml both present
 
-If a `.craidd` said `sdk_path = "/usr/bin/cargo"`, that path would be
-right on one machine and wrong on another. On macOS, `/usr/bin/cargo`
-might not exist at all. The file that was supposed to say "this is a
-Rust project" ends up saying "this is a Rust project, on Linux, with
-cargo here, on this specific machine."
+Toolchain:   cargo 1.75.0 (/usr/bin/cargo)   found ✓
 
-Project files must be portable. Machine facts must not be. The
-separation is the point.
+[ Advanced… ]              [ Cancel ]   [ Create Project ]
++++
 
-### Why build, run, and debug configs are not in `.craidd`
+**Advanced…** opens the full picker for cases where the guess is wrong or
+the user wants to specify more.
 
-Because they are solution-level concerns.
+**Create Project** writes the `.craidd` and closes the dialog. If a
+toolchain was discovered, a banner appears asynchronously (see
+`philosophy-tool-discovery.md`).
 
-A solution has multiple projects. One is the startup project. Build
-orchestration may span projects. Debug configurations reference launch
-targets, ports, environment variables. All of these are the solution's
-runtime story, not any single project's identity.
+### If detection is uncertain:
 
-`.craidd` says "I am a C# ASP.NET project." `.cln` says "when you run
-this solution, launch the ASP.NET project, on port 5000, with these
-environment variables." Two different facts. Two different files.
++++
+Language:    [ Rust ▾ ]                    likely
+             .rs files found, but no Cargo.toml in this folder
+
+Framework:   [ (choose) ▾ ]                no signal
+             No manifest file present
++++
+
+The user picks, and the dialog remembers the choice for the current
+session.
+
+### If detection finds nothing:
+
++++
+Language:    [ (choose) ▾ ]                no signal
+
+Framework:   [ (choose) ▾ ]                no signal
++++
+
+The Create button is disabled until both are chosen.
+
+---
+
+## What "Make This a Project" costs
+
+A folder that contains files Craidd supports but no manifest — say, a
+folder of `.rs` files with no `Cargo.toml` — is a Rust project in a
+folder that Cargo cannot build. Craidd can declare it. Cargo cannot run
+it.
+
+The dialog says so:
+
++++
+Language:    [ Rust ▾ ]                    likely
+Framework:   [ Standard ▾ ]                no signal
+
+⚠ No Cargo.toml found. This project will open for editing but
+  cannot be built until a Cargo.toml is added.
+
+[ Open Documentation ]                    [ Create Project ]
++++
+
+Craidd does not refuse. It declares what the user asked, warns about the
+consequence, and creates the project. The user may know something Craidd
+does not.
 
 ---
 
 ## Out of scope, deliberately
 
-- **Custom languages.**
-- **Custom frameworks.**
-- **User-authored detection rules.**
-- **A `.vscode/`-style config directory.**
+**Custom languages.** A user cannot define a new language in `.craidd`.
+The list of supported languages is fixed and small. Adding to it requires
+Craidd to ship real support — LSP, build, debug, templates — not just a
+name.
 
-Craidd supports a defined set: five languages, four frameworks. The
-set is explicit, small, and auditable. Everything outside it is out of
-scope — not guessed at, not half-supported, not "coming soon."
+**Custom frameworks.** A user cannot define a new framework. `framework`
+is a value from the enumerated list. `"standard"` is the escape hatch for
+projects Craidd does not specifically know about.
+
+**Custom detection rules.** Detection is Craidd's own table, in Rust.
+Users cannot add signals. If a framework should be detected, it belongs
+in the table, which means it belongs in Craidd's supported set.
+
+**User-authored toolchain commands.** Build and run commands do not live
+in `.craidd`. They live in `.cln`, and even there, they reference
+Craidd-known methods (`cargo`, `dotnet`, `npm`), not arbitrary strings.
+The user can change *what* runs, but not by writing shell code into a
+project file.
 
 ### Why
 
-1. **Custom solves a problem we do not have yet.** Craidd supports
-   Rust, TypeScript, JavaScript, C#, and C++. That is the target
-   audience. A user with an obscure framework is a user we have not
-   designed for. Adding Custom now is building for people who are not
-   here yet, at the cost of the people who are.
-2. **Custom multiplies every schema decision.** Every field would need
-   a "custom" variant and validation rules. Complexity in the core, for
-   a feature at the edge.
-3. **VS Code exists for that user.** If a developer's stack is outside
-   the defined set, VS Code and a terminal is their answer. Craidd is
-   not trying to serve them. Craidd serves the polyglot system
-   developer.
+Craidd supports a defined set of languages and frameworks. The set is
+explicit, small, and auditable. Everything outside it is out of scope —
+not guessed at, not half-supported, not "coming soon."
 
-### The guardrail
+A developer whose stack does not fit this set has VS Code, and that is a
+fine answer. VS Code is a general editor; Craidd is a specific IDE for
+specific stacks. Their scopes are different, and that is healthy.
 
-If we ever revisit this: revisit it after Rust, TypeScript, C++, and
-C# all work end to end with LSP, build, and debug. Not before. And when
-we do, it will not be a `.craidd` feature — it will be a separate,
-adjacent mechanism that Craidd reads but does not own.
+### When we revisit this
 
-This paragraph is written so future-me does not re-open this at 2 AM in
-Phase 3 and start building a `.vscode/`-equivalent because it seems
-neat.
+After Rust, TypeScript, C++, C#, and Python all work end-to-end with LSP,
+build, and debug. Not before.
+
+When we do revisit, it will not be a `.craidd` feature. It will be a
+separate, adjacent mechanism that Craidd reads but does not own. A
+`.vscode/`-style config, or a Craidd-specific sidecar file, or a user
+preferences extension. The `.craidd` schema will not grow to accommodate
+it. The marker stays a marker.
+
+This paragraph exists so that future-you, at 2 AM in Phase 3, does not
+re-open this decision because a `.vscode/`-equivalent seems neat.
 
 ---
 
-## The schema, final for v1
+## What this means for the current code
 
-    [project]
-    name = "src-tauri"
-    language = "rust"
-    framework = "tauri"
-    kind = "application"
-    root = "."
+`src/types/project.ts` already has `Language` and `ProjectKind` enums.
+It does not yet have `Framework`. Phase 2.1.4 adds it as an optional
+string field. No behavior changes; no dialogs change; detection is not
+yet built.
 
-Five fields. `language` and `name` are required. `framework` defaults
-to `"standard"`, `kind` defaults to `"application"`, `root` defaults to
-`"."`. Older `.craidd` files without `framework` and `kind` still load.
+`src-tauri/src/types.rs` mirrors this. The `CraiddProject` struct gains
+an optional `framework: Option<String>` field with `#[serde(default)]`.
+Backward compatible. Existing `.craidd` files load unchanged.
+
+The full detection flow and the updated Make This a Project dialog arrive
+in Phase 2.5, after the save system (Phase 2.2) and file operations
+(Phase 2.3) are complete.
 
 ---
 
-*Last updated: Phase 2.1.4. Author: skira24.*
-*This file is a design. It changes only by rewriting it.*
+*Last updated: Phase 2.1.3. Author: skira24.*
+*This document is a design. It governs project identity.*
