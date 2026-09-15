@@ -5,22 +5,43 @@ import FileTree from "../FileTree";
 import MakeProjectDialog from "../../dialogs/MakeProjectDialog";
 import NewFileDialog from "../../dialogs/NewFileDialog";
 import NewFolderDialog from "../../dialogs/NewFolderDialog";
+import DeleteConfirmDialog from "../../dialogs/DeleteConfirmDialog";
+
+type DialogState =
+  | { kind: "make-project"; node: FileNode }
+  | { kind: "new-file"; node: FileNode }
+  | { kind: "new-folder"; node: FileNode }
+  | { kind: "delete"; node: FileNode }
+  | null;
 
 export default function FileDiscovery() {
   const rootPath = useSolution((s) => s.rootPath);
   const discovery = useSolution((s) => s.discovery);
   const refreshDiscovery = useSolution((s) => s.refreshDiscovery);
+  const renamePath = useSolution((s) => s.renamePath);
+  const requestRename = useSolution((s) => s.requestRename);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; node: FileNode } | null>(null);
-  const [dialogNode, setDialogNode] = useState<FileNode | null>(null);
-  const [newFileTarget, setNewFileTarget] = useState<{ parentPath: string } | null>(null);
-  const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
+  const [dialog, setDialog] = useState<DialogState>(null);
 
   const absPathFor = (node: FileNode) => {
     if (!rootPath) return "";
-    // Root node: return rootPath as-is. Appending node.name duplicates
-    // the folder when the root's name matches its parent path segment.
-    if (!node.path || node.path === ".") return rootPath;
-    return `${rootPath.replace(/\/+$/, "")}/${node.path.replace(/^\/+/, "")}`;
+    const base = rootPath.replace(/\/+$/, "");
+    const rel = node.path;
+    if (!rel || rel === ".") return base;
+    return `${base}/${rel.replace(/^\/+/, "")}`;
+  };
+
+  const handleRenameCommit = async (node: FileNode, newName: string) => {
+    if (!rootPath) return;
+    const oldAbs = absPathFor(node);
+    const parentAbs = oldAbs.slice(0, oldAbs.lastIndexOf("/"));
+    const newAbs = `${parentAbs}/${newName}`;
+    try {
+      await renamePath(oldAbs, newAbs);
+    } catch (err) {
+      console.error("[craidd] inline rename failed:", err);
+      // The tree refresh will restore the old name; log for now.
+    }
   };
 
   return (
@@ -39,8 +60,9 @@ export default function FileDiscovery() {
         {!discovery || !rootPath ? (
           <div className="px-3 py-6 text-[12px] text-zinc-600 text-center">Nothing loaded.</div>
         ) : (
-          <FileTree node={discovery} depth={0} basePath={rootPath} defaultOpen={true}
-                    onContext={(x, y, n) => setCtxMenu({ x, y, node: n })} />
+          <FileTree node={discovery} depth={0} basePath={rootPath} source="discovery" defaultOpen={true}
+                    onContext={(x, y, n) => setCtxMenu({ x, y, node: n })}
+                    onRenameCommit={handleRenameCommit} />
         )}
       </div>
 
@@ -52,45 +74,86 @@ export default function FileDiscovery() {
             {ctxMenu.node.kind === "folder" ? (
               <>
                 <button
-                  onClick={() => { setNewFileTarget({ parentPath: absPathFor(ctxMenu.node) }); setCtxMenu(null); }}
+                  onClick={() => { setDialog({ kind: "new-file", node: ctxMenu.node }); setCtxMenu(null); }}
                   className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
                 >
                   New File…
                 </button>
                 <button
-                  onClick={() => { setNewFolderTarget({ parentPath: absPathFor(ctxMenu.node) }); setCtxMenu(null); }}
+                  onClick={() => { setDialog({ kind: "new-folder", node: ctxMenu.node }); setCtxMenu(null); }}
                   className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
                 >
                   New Folder…
                 </button>
                 <div className="my-1 h-px bg-zinc-800" />
                 <button
-                  onClick={() => { setDialogNode(ctxMenu.node); setCtxMenu(null); }}
+                  onClick={() => {
+                    requestRename(absPathFor(ctxMenu.node), "discovery");
+                    setCtxMenu(null);
+                  }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  Rename…
+                </button>
+                <button
+                  onClick={() => { setDialog({ kind: "delete", node: ctxMenu.node }); setCtxMenu(null); }}
+                  className="w-full px-3 py-1 text-left text-red-300 hover:bg-red-700 hover:text-white"
+                >
+                  Delete
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                <button
+                  onClick={() => { setDialog({ kind: "make-project", node: ctxMenu.node }); setCtxMenu(null); }}
                   className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
                 >
                   Make This a Project…
                 </button>
               </>
             ) : (
-              <div className="px-3 py-1 text-zinc-600 italic">(select a folder)</div>
+              <>
+                <button
+                  onClick={() => {
+                    requestRename(absPathFor(ctxMenu.node), "discovery");
+                    setCtxMenu(null);
+                  }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  Rename…
+                </button>
+                <button
+                  onClick={() => { setDialog({ kind: "delete", node: ctxMenu.node }); setCtxMenu(null); }}
+                  className="w-full px-3 py-1 text-left text-red-300 hover:bg-red-700 hover:text-white"
+                >
+                  Delete
+                </button>
+              </>
             )}
           </div>
         </>
       )}
 
-      {dialogNode && <MakeProjectDialog node={dialogNode} onClose={() => setDialogNode(null)} />}
-      {newFileTarget && (
+      {dialog?.kind === "make-project" && (
+        <MakeProjectDialog node={dialog.node} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === "new-file" && rootPath && (
         <NewFileDialog
-          parentPath={newFileTarget.parentPath}
+          parentPath={absPathFor(dialog.node)}
           projectLanguage={null}
           mode="raw"
-          onClose={() => setNewFileTarget(null)}
+          onClose={() => setDialog(null)}
         />
       )}
-      {newFolderTarget && (
+      {dialog?.kind === "new-folder" && rootPath && (
         <NewFolderDialog
-          parentPath={newFolderTarget.parentPath}
-          onClose={() => setNewFolderTarget(null)}
+          parentPath={absPathFor(dialog.node)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "delete" && rootPath && (
+        <DeleteConfirmDialog
+          node={dialog.node}
+          basePath={rootPath}
+          onClose={() => setDialog(null)}
         />
       )}
     </div>

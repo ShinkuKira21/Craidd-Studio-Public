@@ -1,6 +1,19 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <style>
+      /* Dark from the first byte of HTML. Prevents the white flash
+         before the app CSS / React bundle arrives. Matches
+         --color-portico-bg in src/assets/styles/index.css. */
+      html, body, #root {
+        background-color: #09090b;
+        color: #d4d4d8;
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+    </style>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

@@ -29,6 +29,21 @@ export default function AppShell() {
     () => setPrefsOpen(true),
   );
 
+  // Show the native window only after React has mounted.
+  // The window is created hidden (visible: false in tauri.conf.json).
+  // Combined with the inline dark style in index.html, this eliminates
+  // the white flash between native window creation and first paint.
+  useEffect(() => {
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("show_main_window");
+      } catch {
+        // Running in a plain browser (npm run dev) — no Tauri. Fine.
+      }
+    })();
+  }, []);
+
   // Refresh disk state for all open tabs whenever the window regains focus.
   useEffect(() => {
     const onFocus = () => {

@@ -58,10 +58,16 @@ export interface FileNode {
   children?: FileNode[];
 }
 
+export type DiskState = "inSync" | "deleted" | "newer";
+
 export interface EditorTab {
   fileId: string;
   name: string;
   language: Language | "plaintext";
   monacoLanguage: string;
   content: string;
+  originalContent: string;
+  dirty: boolean;
+  diskState: DiskState;
+  mtimeAtLastSync: number;
 }

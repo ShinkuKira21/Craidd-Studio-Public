@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useSolution } from "../../../store/solutionStore";
 import { languageMeta } from "../../../lib/languages";
-import type { Language, FileNode } from "../../../types/project";
+import type { Language, FileNode, CraiddProject } from "../../../types/project";
 import FileTree from "../FileTree";
 import SolutionBanner from "./SolutionBanner";
 import NewProjectDialog from "../../dialogs/NewProjectDialog";
 import DeclarePlaceholderDialog from "../../dialogs/DeclarePlaceholderDialog";
+import DeleteConfirmDialog from "../../dialogs/DeleteConfirmDialog";
 import NewFileDialog, { type NewFileMode } from "../../dialogs/NewFileDialog";
 import NewFolderDialog from "../../dialogs/NewFolderDialog";
 import FineTuneDialog from "../../dialogs/FineTuneDialog";
@@ -18,6 +19,8 @@ export default function SolutionExplorer() {
   const setConfigDirectory = useSolution((s) => s.setConfigDirectory);
   const removeConfig = useSolution((s) => s.removeConfig);
   const addExistingProject = useSolution((s) => s.addExistingProject);
+  const requestRename = useSolution((s) => s.requestRename);
+  const renamePath = useSolution((s) => s.renamePath);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; projectId?: string } | null>(null);
@@ -25,6 +28,13 @@ export default function SolutionExplorer() {
   const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [declareTarget, setDeclareTarget] = useState<{ path: string; name: string } | null>(null);
+  const [treeCtxMenu, setTreeCtxMenu] = useState<{
+    x: number; y: number;
+    node: FileNode;
+    basePath: string;
+    source: "solution-lang" | "solution-config";
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ node: FileNode; basePath: string } | null>(null);
   const [fineTuneTarget, setFineTuneTarget] = useState<{ projectId: string; mode: "fine-tune" | "recalibrate" } | null>(null);
   const [pendingFineTuneName, setPendingFineTuneName] = useState<string | null>(null);
 
@@ -58,6 +68,14 @@ export default function SolutionExplorer() {
       console.error("[craidd] Open Existing Project failed:", err);
       alert("Could not open project: " + String(err));
     }
+  };
+
+  const handleInlineRenameCommit = async (node: FileNode, newName: string) => {
+    if (!rootPath) throw new Error("No folder is open.");
+    const oldAbs = buildAbsFromNode(rootPath, node);
+    const parentAbs = oldAbs.slice(0, oldAbs.lastIndexOf("/"));
+    const newAbs = `${parentAbs}/${newName}`;
+    await renamePath(oldAbs, newAbs);
   };
 
   const handleSetConfigDirectory = async (projectId: string) => {
@@ -110,7 +128,7 @@ export default function SolutionExplorer() {
    * Cheap heuristic: language tree or config tree has at least one child
    * that isn't a .craidd.
    */
-  const isProjectEmpty = (project: typeof solution.projects[number]) => {
+  const isProjectEmpty = (project: CraiddProject) => {
     const hasNonCraidd = (n: FileNode | null | undefined): boolean => {
       if (!n || !n.children) return false;
       for (const c of n.children) {
@@ -206,7 +224,19 @@ export default function SolutionExplorer() {
                             <div className="px-6 py-2 text-[11px] text-red-400/80 italic">{project.treeError}</div>
                           ) : project.tree?.children && project.tree.children.length > 0 ? (
                             project.tree.children.map((child) => (
-                              <FileTree key={child.id || child.path} node={child} depth={3} basePath={project.treeBasePath ?? projectBase} />
+                              <FileTree
+                                key={child.id || child.path}
+                                node={child}
+                                depth={3}
+                                basePath={project.treeBasePath ?? projectBase}
+                                source="solution-lang"
+                                onContext={(x, y, n) => setTreeCtxMenu({
+                                  x, y, node: n,
+                                  basePath: project.treeBasePath ?? projectBase,
+                                  source: "solution-lang",
+                                })}
+                                onRenameCommit={handleInlineRenameCommit}
+                              />
                             ))
                           ) : (
                             <div className="px-6 py-2 text-[11px] text-zinc-600 italic">No matching files.</div>
@@ -225,7 +255,19 @@ export default function SolutionExplorer() {
                           </div>
                           {project.configTree?.children && project.configTree.children.length > 0 ? (
                             project.configTree.children.map((child) => (
-                              <FileTree key={child.id || child.path} node={child} depth={5} basePath={project.configBasePath ?? projectBase} />
+                              <FileTree
+                                key={child.id || child.path}
+                                node={child}
+                                depth={5}
+                                basePath={project.configBasePath ?? projectBase}
+                                source="solution-config"
+                                onContext={(x, y, n) => setTreeCtxMenu({
+                                  x, y, node: n,
+                                  basePath: project.configBasePath ?? projectBase,
+                                  source: "solution-config",
+                                })}
+                                onRenameCommit={handleInlineRenameCommit}
+                              />
                             ))
                           ) : (
                             <div className="px-6 py-1 text-[11px] text-zinc-600 italic">No config files here.</div>
@@ -251,6 +293,46 @@ export default function SolutionExplorer() {
           </div>
         )}
       </div>
+
+      {treeCtxMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setTreeCtxMenu(null)} />
+          <div
+            style={{ left: treeCtxMenu.x, top: treeCtxMenu.y }}
+            className="fixed z-50 min-w-[220px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 text-xs"
+          >
+            <button
+              onClick={() => {
+                requestRename(
+                  buildAbsFromNode(treeCtxMenu.basePath, treeCtxMenu.node),
+                  treeCtxMenu.source,
+                );
+                setTreeCtxMenu(null);
+              }}
+              className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+            >
+              Rename…
+            </button>
+            <button
+              onClick={() => {
+                setDeleteTarget({ node: treeCtxMenu.node, basePath: treeCtxMenu.basePath });
+                setTreeCtxMenu(null);
+              }}
+              className="w-full px-3 py-1 text-left text-red-300 hover:bg-red-700 hover:text-white"
+            >
+              Delete
+            </button>
+            <div className="my-1 h-px bg-zinc-800" />
+            <button
+              disabled
+              title="Available when Fine Tune becomes editable"
+              className="w-full px-3 py-1 text-left text-zinc-600 cursor-default"
+            >
+              Remove from Project
+            </button>
+          </div>
+        </>
+      )}
 
       {ctxMenu && (
         <>
@@ -373,6 +455,13 @@ export default function SolutionExplorer() {
         </>
       )}
 
+      {deleteTarget && (
+        <DeleteConfirmDialog
+          node={deleteTarget.node}
+          basePath={deleteTarget.basePath}
+          onClose={() => setDeleteTarget(null)}
+        />
+      )}
       {newOpen && (
         <NewProjectDialog
           onClose={(opts) => {
@@ -422,6 +511,13 @@ export default function SolutionExplorer() {
       })()}
     </div>
   );
+}
+
+function buildAbsFromNode(rootPath: string, node: FileNode): string {
+  const base = rootPath.replace(/\/+$/, "");
+  const rel = node.path;
+  if (!rel || rel === ".") return base;
+  return `${base}/${rel.replace(/^\/+/, "")}`;
 }
 
 function relativePath(from: string, to: string): string {

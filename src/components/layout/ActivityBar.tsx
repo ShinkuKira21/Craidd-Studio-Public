@@ -12,7 +12,6 @@ const items: { id: View; title: string; icon: string }[] = [
 export default function ActivityBar() {
   const activeView = useLayout((s) => s.activeView);
   const setActiveView = useLayout((s) => s.setActiveView);
-  const sidebarVisible = useLayout && true; // sidebar visibility is in preferences; keep click behavior simple
 
   return (
     <div className="w-11 bg-zinc-900 border-r border-zinc-800 flex flex-col items-center py-2 gap-1 shrink-0">

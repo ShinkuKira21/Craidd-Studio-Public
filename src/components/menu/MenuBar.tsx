@@ -150,7 +150,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
                     <button
                       key={i}
                       disabled={disabled}
-                      onClick={() => { if (!disabled && item.action) { item.action(); setOpenMenu(null); } }}
+                      onClick={() => { const it = item as MenuItem; if (!disabled && it.action) { it.action(); setOpenMenu(null); } }}
                       className={
                         "w-full flex items-center justify-between gap-8 px-3 py-1 text-left transition-colors " +
                         (disabled ? "text-zinc-600 cursor-default" : "text-zinc-200 hover:bg-blue-700 hover:text-white")

@@ -26,12 +26,20 @@ pub fn read_dir_tree_filtered(
     extensions: Vec<String>,
     well_known_files: Vec<String>,
     stop_at_craidd: Option<bool>,
+    shallow: Option<bool>,
 ) -> Result<FileNode, String> {
     let p = Path::new(&path);
     if !p.exists() { return Err(format!("Path does not exist: {path}")); }
     let stop = stop_at_craidd.unwrap_or(false);
-    let full = build_tree(p, p, if stop { Some(()) } else { None }).map_err(|e| e.to_string())?;
-    Ok(filter_tree(full, &extensions, &well_known_files).unwrap_or(FileNode {
+    let shal = shallow.unwrap_or(false);
+
+    let full = if shal {
+        build_tree_shallow(p).map_err(|e| e.to_string())?
+    } else {
+        build_tree(p, p, if stop { Some(()) } else { None }).map_err(|e| e.to_string())?
+    };
+
+    Ok(filter_tree(full, &extensions, &well_known_files, shal).unwrap_or(FileNode {
         id: ".".into(),
         name: p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| ".".into()),
         path: ".".into(),
@@ -40,13 +48,53 @@ pub fn read_dir_tree_filtered(
     }))
 }
 
+/// Read only the immediate children of a directory. No recursion.
+fn build_tree_shallow(root: &Path) -> std::io::Result<FileNode> {
+    let name = root.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".into());
+    let mut children: Vec<FileNode> = vec![];
+    for entry in fs::read_dir(root)?.flatten() {
+        let p = entry.path();
+        let fname = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if fname.starts_with('.') { continue; }
+        if let Ok(md) = fs::symlink_metadata(&p) {
+            if md.file_type().is_symlink() { continue; }
+        }
+        // Shallow: files only. Folders are skipped entirely.
+        if !p.is_file() { continue; }
+        children.push(FileNode {
+            id: fname.clone(),
+            name: fname.clone(),
+            path: fname,
+            kind: "file".to_string(),
+            children: None,
+        });
+    }
+    children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(FileNode {
+        id: ".".into(),
+        name,
+        path: ".".into(),
+        kind: "folder".to_string(),
+        children: Some(children),
+    })
+}
+
 /// Create a new file. Refuses if the file already exists.
 /// Creates parent directories if needed.
 #[tauri::command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
     let p = Path::new(&path);
+    if p.is_dir() {
+        return Err(format!(
+            "A folder named '{}' already exists here. A file and a folder cannot share a name in the same location.",
+            p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.clone())
+        ));
+    }
     if p.exists() {
-        return Err(format!("File already exists: {path}"));
+        return Err(format!("A file named '{}' already exists here.",
+            p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.clone())));
     }
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent)
@@ -61,14 +109,22 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
 #[tauri::command]
 pub fn create_folder(path: String) -> Result<(), String> {
     let p = Path::new(&path);
-    if p.exists() {
-        return Err(format!("Folder already exists: {path}"));
+    if p.is_file() {
+        return Err(format!(
+            "A file named '{}' already exists here. A folder and a file cannot share a name in the same location.",
+            p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.clone())
+        ));
+    }
+    if p.is_dir() {
+        return Err(format!("A folder named '{}' already exists here.",
+            p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.clone())));
     }
     fs::create_dir_all(p)
         .map_err(|e| format!("create_folder({path}) failed: {e}"))
 }
 
-fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String]) -> Option<FileNode> {
+
+fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String], shallow: bool) -> Option<FileNode> {
     match node.kind.as_str() {
         "file" => {
             let lower = node.name.to_lowercase();
@@ -78,8 +134,19 @@ fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String]) -> Option<
             if ext_ok || wnf_ok { Some(node) } else { None }
         }
         _ => {
+            // In shallow mode, folders do not appear in the result at all.
+            if shallow {
+                let files = node.children.unwrap_or_default().into_iter()
+                    .filter_map(|c| filter_tree(c, extensions, wnf, shallow))
+                    .collect::<Vec<_>>();
+                if files.is_empty() { return None; }
+                return Some(FileNode {
+                    id: node.id, name: node.name, path: node.path, kind: node.kind,
+                    children: Some(files),
+                });
+            }
             let children = node.children.unwrap_or_default().into_iter()
-                .filter_map(|c| filter_tree(c, extensions, wnf))
+                .filter_map(|c| filter_tree(c, extensions, wnf, shallow))
                 .collect::<Vec<_>>();
             if children.is_empty() { None }
             else {
@@ -180,4 +247,40 @@ pub fn overwrite_file(path: String, content: String) -> Result<(), String> {
             .map_err(|e| format!("Could not create parent directory for {path}: {e}"))?;
     }
     fs::write(p, content).map_err(|e| format!("overwrite_file({path}) failed: {e}"))
+}
+
+/// Delete a file or folder. For folders, `recursive` must be true.
+#[tauri::command]
+pub fn delete_path(path: String, recursive: bool) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err(format!("Path does not exist: {path}"));
+    }
+    if p.is_dir() {
+        if recursive {
+            fs::remove_dir_all(p).map_err(|e| format!("delete_path({path}) failed: {e}"))
+        } else {
+            fs::remove_dir(p).map_err(|e| format!("delete_path({path}) failed: {e}"))
+        }
+    } else {
+        fs::remove_file(p).map_err(|e| format!("delete_path({path}) failed: {e}"))
+    }
+}
+
+/// Rename or move a file or folder. Refuses if the destination exists.
+#[tauri::command]
+pub fn rename_path(from: String, to: String) -> Result<(), String> {
+    let src = Path::new(&from);
+    let dst = Path::new(&to);
+    if !src.exists() {
+        return Err(format!("Path does not exist: {from}"));
+    }
+    if dst.exists() {
+        return Err(format!("Destination already exists: {to}"));
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create parent directory for {to}: {e}"))?;
+    }
+    fs::rename(src, dst).map_err(|e| format!("rename_path({from} -> {to}) failed: {e}"))
 }

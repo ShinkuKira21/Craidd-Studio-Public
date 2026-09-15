@@ -15,6 +15,14 @@ export interface AncestorInfo {
   solutionName: string;
 }
 
+export type TreeSource = "discovery" | "solution-lang" | "solution-config";
+
+export interface RenameRequest {
+  path: string;
+  source: TreeSource;
+  tick: number;
+}
+
 export type OpenResult =
   | { status: "loaded" }
   | { status: "no-solution" }
@@ -65,11 +73,19 @@ interface SolutionState {
   refreshProject: (projectId: string) => Promise<void>;
   heal: () => Promise<number>;
 
+  renamePath: (oldPath: string, newPath: string) => Promise<void>;
+  deletePath: (path: string, recursive: boolean) => Promise<void>;
+
   openFile: (absolutePath: string, fileName: string) => Promise<void>;
   closeTab: (fileId: string) => void;
   setActiveFile: (fileId: string) => void;
 
   updateTabContent: (fileId: string, content: string) => void;
+  renamingRequest: RenameRequest | null;
+  requestRename: (path: string, source: TreeSource) => void;
+  clearRenameRequest: () => void;
+  focusedTreeTarget: { path: string; source: TreeSource } | null;
+  setFocusedTreeTarget: (t: { path: string; source: TreeSource } | null) => void;
   pendingSave: { fileId: string; kind: "deleted" | "newer" } | null;
   setPendingSave: (v: { fileId: string; kind: "deleted" | "newer" } | null) => void;
   reloadTabFromDisk: (fileId: string) => Promise<void>;
@@ -110,7 +126,8 @@ async function readTreeFor(
   absolutePath: string,
   extensions: string[],
   wellKnownFiles: string[],
-  stopAtCraidd: boolean
+  stopAtCraidd: boolean,
+  shallow = false,
 ): Promise<{ tree: FileNode | null; error: string | null }> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -119,6 +136,7 @@ async function readTreeFor(
       extensions,
       wellKnownFiles,
       stopAtCraidd,
+      shallow,
     });
     return { tree, error: null };
   } catch (err) {
@@ -167,7 +185,7 @@ async function populateTrees(
       const resolved = resolveRelPath(folderBase, project.configDirectory);
       configFolder = isInside(solutionRoot, resolved) ? resolved : folderBase;
     }
-    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], false);
+    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], false, true);
     next.configTree = tree;
     next.configTreeError = error;
     next.configBasePath = configFolder;
@@ -200,8 +218,14 @@ export const useSolution = create<SolutionState>((set, get) => ({
   pendingPath: null,
   bannerAncestor: null,
   pendingSave: null,
+  renamingRequest: null,
+  focusedTreeTarget: null,
 
   setPendingSave: (v) => set({ pendingSave: v }),
+
+  requestRename: (path, source) => set({ renamingRequest: { path, source, tick: Date.now() } }),
+  clearRenameRequest: () => set({ renamingRequest: null }),
+  setFocusedTreeTarget: (t) => set({ focusedTreeTarget: t }),
 
   reloadTabFromDisk: async (fileId) => {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -854,6 +878,53 @@ export const useSolution = create<SolutionState>((set, get) => ({
     return additions.length;
   },
 
+  renamePath: async (oldPath, newPath) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("rename_path", { from: oldPath, to: newPath });
+
+    // Update any open tab that pointed at the old path.
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.fileId !== oldPath) return t;
+        const name = newPath.split(/[\\/]/).pop() ?? t.name;
+        const language = languageFromFilename(name);
+        return { ...t, fileId: newPath, name, language };
+      }),
+      activeFileId: s.activeFileId === oldPath ? newPath : s.activeFileId,
+    }));
+
+    await get().refreshDiscovery();
+    const state = get();
+    if (state.solution) {
+      const solution = state.solution;
+      const refreshed: CraiddProject[] = [];
+      for (const pr of solution.projects) {
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+      }
+      set({ solution: { ...solution, projects: refreshed } });
+    }
+  },
+
+  deletePath: async (path, recursive) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("delete_path", { path, recursive });
+
+    // Don't auto-close tabs; let them turn red on next disk refresh.
+    // But do refresh immediately so the user sees the change.
+    await get().refreshDiskStates();
+
+    await get().refreshDiscovery();
+    const state = get();
+    if (state.solution) {
+      const solution = state.solution;
+      const refreshed: CraiddProject[] = [];
+      for (const pr of solution.projects) {
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+      }
+      set({ solution: { ...solution, projects: refreshed } });
+    }
+  },
+
   openFile: async (absolutePath, fileName) => {
     const state = get();
     if (state.tabs.some((t) => t.fileId === absolutePath)) {
@@ -865,7 +936,17 @@ export const useSolution = create<SolutionState>((set, get) => ({
       const content = await invoke<string>("read_file", { path: absolutePath });
       const language = languageFromFilename(fileName);
       const monacoLanguage = monacoLanguageForFilename(fileName);
-      const tab: EditorTab = { fileId: absolutePath, name: fileName, language, monacoLanguage, content };
+      const tab: EditorTab = {
+        fileId: absolutePath,
+        name: fileName,
+        language,
+        monacoLanguage,
+        content,
+        originalContent: content,
+        dirty: false,
+        diskState: "inSync",
+        mtimeAtLastSync: 0,
+      };
       set({ tabs: [...state.tabs, tab], activeFileId: absolutePath });
     } catch (err) {
       const msg = `Could not open ${absolutePath}: ${String(err)}`;

@@ -48,6 +48,18 @@ export function useKeyboardShortcuts(
         return;
       }
 
+      // ── Rename (F2) ─────────────────────────────────────
+      // Fires the same event path as right-click → Rename. The
+      // focused tree item handler lives in the sidebar.
+      if (e.key === "F2") {
+        e.preventDefault();
+        const s = useSolution.getState();
+        if (s.focusedTreeTarget) {
+          s.requestRename(s.focusedTreeTarget.path, s.focusedTreeTarget.source);
+        }
+        return;
+      }
+
       // ── Preferences ──────────────────────────────────────
       if (mod && e.key === ",") {
         e.preventDefault();
