@@ -68,6 +68,16 @@ interface SolutionState {
   openFile: (absolutePath: string, fileName: string) => Promise<void>;
   closeTab: (fileId: string) => void;
   setActiveFile: (fileId: string) => void;
+
+  updateTabContent: (fileId: string, content: string) => void;
+  pendingSave: { fileId: string; kind: "deleted" | "newer" } | null;
+  setPendingSave: (v: { fileId: string; kind: "deleted" | "newer" } | null) => void;
+  reloadTabFromDisk: (fileId: string) => Promise<void>;
+  saveFile: (fileId: string, force?: boolean) => Promise<"saved" | "conflict" | "error">;
+  saveFileAs: (fileId: string, newPath: string) => Promise<void>;
+  refreshDiskStates: () => Promise<void>;
+  refreshDiskStateFor: (fileId: string) => Promise<void>;
+  discardTab: (fileId: string) => void;
 }
 
 const log = (...args: unknown[]) => console.log("[craidd]", ...args);
@@ -128,8 +138,10 @@ async function populateTrees(
   solutionRoot: string,
   project: CraiddProject
 ): Promise<CraiddProject> {
-  if (project.missing) return project;
-  const next = { ...project };
+  if (project.missing) {
+    return { ...project, treeBasePath: undefined, configBasePath: undefined };
+  }
+  const next: CraiddProject = { ...project };
 
   if (project.language && project.language !== "config") {
     const exts = projectExtensions(project.language);
@@ -138,8 +150,11 @@ async function populateTrees(
     const { tree, error } = await readTreeFor(folder, exts, wnf, true);
     next.tree = tree;
     next.treeError = error;
+    next.treeBasePath = folder;
+    log("populateTrees: language tree", { project: project.path, folder });
   } else {
     next.tree = null;
+    next.treeBasePath = undefined;
   }
 
   if (project.configEnabled) {
@@ -149,16 +164,22 @@ async function populateTrees(
     if (!project.configDirectory || project.configDirectory === ".") {
       configFolder = folderBase;
     } else {
-      configFolder = resolveRelPath(folderBase, project.configDirectory);
-      if (!isInside(solutionRoot, configFolder)) {
-        configFolder = folderBase;
-      }
+      const resolved = resolveRelPath(folderBase, project.configDirectory);
+      configFolder = isInside(solutionRoot, resolved) ? resolved : folderBase;
     }
-    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], true);
+    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], false);
     next.configTree = tree;
     next.configTreeError = error;
+    next.configBasePath = configFolder;
+    log("populateTrees: config tree", {
+      project: project.path,
+      folderBase,
+      configDirectory: project.configDirectory,
+      configFolder,
+    });
   } else {
     next.configTree = null;
+    next.configBasePath = undefined;
   }
 
   return next;
@@ -178,6 +199,29 @@ export const useSolution = create<SolutionState>((set, get) => ({
   pendingAncestor: null,
   pendingPath: null,
   bannerAncestor: null,
+  pendingSave: null,
+
+  setPendingSave: (v) => set({ pendingSave: v }),
+
+  reloadTabFromDisk: async (fileId) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      const content = await invoke<string>("read_file", { path: fileId });
+      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+        "stat_files", { paths: [fileId] }
+      );
+      const mtimeAtLastSync = stats[0]?.mtimeMs ?? 0;
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.fileId === fileId
+            ? { ...t, content, originalContent: content, dirty: false, diskState: "inSync" as const, mtimeAtLastSync }
+            : t
+        ),
+      }));
+    } catch (err) {
+      logErr("reloadTabFromDisk failed:", err);
+    }
+  },
 
   openFolder: async (path) => {
     log("openFolder:", path);
@@ -824,7 +868,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
       const tab: EditorTab = { fileId: absolutePath, name: fileName, language, monacoLanguage, content };
       set({ tabs: [...state.tabs, tab], activeFileId: absolutePath });
     } catch (err) {
-      logErr("read_file failed:", err);
+      const msg = `Could not open ${absolutePath}: ${String(err)}`;
+      logErr(msg);
+      set({ solutionError: msg, bannerState: "error", bannerMessage: msg });
     }
   },
 
@@ -835,7 +881,149 @@ export const useSolution = create<SolutionState>((set, get) => ({
     return { tabs, activeFileId };
   }),
 
-  setActiveFile: (fileId) => set({ activeFileId: fileId }),
+  setActiveFile: (fileId) => {
+    set({ activeFileId: fileId });
+    // Fire-and-forget disk refresh for the newly focused tab.
+    void get().refreshDiskStateFor(fileId);
+  },
+
+  updateTabContent: (fileId, content) => set((s) => ({
+    tabs: s.tabs.map((t) =>
+      t.fileId === fileId
+        ? { ...t, content, dirty: content !== t.originalContent }
+        : t
+    ),
+  })),
+
+  saveFile: async (fileId, force = false) => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.fileId === fileId);
+    if (!tab) return "error";
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    try {
+      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+        "stat_files",
+        { paths: [fileId] }
+      );
+      const cur = stats[0];
+
+      // Conflict: disk changed behind us, and the user hasn't forced.
+      if (!force && cur && cur.exists && cur.mtimeMs > tab.mtimeAtLastSync + 1) {
+        return "conflict";
+      }
+
+      await invoke("write_file_allow_overwrite", { path: fileId, content: tab.content }).catch(async () => {
+        // Fallback: the original write_file refuses when the file exists.
+        // We need an overwrite path — call fs directly.
+        const { invoke: inv } = await import("@tauri-apps/api/core");
+        await inv("overwrite_file", { path: fileId, content: tab.content });
+      });
+
+      const after = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+        "stat_files",
+        { paths: [fileId] }
+      );
+      const mtimeAtLastSync = after[0]?.mtimeMs ?? 0;
+
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.fileId === fileId
+            ? { ...t, originalContent: t.content, dirty: false, diskState: "inSync", mtimeAtLastSync }
+            : t
+        ),
+      }));
+      return "saved";
+    } catch (err) {
+      logErr("saveFile failed:", err);
+      return "error";
+    }
+  },
+
+  saveFileAs: async (oldFileId, newPath) => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.fileId === oldFileId);
+    if (!tab) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("overwrite_file", { path: newPath, content: tab.content });
+      const after = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+        "stat_files",
+        { paths: [newPath] }
+      );
+      const mtimeAtLastSync = after[0]?.mtimeMs ?? 0;
+      const fileName = newPath.split(/[\/]/).pop() ?? tab.name;
+      const language = languageFromFilename(fileName);
+
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.fileId === oldFileId
+            ? { ...t, fileId: newPath, name: fileName, language, originalContent: t.content, dirty: false, diskState: "inSync", mtimeAtLastSync }
+            : t
+        ),
+        activeFileId: s.activeFileId === oldFileId ? newPath : s.activeFileId,
+      }));
+    } catch (err) {
+      logErr("saveFileAs failed:", err);
+    }
+  },
+
+  refreshDiskStates: async () => {
+    const state = get();
+    if (state.tabs.length === 0) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      const paths = state.tabs.map((t) => t.fileId);
+      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+        "stat_files",
+        { paths }
+      );
+      const byPath = new Map(stats.map((s) => [s.path, s]));
+      set((s) => ({
+        tabs: s.tabs.map((t) => {
+          const st = byPath.get(t.fileId);
+          if (!st) return t;
+          let diskState: "inSync" | "deleted" | "newer" = "inSync";
+          if (!st.exists) diskState = "deleted";
+          else if (st.mtimeMs > t.mtimeAtLastSync + 1) diskState = "newer";
+          return t.diskState === diskState ? t : { ...t, diskState };
+        }),
+      }));
+    } catch (err) {
+      logErr("refreshDiskStates failed:", err);
+    }
+  },
+
+  refreshDiskStateFor: async (fileId) => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.fileId === fileId);
+    if (!tab) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+        "stat_files",
+        { paths: [fileId] }
+      );
+      const st = stats[0];
+      if (!st) return;
+      let diskState: "inSync" | "deleted" | "newer" = "inSync";
+      if (!st.exists) diskState = "deleted";
+      else if (st.mtimeMs > tab.mtimeAtLastSync + 1) diskState = "newer";
+      if (diskState === tab.diskState) return;
+      set((s) => ({
+        tabs: s.tabs.map((t) => (t.fileId === fileId ? { ...t, diskState } : t)),
+      }));
+    } catch (err) {
+      logErr("refreshDiskStateFor failed:", err);
+    }
+  },
+
+  discardTab: (fileId) => set((s) => {
+    const tabs = s.tabs.filter((t) => t.fileId !== fileId);
+    let activeFileId = s.activeFileId;
+    if (activeFileId === fileId) activeFileId = tabs.length > 0 ? tabs[tabs.length - 1].fileId : null;
+    return { tabs, activeFileId };
+  }),
 }));
 
 function parseCraidd(text: string): {

@@ -10,6 +10,12 @@ interface PreferencesState {
   wordWrap: boolean;
   toggleWordWrap: () => void;
 
+  tabSize: number;
+  setTabSize: (n: number) => void;
+
+  theme: "vs-dark" | "vs-light";
+  setTheme: (t: "vs-dark" | "vs-light") => void;
+
   sidebarVisible: boolean;
   toggleSidebar: () => void;
 
@@ -34,6 +40,12 @@ export const usePreferences = create<PreferencesState>((set) => ({
 
   wordWrap: false,
   toggleWordWrap: () => set((s) => ({ wordWrap: !s.wordWrap })),
+
+  tabSize: 2,
+  setTabSize: (n) => set({ tabSize: Math.max(1, Math.min(8, n)) }),
+
+  theme: "vs-dark",
+  setTheme: (t) => set({ theme: t }),
 
   sidebarVisible: true,
   toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),

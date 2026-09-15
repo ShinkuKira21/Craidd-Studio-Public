@@ -1,4 +1,0 @@
-[project]
-name = "TypeScript (Frontend)"
-language = "typescript"
-root = "."

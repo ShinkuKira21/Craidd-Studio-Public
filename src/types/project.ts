@@ -27,8 +27,10 @@ export interface CraiddProject {
   external?: boolean;             // true when path escapes the solution root
   tree?: FileNode | null;
   treeError?: string | null;
+  treeBasePath?: string;
   configTree?: FileNode | null;
   configTreeError?: string | null;
+  configBasePath?: string;
 }
 
 export interface BuildEntry {

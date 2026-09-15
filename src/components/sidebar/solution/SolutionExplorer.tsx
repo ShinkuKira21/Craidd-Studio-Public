@@ -206,7 +206,7 @@ export default function SolutionExplorer() {
                             <div className="px-6 py-2 text-[11px] text-red-400/80 italic">{project.treeError}</div>
                           ) : project.tree?.children && project.tree.children.length > 0 ? (
                             project.tree.children.map((child) => (
-                              <FileTree key={child.id || child.path} node={child} depth={3} basePath={projectBase} />
+                              <FileTree key={child.id || child.path} node={child} depth={3} basePath={project.treeBasePath ?? projectBase} />
                             ))
                           ) : (
                             <div className="px-6 py-2 text-[11px] text-zinc-600 italic">No matching files.</div>
@@ -225,7 +225,7 @@ export default function SolutionExplorer() {
                           </div>
                           {project.configTree?.children && project.configTree.children.length > 0 ? (
                             project.configTree.children.map((child) => (
-                              <FileTree key={child.id || child.path} node={child} depth={5} basePath={projectBase} />
+                              <FileTree key={child.id || child.path} node={child} depth={5} basePath={project.configBasePath ?? projectBase} />
                             ))
                           ) : (
                             <div className="px-6 py-1 text-[11px] text-zinc-600 italic">No config files here.</div>

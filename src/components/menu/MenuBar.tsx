@@ -7,7 +7,7 @@ interface MenuSeparator { separator: true; }
 type MenuEntry = MenuItem | MenuSeparator;
 interface Menu { label: string; items: MenuEntry[]; }
 
-export default function MenuBar({ openCommandPalette }: { openCommandPalette: () => void }) {
+export default function MenuBar({ openCommandPalette, openPreferences }: { openCommandPalette: () => void; openPreferences: () => void }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
@@ -72,6 +72,9 @@ export default function MenuBar({ openCommandPalette }: { openCommandPalette: ()
         { label: "Open Folder…", shortcut: "Ctrl+K Ctrl+O", action: doOpenFolder },
         { label: "Open Solution…", shortcut: "Ctrl+Shift+O", action: doOpenSolution },
         { label: "Open Recent", disabled: true },
+        { separator: true },
+        { separator: true },
+        { label: "Preferences…", shortcut: "Ctrl+,", action: openPreferences },
         { separator: true },
         { label: "Exit", shortcut: "Ctrl+Q", disabled: true },
       ],

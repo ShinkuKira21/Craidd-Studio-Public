@@ -5,9 +5,13 @@ import { usePreferences } from "../../store/preferencesStore";
 export default function CodeView() {
   const tabs = useSolution((s) => s.tabs);
   const activeFileId = useSolution((s) => s.activeFileId);
+  const updateTabContent = useSolution((s) => s.updateTabContent);
   const active = tabs.find((t) => t.fileId === activeFileId);
+
   const wordWrap = usePreferences((s) => s.wordWrap);
   const fontSize = usePreferences((s) => s.fontSize);
+  const tabSize = usePreferences((s) => s.tabSize);
+  const theme = usePreferences((s) => s.theme);
 
   if (!active) {
     return (
@@ -22,12 +26,16 @@ export default function CodeView() {
       <Editor
         height="100%"
         path={active.fileId}
-        language={active.monacoLanguage}
+        language={active.language === "plaintext" ? "plaintext" : active.language}
         value={active.content}
-        theme="vs-dark"
+        theme={theme}
+        onChange={(value) => {
+          if (typeof value === "string") updateTabContent(active.fileId, value);
+        }}
         options={{
-          readOnly: true,
+          readOnly: false,
           fontSize,
+          tabSize,
           fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
           minimap: { enabled: false },
           scrollBeyondLastLine: false,

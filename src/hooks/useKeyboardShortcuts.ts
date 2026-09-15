@@ -2,10 +2,58 @@ import { useEffect } from "react";
 import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
 
-export function useKeyboardShortcuts(openCommandPalette: () => void) {
+export function useKeyboardShortcuts(
+  openCommandPalette: () => void,
+  openPreferences: () => void,
+) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = async (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
+
+      // ── Save ─────────────────────────────────────────────
+      if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        const s = useSolution.getState();
+        if (!s.activeFileId) return;
+        const tab = s.tabs.find((t) => t.fileId === s.activeFileId);
+        if (!tab) return;
+        if (tab.diskState === "deleted") {
+          s.setPendingSave({ fileId: s.activeFileId, kind: "deleted" });
+          return;
+        }
+        if (tab.diskState === "newer") {
+          s.setPendingSave({ fileId: s.activeFileId, kind: "newer" });
+          return;
+        }
+        await s.saveFile(s.activeFileId);
+        return;
+      }
+
+      // ── Save As ──────────────────────────────────────────
+      if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        const s = useSolution.getState();
+        if (!s.activeFileId) return;
+        const tab = s.tabs.find((t) => t.fileId === s.activeFileId);
+        if (!tab) return;
+        try {
+          const { save } = await import("@tauri-apps/plugin-dialog");
+          const chosen = await save({ defaultPath: tab.fileId });
+          if (typeof chosen === "string") {
+            await s.saveFileAs(s.activeFileId, chosen);
+          }
+        } catch (err) {
+          console.error("[craidd] Save As failed:", err);
+        }
+        return;
+      }
+
+      // ── Preferences ──────────────────────────────────────
+      if (mod && e.key === ",") {
+        e.preventDefault();
+        openPreferences();
+        return;
+      }
 
       if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); usePreferences.getState().zoomIn(); return; }
       if (mod && e.key === "-") { e.preventDefault(); usePreferences.getState().zoomOut(); return; }
@@ -15,15 +63,24 @@ export function useKeyboardShortcuts(openCommandPalette: () => void) {
       if (mod && e.key.toLowerCase() === "j") { e.preventDefault(); usePreferences.getState().toggleBottomPanel(); return; }
       if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); openCommandPalette(); return; }
 
-      // Ctrl+W: close active tab
+      // Ctrl+W: close active tab (prompts if dirty via EditorTabs; here
+      // we just do a raw close, the prompt flow lives in the pane).
       if (mod && e.key.toLowerCase() === "w") {
         e.preventDefault();
         const s = useSolution.getState();
-        if (s.activeFileId) s.closeTab(s.activeFileId);
+        if (s.activeFileId) {
+          const tab = s.tabs.find((t) => t.fileId === s.activeFileId);
+          if (tab && (tab.dirty || tab.diskState === "deleted")) {
+            // Let the pane handle it — dispatch a custom event.
+            window.dispatchEvent(new CustomEvent("craidd:request-close", { detail: s.activeFileId }));
+          } else {
+            s.closeTab(s.activeFileId);
+          }
+        }
         return;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openCommandPalette]);
+  }, [openCommandPalette, openPreferences]);
 }

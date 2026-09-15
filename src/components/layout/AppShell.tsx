@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import MenuBar from "../menu/MenuBar";
 import Toolbar from "./Toolbar";
 import StatusBar from "./StatusBar";
@@ -10,14 +10,33 @@ import BottomPanel from "../panels/BottomPanel";
 import ResizeHandle from "./ResizeHandle";
 import CommandPalette from "../command-palette/CommandPalette";
 import AncestorSolutionDialog from "../dialogs/AncestorSolutionDialog";
+import PreferencesDialog from "../preferences/PreferencesDialog";
+import DeletedFileDialog from "../dialogs/DeletedFileDialog";
+import SaveConflictDialog from "../dialogs/SaveConflictDialog";
 import CriticalWorkspaceBanner from "./CriticalWorkspaceBanner";
 import { usePreferences } from "../../store/preferencesStore";
 import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
+import { useSolution } from "../../store/solutionStore";
 
 export default function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  useKeyboardShortcuts(() => setPaletteOpen(true));
+  const [prefsOpen, setPrefsOpen] = useState(false);
+  const pendingSave = useSolution((s) => s.pendingSave);
+  const setPendingSave = useSolution((s) => s.setPendingSave);
+  useKeyboardShortcuts(
+    () => setPaletteOpen(true),
+    () => setPrefsOpen(true),
+  );
+
+  // Refresh disk state for all open tabs whenever the window regains focus.
+  useEffect(() => {
+    const onFocus = () => {
+      void useSolution.getState().refreshDiskStates();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   const sidebarVisible = usePreferences((s) => s.sidebarVisible);
   const bottomPanelVisible = usePreferences((s) => s.bottomPanelVisible);
@@ -32,7 +51,7 @@ export default function AppShell() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-zinc-950 text-zinc-300 text-[13px] overflow-hidden">
-      <MenuBar openCommandPalette={() => setPaletteOpen(true)} />
+      <MenuBar openCommandPalette={() => setPaletteOpen(true)} openPreferences={() => setPrefsOpen(true)} />
       <Toolbar />
 
       <div className="flex-1 flex min-h-0">
@@ -65,6 +84,19 @@ export default function AppShell() {
       <StatusBar />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <AncestorSolutionDialog />
+      {prefsOpen && <PreferencesDialog onClose={() => setPrefsOpen(false)} />}
+      {pendingSave?.kind === "deleted" && (
+        <DeletedFileDialog
+          fileId={pendingSave.fileId}
+          onClose={() => setPendingSave(null)}
+        />
+      )}
+      {pendingSave?.kind === "newer" && (
+        <SaveConflictDialog
+          fileId={pendingSave.fileId}
+          onClose={() => setPendingSave(null)}
+        />
+      )}
       <CriticalWorkspaceBanner />
     </div>
   );

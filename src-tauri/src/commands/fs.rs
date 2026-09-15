@@ -125,3 +125,59 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>) -> std::i
     });
     Ok(FileNode { id, name, path: rel, kind: "folder".to_string(), children: Some(children) })
 }
+
+/// Return filesystem metadata for each path. Used by the frontend to
+/// detect disk changes behind open editor tabs (deleted, newer, in-sync).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStat {
+    pub path: String,
+    pub exists: bool,
+    pub mtime_ms: u64,
+    pub size: u64,
+}
+
+#[tauri::command]
+pub fn stat_files(paths: Vec<String>) -> Vec<FileStat> {
+    use std::time::UNIX_EPOCH;
+    paths
+        .into_iter()
+        .map(|path| {
+            let p = Path::new(&path);
+            match fs::metadata(p) {
+                Ok(md) => {
+                    let mtime_ms = md
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    FileStat {
+                        path,
+                        exists: true,
+                        mtime_ms,
+                        size: md.len(),
+                    }
+                }
+                Err(_) => FileStat {
+                    path,
+                    exists: false,
+                    mtime_ms: 0,
+                    size: 0,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Overwrite (or create) a file with the given content. Used for save
+/// and save-as, where the file may or may not already exist.
+#[tauri::command]
+pub fn overwrite_file(path: String, content: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create parent directory for {path}: {e}"))?;
+    }
+    fs::write(p, content).map_err(|e| format!("overwrite_file({path}) failed: {e}"))
+}

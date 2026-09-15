@@ -1,7 +1,0 @@
-[solution]
-name = "Craidd-Studio"
-version = "1.0"
-
-projects = [
-  "src-tauri/src-tauri.craidd",
-]
