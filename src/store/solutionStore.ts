@@ -33,6 +33,7 @@ type BannerState = "none" | "no-solution" | "inside-parent" | "error";
 
 interface SolutionState {
   rootPath: string | null;
+  clnPath: string | null;
   solution: CraiddSolution | null;
   isSolutionLoading: boolean;
   solutionError: string | null;
@@ -74,6 +75,8 @@ interface SolutionState {
   heal: () => Promise<number>;
 
   renamePath: (oldPath: string, newPath: string) => Promise<void>;
+  removeProject: (projectId: string) => Promise<void>;
+  deleteProject: (projectId: string, deleteFolder: boolean) => Promise<void>;
   deletePath: (path: string, recursive: boolean) => Promise<void>;
 
   openFile: (absolutePath: string, fileName: string) => Promise<void>;
@@ -152,14 +155,66 @@ function projectFolderAbs(solutionRoot: string, project: CraiddProject): string 
   return relRoot ? `${folderAbs}/${relRoot}` : folderAbs;
 }
 
+/**
+ * Batch-stat every project's .craidd in one IPC round-trip.
+ * Returns a map keyed by the project's path (as stored in the .cln).
+ */
+async function statCraidds(
+  solutionRoot: string,
+  projects: CraiddProject[]
+): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>();
+  if (projects.length === 0) return map;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const abs = projects.map((p) => resolveRelPath(solutionRoot, p.path));
+    const stats = await invoke<{ path: string; exists: boolean }[]>("stat_files", {
+      paths: abs,
+    });
+    for (let i = 0; i < projects.length; i++) {
+      map.set(projects[i].path, stats[i]?.exists ?? false);
+    }
+  } catch (err) {
+    // On stat failure, treat every project as existing (fail-open) so a
+    // transient IPC error doesn't blank the whole explorer. The per-project
+    // tree walk will surface real errors.
+    logErr("statCraidds failed:", err);
+    for (const p of projects) map.set(p.path, true);
+  }
+  return map;
+}
+
 async function populateTrees(
   solutionRoot: string,
-  project: CraiddProject
+  project: CraiddProject,
+  craiddExists?: Map<string, boolean>
 ): Promise<CraiddProject> {
-  if (project.missing) {
-    return { ...project, treeBasePath: undefined, configBasePath: undefined };
+  // Verify the .craidd still exists on disk. This is what makes a project
+  // go stale the moment its marker is deleted (from File Discovery, from a
+  // terminal, by another tool). It also handles the recovery case: a
+  // project that was missing and becomes present flips back to declared.
+  let exists: boolean;
+  if (craiddExists && craiddExists.has(project.path)) {
+    exists = craiddExists.get(project.path)!;
+  } else {
+    // Fallback path (no batch provided): a single stat for this project.
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const abs = resolveRelPath(solutionRoot, project.path);
+      const stats = await invoke<{ path: string; exists: boolean }[]>("stat_files", {
+        paths: [abs],
+      });
+      exists = stats[0]?.exists ?? false;
+    } catch {
+      exists = false;
+    }
   }
-  const next: CraiddProject = { ...project };
+
+  if (!exists) {
+    return { ...project, missing: true, tree: null, configTree: null };
+  }
+
+  const next: CraiddProject = { ...project, missing: false };
 
   if (project.language && project.language !== "config") {
     const exts = projectExtensions(project.language);
@@ -205,6 +260,7 @@ async function populateTrees(
 
 export const useSolution = create<SolutionState>((set, get) => ({
   rootPath: null,
+  clnPath: null,
   solution: null,
   isSolutionLoading: false,
   solutionError: null,
@@ -287,9 +343,14 @@ export const useSolution = create<SolutionState>((set, get) => ({
 
     if (solution) {
       const withTrees: CraiddProject[] = [];
-      for (const p of solution.projects) withTrees.push(await populateTrees(path, p));
+      const statMap = await statCraidds(path, solution.projects);
+      for (const p of solution.projects) withTrees.push(await populateTrees(path, p, statMap));
+      // Best-effort clnPath: {solutionName}.cln inside the root.
+      // (load_solution picked whichever .cln it found; we mirror that here.)
+      const foundCln = `${path.replace(/\/+$/, "")}/${solution.name}.cln`;
       set({
         solution: { ...solution, projects: withTrees },
+        clnPath: foundCln,
         isSolutionLoading: false,
         tabs: [],
         activeFileId: null,
@@ -364,6 +425,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
       isSolutionLoading: true,
       solutionError: null,
       rootPath: root,
+      clnPath,
       bannerState: "none",
       bannerMessage: null,
       rootMissing: false,
@@ -387,7 +449,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
       log("openSolution loaded:", solution.projects.length, "projects");
 
       const withTrees: CraiddProject[] = [];
-      for (const p of solution.projects) withTrees.push(await populateTrees(root, p));
+      const statMap = await statCraidds(root, solution.projects);
+      for (const p of solution.projects) withTrees.push(await populateTrees(root, p, statMap));
 
       set({
         solution: { ...solution, projects: withTrees },
@@ -555,6 +618,14 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const state = get();
     if (!state.rootPath) throw new Error("No folder is open.");
 
+    // Refuse duplicate project names within one solution.
+    const existingNames = (state.solution?.projects ?? []).map((p) => p.name);
+    if (existingNames.includes(name) && !state.solution?.projects.some(
+      (p) => p.name === name && p.folder === folder && p.language === language
+    )) {
+      throw new Error(`A project named "${name}" already exists in this solution.`);
+    }
+
     const existing = state.solution;
     if (language === "config" && existing) {
       const owner = existing.projects.find(
@@ -569,7 +640,24 @@ export const useSolution = create<SolutionState>((set, get) => ({
 
     const id = name.replace(/[^A-Za-z0-9_]/g, "") || folder.split("/").filter(Boolean).pop() || "project";
     const folderName = folder.split("/").filter(Boolean).pop() || "project";
-    const craiddRelPath = folder === "." || folder === "" ? `${folderName}.craidd` : `${folder}/${folderName}.craidd`;
+
+    // Ask Rust which filename this project should take — canonical
+    // {folder}.craidd if the folder has no .craidd, else {folder}.{lang}.craidd.
+    const folderAbs = folder === "." || folder === ""
+      ? state.rootPath
+      : `${state.rootPath.replace(/\/+$/, "")}/${folder.replace(/^\/+/, "")}`;
+    let craiddFileName: string;
+    try {
+      craiddFileName = await invoke<string>("plan_craidd_filename", {
+        folder: folderAbs,
+        language,
+      });
+    } catch {
+      craiddFileName = `${folderName}.craidd`;
+    }
+    const craiddRelPath = folder === "." || folder === ""
+      ? craiddFileName
+      : `${folder}/${craiddFileName}`;
 
     const project: CraiddProject = {
       id, name, language, root: ".", kind: kind ?? "application", path: craiddRelPath, folder,
@@ -682,8 +770,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (state.solution) {
       const solution = state.solution;
       const refreshed: CraiddProject[] = [];
+      const statMap = await statCraidds(state.rootPath ?? "", solution.projects);
       for (const pr of solution.projects) {
-        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr, statMap));
       }
       set({ solution: { ...solution, projects: refreshed } });
     }
@@ -704,8 +793,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (state.solution) {
       const solution = state.solution;
       const refreshed: CraiddProject[] = [];
+      const statMap = await statCraidds(state.rootPath ?? "", solution.projects);
       for (const pr of solution.projects) {
-        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr, statMap));
       }
       set({ solution: { ...solution, projects: refreshed } });
     }
@@ -872,10 +962,63 @@ export const useSolution = create<SolutionState>((set, get) => ({
     };
     await invoke("save_solution", { root: state.rootPath, solution: merged });
 
-    const withTrees: CraiddProject[] = [...state.solution.projects];
-    for (const a of additions) withTrees.push(await populateTrees(state.rootPath, a));
+    const allProjects = [...state.solution.projects, ...additions];
+    const statMap = await statCraidds(state.rootPath, allProjects);
+    const withTrees: CraiddProject[] = [];
+    for (const p of state.solution.projects) withTrees.push(await populateTrees(state.rootPath, p, statMap));
+    for (const a of additions) withTrees.push(await populateTrees(state.rootPath, a, statMap));
     set({ solution: { ...merged, projects: withTrees } });
     return additions.length;
+  },
+
+  removeProject: async (projectId) => {
+    const state = get();
+    if (!state.rootPath || !state.solution) return;
+    const project = state.solution.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("remove_project", {
+        root: state.rootPath,
+        craiddPath: project.path,
+      });
+    } catch (err) {
+      const msg = `Could not remove project: ${String(err)}`;
+      logErr(msg);
+      set({ solutionError: msg, bannerState: "error", bannerMessage: msg });
+      return;
+    }
+    // Reload the solution from disk so the .cln edit is reflected.
+    if (state.clnPath) {
+      await get().openSolution(state.clnPath).catch((e) => logErr("reload after removeProject failed:", e));
+    } else if (state.rootPath) {
+      await get().openFolder(state.rootPath).catch((e) => logErr("reload after removeProject failed:", e));
+    }
+  },
+
+  deleteProject: async (projectId, deleteFolder) => {
+    const state = get();
+    if (!state.rootPath || !state.solution) return;
+    const project = state.solution.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("delete_project", {
+        root: state.rootPath,
+        craiddPath: project.path,
+        deleteFolder,
+      });
+    } catch (err) {
+      const msg = `Could not delete project: ${String(err)}`;
+      logErr(msg);
+      set({ solutionError: msg, bannerState: "error", bannerMessage: msg });
+      return;
+    }
+    if (state.clnPath) {
+      await get().openSolution(state.clnPath).catch((e) => logErr("reload after deleteProject failed:", e));
+    } else if (state.rootPath) {
+      await get().openFolder(state.rootPath).catch((e) => logErr("reload after deleteProject failed:", e));
+    }
   },
 
   renamePath: async (oldPath, newPath) => {
@@ -898,8 +1041,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (state.solution) {
       const solution = state.solution;
       const refreshed: CraiddProject[] = [];
+      const statMap = await statCraidds(state.rootPath ?? "", solution.projects);
       for (const pr of solution.projects) {
-        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr, statMap));
       }
       set({ solution: { ...solution, projects: refreshed } });
     }
@@ -918,8 +1062,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (state.solution) {
       const solution = state.solution;
       const refreshed: CraiddProject[] = [];
+      const statMap = await statCraidds(state.rootPath ?? "", solution.projects);
       for (const pr of solution.projects) {
-        refreshed.push(await populateTrees(state.rootPath ?? "", pr));
+        refreshed.push(await populateTrees(state.rootPath ?? "", pr, statMap));
       }
       set({ solution: { ...solution, projects: refreshed } });
     }

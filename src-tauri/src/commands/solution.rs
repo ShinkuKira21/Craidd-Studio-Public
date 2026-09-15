@@ -94,10 +94,20 @@ fn walk_for_craidd(root: &Path, current: &Path, out: &mut Vec<String>, depth: u3
     let entries = match fs::read_dir(current) { Ok(e) => e, Err(_) => return Ok(()) };
     let folder_name = current.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     if !folder_name.is_empty() {
-        let candidate = current.join(format!("{}.craidd", folder_name));
-        if candidate.is_file() {
-            let rel = candidate.strip_prefix(root).unwrap_or(&candidate).to_string_lossy().replace('\\', "/");
-            out.push(rel);
+        // Match {folder}.craidd (canonical) and {folder}.*.craidd (suffixed).
+        let prefix = format!("{folder_name}.");
+        if let Ok(entries) = fs::read_dir(current) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_file() { continue; }
+                let Some(name) = p.file_name().map(|s| s.to_string_lossy().to_string()) else { continue; };
+                if name == format!("{folder_name}.craidd")
+                    || (name.starts_with(&prefix) && name.ends_with(".craidd"))
+                {
+                    let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                    out.push(rel);
+                }
+            }
         }
     }
     for entry in entries.flatten() {
@@ -312,16 +322,42 @@ pub fn save_project(root: String, project: CraiddProject) -> Result<(), String> 
     let root_path = Path::new(&root);
     if !root_path.is_dir() { return Err(format!("Root is not a directory: {root}")); }
 
-    let folder = if project.folder.is_empty() || project.folder == "." {
-        root_path.to_path_buf()
+    // Destination is derived from `project.path` when possible:
+    //   path = "src-tauri/src-tauri.craidd"    → folder + filename both derived
+    //   path = "src-tauri/src-tauri.rs.craidd" → suffix preserved
+    // Fallback: the legacy behaviour — folder from `project.folder`,
+    // filename `{folder_name}.craidd`.
+    //
+    // This is what makes `{folder}.{lang}.craidd` actually work when a folder
+    // hosts two projects. Without this, the second save overwrites the first.
+    let (folder, file_path) = if !project.path.is_empty()
+        && (project.path.ends_with(".craidd") || project.path.contains(".craidd"))
+    {
+        let path_abs = if Path::new(&project.path).is_absolute() {
+            PathBuf::from(&project.path)
+        } else {
+            root_path.join(&project.path)
+        };
+        let f = path_abs
+            .parent()
+            .ok_or_else(|| format!("Cannot derive folder from path: {}", project.path))?
+            .to_path_buf();
+        (f, path_abs)
     } else {
-        root_path.join(&project.folder)
+        let f = if project.folder.is_empty() || project.folder == "." {
+            root_path.to_path_buf()
+        } else {
+            root_path.join(&project.folder)
+        };
+        let folder_name = f
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| project.name.clone());
+        let fp = f.join(format!("{folder_name}.craidd"));
+        (f, fp)
     };
-    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
 
-    let folder_name = folder.file_name().map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| project.name.clone());
-    let file_path = folder.join(format!("{folder_name}.craidd"));
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
 
     let existing = fs::read_to_string(&file_path).ok();
     let existing_parsed: Option<toml::Value> = existing.as_deref().and_then(|t| t.parse().ok());
@@ -452,6 +488,196 @@ pub fn create_project_folder(root: String, subfolder: String) -> Result<String, 
     Ok(folder.to_string_lossy().to_string())
 }
 
+/// Return the canonical .craidd filename for a project in `folder`,
+/// considering existing .craidd files (canonical name first, then a
+/// language suffix for additional projects).
+///
+///   no .craidd yet          → {folder}.craidd
+///   {folder}.craidd exists  → {folder}.{language}.craidd
+///   that also exists        → Err
+#[tauri::command]
+pub fn plan_craidd_filename(folder: String, language: String) -> Result<String, String> {
+    let dir = Path::new(&folder);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {folder}"));
+    }
+    let folder_name = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| "Cannot derive folder name".to_string())?;
+
+    let canonical = format!("{folder_name}.craidd");
+    if !dir.join(&canonical).exists() {
+        return Ok(canonical);
+    }
+
+    let suffixed = format!("{folder_name}.{language}.craidd");
+    if dir.join(&suffixed).exists() {
+        return Err(format!(
+            "Both {canonical} and {suffixed} already exist in this folder."
+        ));
+    }
+    Ok(suffixed)
+}
+
+/// Return the canonical .craidd filename for a project in `folder`,
+/// considering existing .craidd files (canonical name first, then a
+/// language suffix for additional projects).
+///
+
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+// ── PROJECT LIFECYCLE ─────────────────────────────────────
+
+/// Remove a project's entry from the .cln. Does not touch disk.
+#[tauri::command]
+pub fn remove_project(root: String, craidd_path: String) -> Result<(), String> {
+    let root_path = Path::new(&root);
+    if !root_path.is_dir() {
+        return Err(format!("Root is not a directory: {root}"));
+    }
+    let Some(cln_path) = find_cln_in(root_path)? else {
+        return Err(format!("No .cln found in {root}"));
+    };
+    edit_cln_remove_entry(&cln_path, &craidd_path)
+}
+
+/// Delete the .craidd (and optionally the folder), and remove its
+/// entry from the .cln. Refuses if the folder is the solution root
+/// or if the project is external to the solution.
+#[tauri::command]
+pub fn delete_project(
+    root: String,
+    craidd_path: String,
+    delete_folder: bool,
+) -> Result<(), String> {
+    let root_path = Path::new(&root);
+    if !root_path.is_dir() {
+        return Err(format!("Root is not a directory: {root}"));
+    }
+
+    // Absolute path to the .craidd
+    let craidd_abs = if Path::new(&craidd_path).is_absolute() {
+        PathBuf::from(&craidd_path)
+    } else {
+        root_path.join(&craidd_path)
+    };
+
+    if !craidd_abs.exists() {
+        return Err(format!(".craidd does not exist: {}", craidd_abs.display()));
+    }
+
+    // The folder the .craidd sits in.
+    let folder = craidd_abs
+        .parent()
+        .ok_or_else(|| format!("Cannot derive folder for {}", craidd_abs.display()))?;
+
+    // Safety: refuse to delete the solution root itself.
+    let root_canon = root_path.canonicalize().map_err(|e| e.to_string())?;
+    let folder_canon = folder.canonicalize().map_err(|e| e.to_string())?;
+    if folder_canon == root_canon {
+        return Err("This project is at the solution root. Use File Discovery to manage it.".into());
+    }
+
+    // Safety: refuse if the folder escapes the solution root.
+    if !folder_canon.starts_with(&root_canon) {
+        return Err(
+            "External projects can be removed from the solution, but not deleted by it.".into(),
+        );
+    }
+
+    // Find the .cln now (before deleting anything) so a failure here
+    // doesn't leave the folder gone but the entry still declared.
+    let Some(cln_path) = find_cln_in(root_path)? else {
+        return Err(format!("No .cln found in {root}"));
+    };
+
+    // Always delete the .craidd first.
+    if let Err(e) = fs::remove_file(&craidd_abs) {
+        return Err(format!("Could not delete {}: {e}", craidd_abs.display()));
+    }
+
+    // Optionally delete the folder — but only if this folder holds
+    // exactly one .craidd. Sibling projects must not be collateral.
+    if delete_folder {
+        let sibling_count = fs::read_dir(folder)
+            .ok()
+            .map(|entries| {
+                entries.flatten().filter(|e| {
+                    e.file_name().to_string_lossy().ends_with(".craidd")
+                }).count()
+            })
+            .unwrap_or(0);
+        if sibling_count > 1 {
+            return Err(
+                "This folder holds other projects. Delete its folders from File Discovery."
+                    .into(),
+            );
+        }
+        if let Err(e) = fs::remove_dir_all(folder) {
+            return Err(format!("Could not delete folder {}: {e}", folder.display()));
+        }
+    }
+
+    // Finally, remove the entry from the .cln.
+    edit_cln_remove_entry(&cln_path, &craidd_path)
+}
+
+/// Remove one project entry from a .cln. Rewrites the [solution] table
+/// with the given path removed from `projects = [ ... ]`.
+fn edit_cln_remove_entry(cln_path: &Path, craidd_path: &str) -> Result<(), String> {
+    let text = fs::read_to_string(cln_path).map_err(|e| e.to_string())?;
+    let mut parsed: toml::Value = text.parse().map_err(|e| format!("parse .cln: {e}"))?;
+
+    let normalized_target = craidd_path.replace('\\', "/");
+
+    // Read existing projects list.
+    let existing: Vec<String> = parsed
+        .get("solution")
+        .and_then(|s| s.get("projects"))
+        .or_else(|| parsed.get("projects"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let filtered: Vec<String> = existing
+        .into_iter()
+        .filter(|p| p.replace('\\', "/") != normalized_target)
+        .collect();
+
+    // Rewrite the [solution] table in place.
+    let solution_tbl = parsed
+        .as_table_mut()
+        .and_then(|t| t.get_mut("solution"))
+        .and_then(|s| s.as_table_mut());
+
+    match solution_tbl {
+        Some(s) => {
+            let arr: Vec<toml::Value> = filtered
+                .iter()
+                .map(|p| toml::Value::String(p.clone()))
+                .collect();
+            s.insert("projects".into(), toml::Value::Array(arr));
+        }
+        None => {
+            // Fallback: top-level projects array (older file shape).
+            if let Some(t) = parsed.as_table_mut() {
+                let arr: Vec<toml::Value> = filtered
+                    .iter()
+                    .map(|p| toml::Value::String(p.clone()))
+                    .collect();
+                t.insert("projects".into(), toml::Value::Array(arr));
+            }
+        }
+    }
+
+    let out = toml::to_string(&parsed).map_err(|e| e.to_string())?;
+    fs::write(cln_path, out).map_err(|e| e.to_string())?;
+    Ok(())
 }

@@ -416,6 +416,29 @@ document exists to prevent.
 
 ---
 
+### The marker earns its keep today
+
+`.craidd` is a tool, not a tenet. It exists today because it makes three
+real things work:
+
+1. **A project travels with its folder.** Copy `src-tauri/` out of a
+   solution and it still knows it's Rust.
+2. **A solution can reference a project by path.** The project doesn't
+   need to know about the solution.
+3. **A user can save a project folder and drop it into a new solution.**
+
+None of those are guaranteed by folder names or file extensions alone.
+So the marker earns its keep — now.
+
+When inference is good enough — when "Make This a Project" can read
+`Cargo.toml`, `package.json`, `CMakeLists.txt`, `*.csproj`,
+`pyproject.toml` and *know* with confidence what a folder is, and when a
+folder can carry its project identity in some other way that travels —
+the marker becomes opt-in. Some users will want it (portability,
+self-describing folders). Some won't.
+
+Until then, we make the marker model correct, not minimal.
+
 ## Summary
 
 Three layers. Three kinds of truth. No duplication.

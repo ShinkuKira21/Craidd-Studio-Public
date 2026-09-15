@@ -165,8 +165,10 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>) -> std::i
     }
 
     if stop_at_craidd.is_some() && !rel.is_empty() {
-        let self_craidd = current.join(format!("{}.craidd", name));
-        if self_craidd.is_file() {
+        // Boundary rule: a folder with ANY .craidd file ({name}.craidd or
+        // {name}.{lang}.craidd) is a project boundary. The parent walk stops
+        // here regardless of which shape is present.
+        if folder_has_craidd(current, &name) {
             return Ok(FileNode {
                 id, name, path: rel, kind: "folder".to_string(),
                 children: Some(vec![]),
@@ -283,4 +285,20 @@ pub fn rename_path(from: String, to: String) -> Result<(), String> {
             .map_err(|e| format!("Could not create parent directory for {to}: {e}"))?;
     }
     fs::rename(src, dst).map_err(|e| format!("rename_path({from} -> {to}) failed: {e}"))
+}
+
+/// True if `dir` contains `{folder_name}.craidd` or `{folder_name}.*.craidd`.
+/// Used by the boundary rule: any of these marks the folder as a project.
+fn folder_has_craidd(dir: &Path, folder_name: &str) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else { return false; };
+    let canonical = format!("{folder_name}.craidd");
+    let prefix = format!("{folder_name}.");
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_file() { continue; }
+        let Some(n) = p.file_name().map(|s| s.to_string_lossy().to_string()) else { continue; };
+        if n == canonical { return true; }
+        if n.starts_with(&prefix) && n.ends_with(".craidd") { return true; }
+    }
+    false
 }

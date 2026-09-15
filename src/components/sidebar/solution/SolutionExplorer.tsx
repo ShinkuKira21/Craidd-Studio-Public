@@ -7,6 +7,7 @@ import SolutionBanner from "./SolutionBanner";
 import NewProjectDialog from "../../dialogs/NewProjectDialog";
 import DeclarePlaceholderDialog from "../../dialogs/DeclarePlaceholderDialog";
 import DeleteConfirmDialog from "../../dialogs/DeleteConfirmDialog";
+import DeleteProjectDialog from "../../dialogs/DeleteProjectDialog";
 import NewFileDialog, { type NewFileMode } from "../../dialogs/NewFileDialog";
 import NewFolderDialog from "../../dialogs/NewFolderDialog";
 import FineTuneDialog from "../../dialogs/FineTuneDialog";
@@ -19,11 +20,12 @@ export default function SolutionExplorer() {
   const setConfigDirectory = useSolution((s) => s.setConfigDirectory);
   const removeConfig = useSolution((s) => s.removeConfig);
   const addExistingProject = useSolution((s) => s.addExistingProject);
+  const removeProject = useSolution((s) => s.removeProject);
   const requestRename = useSolution((s) => s.requestRename);
   const renamePath = useSolution((s) => s.renamePath);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; projectId?: string } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; projectId?: string; projectMissing?: boolean } | null>(null);
   const [newFileTarget, setNewFileTarget] = useState<{ parentPath: string; language: Language | null; mode: NewFileMode } | null>(null);
   const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
@@ -35,6 +37,7 @@ export default function SolutionExplorer() {
     source: "solution-lang" | "solution-config";
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ node: FileNode; basePath: string } | null>(null);
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<{ id: string; name: string; folder: string } | null>(null);
   const [fineTuneTarget, setFineTuneTarget] = useState<{ projectId: string; mode: "fine-tune" | "recalibrate" } | null>(null);
   const [pendingFineTuneName, setPendingFineTuneName] = useState<string | null>(null);
 
@@ -193,7 +196,12 @@ export default function SolutionExplorer() {
                     onContextMenu={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      setCtxMenu({ x: e.clientX, y: e.clientY, projectId: project.id });
+                      setCtxMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        projectId: project.id,
+                        projectMissing: !!project.missing,
+                      });
                     }}
                     className="flex items-center gap-1.5 px-2 py-1 ml-2 rounded hover:bg-zinc-800 cursor-pointer text-[12.5px] text-zinc-200 select-none"
                   >
@@ -278,13 +286,22 @@ export default function SolutionExplorer() {
                   )}
 
                   {!isCollapsed && project.missing && (
-                    <div className="px-6 py-2 text-[11px]">
+                    <div className="px-6 py-2 text-[11px] text-zinc-500 leading-5">
+                      This project is not declared.{" "}
                       <button
                         onClick={() => setDeclareTarget({ path: project.path, name: project.name })}
                         className="text-blue-400 hover:text-blue-300"
                       >
-                        Declare Project…
+                        Redeclare
                       </button>
+                      , or{" "}
+                      <button
+                        onClick={() => removeProject(project.id)}
+                        className="text-yellow-400 hover:text-yellow-300"
+                      >
+                        Remove project from solution
+                      </button>
+                      .
                     </div>
                   )}
                 </div>
@@ -339,7 +356,45 @@ export default function SolutionExplorer() {
           <div className="fixed inset-0 z-40" onClick={() => setCtxMenu(null)} />
           <div style={{ left: ctxMenu.x, top: ctxMenu.y }}
                className="fixed z-50 min-w-[240px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 text-xs">
-            {ctxMenu.projectId ? (
+            {ctxMenu.projectId && ctxMenu.projectMissing ? (
+              // ── Stale project (not declared) ──
+              <>
+                <div className="px-3 py-1.5 text-[11px] text-zinc-500 italic border-b border-zinc-800">
+                  {solution?.projects.find((p) => p.id === ctxMenu.projectId)?.name}
+                  {" "}
+                  <span className="text-zinc-600">(not declared)</span>
+                </div>
+                <button
+                  onClick={() => {
+                    const project = solution?.projects.find((p) => p.id === ctxMenu.projectId);
+                    if (!project) return;
+                    setDeclareTarget({ path: project.path, name: project.name });
+                    setCtxMenu(null);
+                  }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  Redeclare Project…
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                <button
+                  onClick={() => {
+                    if (ctxMenu.projectId) removeProject(ctxMenu.projectId);
+                    setCtxMenu(null);
+                  }}
+                  className="w-full px-3 py-1 text-left text-yellow-300 hover:bg-yellow-950/40"
+                >
+                  Remove Project
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                <button
+                  onClick={() => { refreshProject(ctxMenu.projectId!); setCtxMenu(null); }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  Refresh Project
+                </button>
+              </>
+            ) : ctxMenu.projectId ? (
+              // ── Normal project ──
               <>
                 <button
                   onClick={() => { refreshProject(ctxMenu.projectId!); setCtxMenu(null); }}
@@ -432,6 +487,43 @@ export default function SolutionExplorer() {
                     </button>
                   </>
                 )}
+                <div className="my-1 h-px bg-zinc-800" />
+                <button
+                  onClick={() => {
+                    if (ctxMenu.projectId) removeProject(ctxMenu.projectId);
+                    setCtxMenu(null);
+                  }}
+                  className="w-full px-3 py-1 text-left text-yellow-300 hover:bg-yellow-950/40"
+                >
+                  Remove Project
+                </button>
+                {(() => {
+                  const project = solution?.projects.find((p) => p.id === ctxMenu.projectId);
+                  const atRoot = !project || project.folder === "." || project.folder === "";
+                  return (
+                    <button
+                      disabled={atRoot}
+                      title={atRoot ? "This project is at the solution root. Use File Discovery to manage it." : ""}
+                      onClick={() => {
+                        if (atRoot || !project) return;
+                        setDeleteProjectTarget({
+                          id: project.id,
+                          name: project.name,
+                          folder: project.folder,
+                        });
+                        setCtxMenu(null);
+                      }}
+                      className={
+                        "w-full px-3 py-1 text-left " +
+                        (atRoot
+                          ? "text-zinc-600 cursor-default"
+                          : "text-red-300 hover:bg-red-950/40")
+                      }
+                    >
+                      Delete Project…
+                    </button>
+                  );
+                })()}
               </>
             ) : (
               <>
@@ -455,6 +547,20 @@ export default function SolutionExplorer() {
         </>
       )}
 
+      {deleteProjectTarget && (
+        <DeleteProjectDialog
+          projectId={deleteProjectTarget.id}
+          projectName={deleteProjectTarget.name}
+          projectFolder={deleteProjectTarget.folder}
+          siblingCount={(() => {
+            const target = deleteProjectTarget;
+            return (solution?.projects ?? []).filter(
+              (p) => p.folder === target.folder && !p.missing
+            ).length;
+          })()}
+          onClose={() => setDeleteProjectTarget(null)}
+        />
+      )}
       {deleteTarget && (
         <DeleteConfirmDialog
           node={deleteTarget.node}

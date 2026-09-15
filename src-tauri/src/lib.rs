@@ -5,7 +5,8 @@ use commands::fs::{read_dir_tree, read_dir_tree_filtered, read_file, write_file,
 use commands::search::search_in_path;
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
-    save_project, save_solution, scan_craidd_files,
+    save_project, save_solution, scan_craidd_files, remove_project, delete_project,
+    plan_craidd_filename,
 };
 
 #[tauri::command]
@@ -47,6 +48,9 @@ pub fn run() {
             save_project,
             save_solution,
             create_project_folder,
+            remove_project,
+            delete_project,
+            plan_craidd_filename,
             search_in_path,
         ])
         .run(tauri::generate_context!())
