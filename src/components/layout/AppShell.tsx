@@ -48,6 +48,7 @@ export default function AppShell() {
   useEffect(() => {
     const onFocus = () => {
       void useSolution.getState().refreshDiskStates();
+      void useSolution.getState().refreshProjectMarkers();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);

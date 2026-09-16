@@ -488,13 +488,236 @@ pub fn create_project_folder(root: String, subfolder: String) -> Result<String, 
     Ok(folder.to_string_lossy().to_string())
 }
 
+
+/// Suggest a language for a folder based on its contents. Reads top-level
+/// files only, counts by extension, checks for well-known manifests.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageSuggestion {
+    pub language: Option<String>,
+    pub evidence: String,
+    pub counts: std::collections::HashMap<String, u32>,
+}
+
+#[tauri::command]
+pub fn rescan_language_suggestion(folder: String) -> Result<LanguageSuggestion, String> {
+    let dir = Path::new(&folder);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {folder}"));
+    }
+
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut manifest_lang: Option<String> = None;
+    let mut manifest_name: Option<String> = None;
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(LanguageSuggestion {
+            language: None,
+            evidence: "Could not read folder.".into(),
+            counts,
+        });
+    };
+
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_file() { continue; }
+        let Some(name) = p.file_name().map(|s| s.to_string_lossy().to_string()) else { continue; };
+        if name.starts_with('.') { continue; }
+
+        // Manifest check — highest-confidence signal.
+        let m = match name.as_str() {
+            "Cargo.toml"         => Some(("rust", "Cargo.toml")),
+            "package.json"       => Some(("typescript", "package.json")),
+            "tsconfig.json"      => Some(("typescript", "tsconfig.json")),
+            "pyproject.toml"     => Some(("python", "pyproject.toml")),
+            "requirements.txt"   => Some(("python", "requirements.txt")),
+            "CMakeLists.txt"     => Some(("cpp", "CMakeLists.txt")),
+            _ => {
+                if name.ends_with(".csproj") { Some(("csharp", name.as_str())) }
+                else { None }
+            }
+        };
+        if let Some((lang, hint)) = m {
+            if manifest_lang.is_none() {
+                manifest_lang = Some(lang.into());
+                manifest_name = Some(hint.into());
+            }
+            continue;
+        }
+
+        // Extension counting.
+        if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+            let lang = match ext.to_lowercase().as_str() {
+                "rs" => Some("rust"),
+                "ts" | "tsx" | "mts" | "cts" => Some("typescript"),
+                "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+                "py" => Some("python"),
+                "cpp" | "cc" | "cxx" | "c" | "h" | "hpp" | "hxx" => Some("cpp"),
+                "cs" => Some("csharp"),
+                _ => None,
+            };
+            if let Some(l) = lang {
+                *counts.entry(l.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Prefer manifest. Fall back to extension majority.
+    let (language, evidence) = if let Some(l) = manifest_lang {
+        let ev = format!("{} found", manifest_name.unwrap_or_else(|| "manifest".into()));
+        (Some(l), ev)
+    } else if !counts.is_empty() {
+        // Deterministic tie-break: when two languages have equal counts,
+        // use the order of LANGUAGES as the priority. This keeps
+        // suggestions stable across runs.
+        const PRIORITY: &[&str] = &[
+            "rust", "typescript", "javascript", "python", "cpp", "csharp", "config",
+        ];
+        let mut best: Option<(String, u32)> = None;
+        for (lang, n) in counts.iter() {
+            match &best {
+                None => best = Some((lang.clone(), *n)),
+                Some((cur, cur_n)) => {
+                    if *n > *cur_n {
+                        best = Some((lang.clone(), *n));
+                    } else if *n == *cur_n {
+                        let cur_rank = PRIORITY.iter().position(|l| l == cur).unwrap_or(usize::MAX);
+                        let new_rank = PRIORITY.iter().position(|l| l == lang).unwrap_or(usize::MAX);
+                        if new_rank < cur_rank {
+                            best = Some((lang.clone(), *n));
+                        }
+                    }
+                }
+            }
+        }
+        let (best_lang, n) = best.unwrap();
+        let ev = format!("{} .{} file{}", n, ext_for_lang(&best_lang), if n == 1 { "" } else { "s" });
+        (Some(best_lang), ev)
+    } else {
+        (None, "No matching files found.".into())
+    };
+
+    Ok(LanguageSuggestion { language, evidence, counts })
+}
+
+fn ext_for_lang(lang: &str) -> &'static str {
+    match lang {
+        "rust" => "rs",
+        "typescript" => "ts",
+        "javascript" => "js",
+        "python" => "py",
+        "cpp" => "cpp",
+        "csharp" => "cs",
+        _ => "*",
+    }
+}
+
+
 /// Return the canonical .craidd filename for a project in `folder`,
 /// considering existing .craidd files (canonical name first, then a
 /// language suffix for additional projects).
 ///
+
+// ── FOLDER SCAN ───────────────────────────────────────────
+
+/// One .craidd file as found on disk. Language is parsed from the
+/// marker itself; if missing (config-only marker), it's None.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CraiddFile {
+    pub name: String,
+    pub path: String,       // absolute
+    pub rel_path: String,   // relative to root, forward slashes
+    pub language: Option<String>,
+}
+
+/// Read every .craidd in `folder` and parse its declared language.
+/// Does not consult the .cln — this is a filesystem-level view.
+fn scan_craidd_in_folder(folder: &Path, root: Option<&Path>) -> Vec<CraiddFile> {
+    let mut out = vec![];
+    let Ok(entries) = fs::read_dir(folder) else { return out; };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_file() { continue; }
+        let Some(name) = p.file_name().map(|s| s.to_string_lossy().to_string()) else { continue; };
+        if !name.ends_with(".craidd") { continue; }
+
+        let language = fs::read_to_string(&p)
+            .ok()
+            .and_then(|t| t.parse::<toml::Value>().ok())
+            .and_then(|v| {
+                v.get("project")
+                    .and_then(|t| t.get("language"))
+                    .and_then(|x| x.as_str())
+                    .map(String::from)
+            });
+
+        let rel_path = match root {
+            Some(r) => p
+                .strip_prefix(r)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/"),
+            None => name.clone(),
+        };
+
+        out.push(CraiddFile {
+            name,
+            path: p.to_string_lossy().to_string(),
+            rel_path,
+            language,
+        });
+    }
+    out
+}
+
+/// Return the set of languages owned by .craidd files in `folder`,
+/// grouped. Each entry maps a language to the markers declaring it.
+/// Used by every entry point to enforce the invariant.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderLanguageClaim {
+    pub language: String,
+    pub files: Vec<CraiddFile>,
+}
+
+fn folder_language_claims(folder: &Path, root: Option<&Path>) -> Vec<FolderLanguageClaim> {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, Vec<CraiddFile>> = BTreeMap::new();
+    for f in scan_craidd_in_folder(folder, root) {
+        if let Some(lang) = &f.language {
+            map.entry(lang.clone()).or_default().push(f);
+        }
+    }
+    map.into_iter()
+        .map(|(language, files)| FolderLanguageClaim { language, files })
+        .collect()
+}
+
+/// Public command: return every .craidd in a folder, with languages.
+#[tauri::command]
+pub fn scan_craidd_in_folder_cmd(folder: String) -> Result<Vec<CraiddFile>, String> {
+    let f = Path::new(&folder);
+    if !f.is_dir() { return Err(format!("Not a directory: {folder}")); }
+    Ok(scan_craidd_in_folder(f, None))
+}
+
+/// Public command: return language claims grouped. Two files under the
+/// same language = a conflict the caller must resolve.
+#[tauri::command]
+pub fn folder_language_claims_cmd(folder: String) -> Result<Vec<FolderLanguageClaim>, String> {
+    let f = Path::new(&folder);
+    if !f.is_dir() { return Err(format!("Not a directory: {folder}")); }
+    Ok(folder_language_claims(f, None))
+}
+
+/// Return the canonical .craidd filename for a project in `folder`.
+///
 ///   no .craidd yet          → {folder}.craidd
 ///   {folder}.craidd exists  → {folder}.{language}.craidd
-///   that also exists        → Err
+///
+/// Refuses if the folder already hosts a project of the same language,
+/// regardless of filename. Reads every .craidd in the folder.
 #[tauri::command]
 pub fn plan_craidd_filename(folder: String, language: String) -> Result<String, String> {
     let dir = Path::new(&folder);
@@ -505,6 +728,18 @@ pub fn plan_craidd_filename(folder: String, language: String) -> Result<String, 
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .ok_or_else(|| "Cannot derive folder name".to_string())?;
+
+    // Invariant: one project per language per folder.
+    for claim in folder_language_claims(dir, None) {
+        if claim.language == language {
+            let names: Vec<&str> = claim.files.iter().map(|f| f.name.as_str()).collect();
+            return Err(format!(
+                "This folder already has a {} project ({}). Craidd supports one project per language per folder.",
+                language,
+                names.join(", ")
+            ));
+        }
+    }
 
     let canonical = format!("{folder_name}.craidd");
     if !dir.join(&canonical).exists() {
@@ -520,10 +755,66 @@ pub fn plan_craidd_filename(folder: String, language: String) -> Result<String, 
     Ok(suffixed)
 }
 
-/// Return the canonical .craidd filename for a project in `folder`,
-/// considering existing .craidd files (canonical name first, then a
-/// language suffix for additional projects).
-///
+/// Return true if `folder` has no user content. A file counts as content
+/// unless it's a .craidd (which the caller is about to write) or a dotfile.
+/// Used to distinguish an empty folder from a folder whose .craidd was
+/// deleted but whose files remain.
+#[tauri::command]
+pub fn folder_is_empty(folder: String) -> Result<bool, String> {
+    let dir = Path::new(&folder);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {folder}"));
+    }
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".craidd") { continue; }
+        if name.starts_with('.') { continue; }
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Delete every .craidd in `folder`, then write one fresh marker.
+/// Used by the cleanup dialog (2.2.26) and the redeclare flow.
+#[tauri::command]
+pub fn wipe_and_recreate_craidd(
+    folder: String,
+    name: String,
+    language: String,
+) -> Result<String, String> {
+    let dir = Path::new(&folder);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {folder}"));
+    }
+    let folder_name = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| "Cannot derive folder name".to_string())?;
+
+    // Delete every .craidd in the folder.
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_file() { continue; }
+        let Some(n) = p.file_name().map(|s| s.to_string_lossy().to_string()) else { continue; };
+        if n.ends_with(".craidd") {
+            fs::remove_file(&p)
+                .map_err(|e| format!("Could not delete {}: {e}", p.display()))?;
+        }
+    }
+
+    // Write a fresh canonical marker.
+    let file_path = dir.join(format!("{folder_name}.craidd"));
+    let mut text = String::new();
+    text.push_str("[project]\n");
+    text.push_str(&format!("name = \"{}\"\n", escape(&name)));
+    text.push_str(&format!("language = \"{}\"\n", escape(&language)));
+    text.push_str("root = \".\"\n");
+
+    fs::write(&file_path, text).map_err(|e| e.to_string())?;
+    Ok(file_path.to_string_lossy().to_string())
+}
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -679,5 +970,91 @@ fn edit_cln_remove_entry(cln_path: &Path, craidd_path: &str) -> Result<(), Strin
 
     let out = toml::to_string(&parsed).map_err(|e| e.to_string())?;
     fs::write(cln_path, out).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Repoint one project entry in a .cln from an old path to a new path.
+/// The [solution] table's `projects` array is rewritten in place;
+/// every other field (build entries, configs, name) is preserved.
+#[tauri::command]
+pub fn edit_cln_repoint_entry(
+    root: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    let root_path = Path::new(&root);
+    if !root_path.is_dir() {
+        return Err(format!("Root is not a directory: {root}"));
+    }
+    let Some(cln_path) = find_cln_in(root_path)? else {
+        return Err(format!("No .cln found in {root}"));
+    };
+
+    let text = fs::read_to_string(&cln_path).map_err(|e| e.to_string())?;
+    let mut parsed: toml::Value = text.parse().map_err(|e| format!("parse .cln: {e}"))?;
+
+    let normalized_old = old_path.replace('\\', "/");
+    let normalized_new = new_path.replace('\\', "/");
+    eprintln!("[craidd] repoint: entering — old={} new={}", normalized_old, normalized_new);
+
+    // Read existing projects list.
+    let existing: Vec<String> = parsed
+        .get("solution")
+        .and_then(|s| s.get("projects"))
+        .or_else(|| parsed.get("projects"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut replaced = false;
+    let mut updated: Vec<String> = Vec::with_capacity(existing.len());
+    for entry in existing {
+        if entry.replace('\\', "/") == normalized_old {
+            updated.push(normalized_new.clone());
+            replaced = true;
+        } else {
+            updated.push(entry);
+        }
+    }
+
+    if !replaced {
+        eprintln!("[craidd] repoint: FAILED — old path not found in .cln: {}", normalized_old);
+        return Err(format!(
+            "Project entry not found in .cln: {old_path}"
+        ));
+    }
+    eprintln!("[craidd] repoint: rewrote {} entries → {}", updated.len(), cln_path.display());
+
+    // Rewrite the [solution] table in place.
+    let solution_tbl = parsed
+        .as_table_mut()
+        .and_then(|t| t.get_mut("solution"))
+        .and_then(|s| s.as_table_mut());
+
+    match solution_tbl {
+        Some(s) => {
+            let arr: Vec<toml::Value> = updated
+                .iter()
+                .map(|p| toml::Value::String(p.clone()))
+                .collect();
+            s.insert("projects".into(), toml::Value::Array(arr));
+        }
+        None => {
+            if let Some(t) = parsed.as_table_mut() {
+                let arr: Vec<toml::Value> = updated
+                    .iter()
+                    .map(|p| toml::Value::String(p.clone()))
+                    .collect();
+                t.insert("projects".into(), toml::Value::Array(arr));
+            }
+        }
+    }
+
+    let out = toml::to_string(&parsed).map_err(|e| e.to_string())?;
+    fs::write(&cln_path, out).map_err(|e| e.to_string())?;
     Ok(())
 }

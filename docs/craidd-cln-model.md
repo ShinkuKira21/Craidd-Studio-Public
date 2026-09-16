@@ -439,6 +439,38 @@ self-describing folders). Some won't.
 
 Until then, we make the marker model correct, not minimal.
 
+## Live ownership
+
+**One folder may host multiple projects, provided each declares a different
+language.**
+
+This is a filesystem-level rule. It applies to the markers themselves, not to
+which ones are declared in a solution. Two `.craidd` files in one folder
+declaring the same language is a conflict, full stop.
+
+**Live vs stale.** A project is *live* when its `.craidd` exists on disk. A
+project is *stale* when its `.craidd` is missing. Stale projects do not claim
+their folder's language; a live project does.
+
+**The invariant.** Before any operation writes a marker into a folder:
+
+- Same folder + same language + the other declaration is live → refuse.
+- Same folder + same language + the other declaration is stale → allowed.
+- Same folder + different language → allowed.
+- Different folder → allowed.
+
+**Where it is enforced.** Every entry point: redeclare (Option 1), repoint
+(Option 2), move (Option 3), heal, marker-drop. One rule, one check, applied
+everywhere.
+
+**Resolution.** When two markers of the same language are found in one
+folder (regardless of how they got there), the user picks one. Both markers
+are deleted; a fresh one is written. No inheritance, no incremental fixes.
+
+**Why strict.** User mistakes — bad `.gitignore` copy-paste, folders dragged
+between projects, accidental duplicate declarations — become visible refusals
+the IDE can resolve, instead of silent corruption the user discovers later.
+
 ## Summary
 
 Three layers. Three kinds of truth. No duplication.

@@ -6,7 +6,13 @@ use commands::search::search_in_path;
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
     save_project, save_solution, scan_craidd_files, remove_project, delete_project,
+    edit_cln_repoint_entry,
     plan_craidd_filename,
+    scan_craidd_in_folder_cmd,
+    folder_language_claims_cmd,
+    wipe_and_recreate_craidd,
+    folder_is_empty,
+    rescan_language_suggestion,
 };
 
 #[tauri::command]
@@ -50,8 +56,14 @@ pub fn run() {
             create_project_folder,
             remove_project,
             delete_project,
+            edit_cln_repoint_entry,
             plan_craidd_filename,
-            search_in_path,
+            scan_craidd_in_folder_cmd,
+            folder_language_claims_cmd,
+            wipe_and_recreate_craidd,
+            folder_is_empty,
+            rescan_language_suggestion,
+                    search_in_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

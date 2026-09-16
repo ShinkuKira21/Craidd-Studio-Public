@@ -67,11 +67,15 @@ interface SolutionState {
   createFile: (parentPath: string, name: string, content?: string) => Promise<string>;
   createFolder: (parentPath: string, name: string) => Promise<string>;
   declarePlaceholder: (projectPath: string, args: { name: string; language: Language; kind?: ProjectKind }) => Promise<void>;
+  repointProject: (projectId: string, newCraiddAbs: string) => Promise<void>;
+  redeclareProject: (projectId: string, args: { name: string; language: Language }) => Promise<void>;
+  moveProjectTo: (projectId: string, newFolderAbs: string, chosenLanguage?: Language) => Promise<void>;
 
   addConfigHere: (projectId: string) => Promise<void>;
   setConfigDirectory: (projectId: string, directory: string) => Promise<void>;
   removeConfig: (projectId: string) => Promise<void>;
   refreshProject: (projectId: string) => Promise<void>;
+  refreshProjectMarkers: () => Promise<void>;
   heal: () => Promise<number>;
 
   renamePath: (oldPath: string, newPath: string) => Promise<void>;
@@ -117,6 +121,13 @@ function resolveRelPath(baseAbs: string, rel: string): string {
     else baseParts.push(part);
   }
   return "/" + baseParts.join("/");
+}
+
+function toRel(abs: string, root: string): string {
+  const rootNoSlash = root.replace(/\/+$/, "");
+  return abs.startsWith(rootNoSlash + "/")
+    ? abs.slice(rootNoSlash.length + 1)
+    : abs;
 }
 
 function isInside(parent: string, child: string): boolean {
@@ -834,6 +845,269 @@ export const useSolution = create<SolutionState>((set, get) => ({
     await get().refreshDiscovery();
   },
 
+  redeclareProject: async (projectId, { name, language }) => {
+    const state = get();
+    if (!state.rootPath || !state.solution) throw new Error("No solution is open.");
+    const project = state.solution.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error("Project not found in solution.");
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    // Compute the folder the marker would land in.
+    const rootNoSlash = state.rootPath.replace(/\/+$/, "");
+    const craiddAbs = project.path.startsWith("/")
+      ? project.path
+      : `${rootNoSlash}/${project.path}`;
+    const folderAbs = craiddAbs.slice(0, craiddAbs.lastIndexOf("/"));
+
+    // Invariant 2 — refuse if a live project in this folder already
+    // declares this language.
+    const claims = await invoke<
+      { language: string; files: { path: string }[] }[]
+    >("folder_language_claims_cmd", { folder: folderAbs });
+    for (const c of claims) {
+      if (c.language !== language) continue;
+      for (const f of c.files) {
+        const rel = toRel(f.path, state.rootPath);
+        if (rel === project.path) continue; // it's our own stale
+        const live = state.solution.projects.some(
+          (p) => p.id !== projectId && p.path === rel,
+        );
+        if (live) {
+          throw new Error(
+            `This folder already has a live ${language} project (${f.path.split("/").pop()}). ` +
+            `Either pick a different language, or clean up the folder first.`,
+          );
+        }
+      }
+    }
+
+    // Wipe + write a fresh marker. This deletes any stale .craidd in
+    // the folder — including our own — and recreates one clean marker.
+    // Note: wipe_and_recreate deletes *every* .craidd in the folder,
+    // so we only call it when there are no live markers of other
+    // languages we'd be destroying. The check above ensures that for
+    // our language; for other languages, if a live project exists,
+    // we must not wipe.
+    for (const c of claims) {
+      if (c.language === language) continue;
+      for (const f of c.files) {
+        const rel = toRel(f.path, state.rootPath);
+        const live = state.solution.projects.some(
+          (p) => p.id !== projectId && p.path === rel,
+        );
+        if (live) {
+          throw new Error(
+            `This folder has a live ${c.language} project. ` +
+            `Use Option 2 (point at the existing marker) or Option 3 (move elsewhere).`,
+          );
+        }
+      }
+    }
+
+    await invoke("wipe_and_recreate_craidd", {
+      folder: folderAbs,
+      name,
+      language,
+    });
+
+    // Reload via the .cln.
+    if (state.clnPath) {
+      await get().openSolution(state.clnPath).catch((e) =>
+        logErr("reload after redeclareProject failed:", e),
+      );
+    }
+  },
+
+  repointProject: async (projectId, newCraiddAbs) => {
+    const state = get();
+    if (!state.rootPath || !state.solution) throw new Error("No solution is open.");
+    const project = state.solution.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error("Project not found in solution.");
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    log("[repoint] start", { projectId, oldPath: project.path, newCraiddAbs });
+
+    // 1. Verify the new .craidd exists.
+    const stats = await invoke<{ path: string; exists: boolean }[]>("stat_files", {
+      paths: [newCraiddAbs],
+    });
+    if (!stats[0]?.exists) {
+      throw new Error(`No file at ${newCraiddAbs}`);
+    }
+
+    // 2. Verify it is a marker.
+    const raw = await invoke<string>("read_file", { path: newCraiddAbs });
+    if (!raw.includes("[project]") && !raw.includes("[config]")) {
+      throw new Error("That file is not a .craidd.");
+    }
+
+    // 3. Parse its language.
+    let markerLanguage: string | null = null;
+    {
+      let inProject = false;
+      for (const line of raw.split("\n")) {
+        const t = line.trim();
+        if (t === "[project]") { inProject = true; continue; }
+        if (t.startsWith("[")) { inProject = false; continue; }
+        if (!inProject) continue;
+        const m = t.match(/^language\s*=\s*"([^"]*)"/);
+        if (m) { markerLanguage = m[1]; break; }
+      }
+    }
+
+    // 4. Compute the new relative path.
+    const rootNoSlash = state.rootPath.replace(/\/+$/, "");
+    const newRel = newCraiddAbs.startsWith(rootNoSlash + "/")
+      ? newCraiddAbs.slice(rootNoSlash.length + 1)
+      : newCraiddAbs;
+
+    // 5. Invariant 1 — path already declared by another project?
+    const conflictingPath = state.solution.projects.find(
+      (p) => p.id !== projectId && p.path === newRel,
+    );
+    if (conflictingPath) {
+      throw new Error(
+        `That .craidd is already declared in this solution as "${conflictingPath.name}".`,
+      );
+    }
+
+    // 6. Invariant 2 — folder already has a live project of this language?
+    if (markerLanguage) {
+      const folderAbs = newCraiddAbs.slice(0, newCraiddAbs.lastIndexOf("/"));
+      const claims = await invoke<
+        { language: string; files: { path: string }[] }[]
+      >("folder_language_claims_cmd", { folder: folderAbs });
+      for (const c of claims) {
+        if (c.language !== markerLanguage) continue;
+        // Exclude the file we're adopting.
+        const others = c.files.filter((f) => f.path !== newCraiddAbs);
+        if (others.length === 0) continue;
+        // Only live ones count. A live one is declared in this solution.
+        const liveOthers = others.filter((f) =>
+          state.solution!.projects.some((pr) => pr.path === toRel(f.path, state.rootPath!)),
+        );
+        if (liveOthers.length > 0) {
+          throw new Error(
+            `This folder already has a live ${markerLanguage} project. Clean up the folder first.`,
+          );
+        }
+      }
+    }
+
+    // 7. Repoint.
+    log("[repoint] invoking edit_cln_repoint_entry", { oldPath: project.path, newPath: newRel });
+    await invoke("edit_cln_repoint_entry", {
+      root: state.rootPath,
+      oldPath: project.path,
+      newPath: newRel,
+    });
+    log("[repoint] edit_cln_repoint_entry returned ok");
+
+    // 8. Reload.
+    const reloadPath = state.clnPath;
+    if (reloadPath) {
+      const r = await get().openSolution(reloadPath).catch((e) => {
+        logErr("reload after repointProject failed:", e);
+        return null;
+      });
+      log("[repoint] reload result", r);
+    } else {
+      logErr("[repoint] no clnPath — skipping reload");
+    }
+  },
+
+
+  moveProjectTo: async (projectId, newFolderAbs, chosenLanguage) => {
+    const state = get();
+    if (!state.rootPath || !state.solution) throw new Error("No solution is open.");
+    const project = state.solution.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error("Project not found in solution.");
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    log("[move] start", { projectId, oldPath: project.path, newFolderAbs, chosenLanguage });
+
+    // 1. Enumerate markers in the destination folder.
+    const markers = await invoke<
+      { name: string; path: string; language: string | null }[]
+    >("scan_craidd_in_folder_cmd", { folder: newFolderAbs });
+
+    // 2. Determine the language we intend to declare there.
+    const targetLanguage = chosenLanguage ?? project.language ?? null;
+    if (!targetLanguage) {
+      throw new Error("No language selected for the destination.");
+    }
+
+    // 3. If a marker of the same language already exists, refuse.
+    for (const m of markers) {
+      if (m.language === targetLanguage) {
+        // Is it the marker we're already pointing at? Then it's fine.
+        const rel = toRel(m.path, state.rootPath);
+        if (rel === project.path) continue;
+        // Is it live? A live marker is declared in the solution.
+        const live = state.solution.projects.some(
+          (p) => p.id !== projectId && p.path === rel,
+        );
+        if (live) {
+          throw new Error(
+            `This folder already has a live ${targetLanguage} project (${m.name}). Clean up the folder first.`,
+          );
+        }
+      }
+    }
+
+    // 4. Adopt an existing marker, or write a fresh one.
+    let newRel: string;
+    const sameLangMarker = markers.find((m) => m.language === targetLanguage);
+
+    if (sameLangMarker) {
+      // Adopt it.
+      newRel = toRel(sameLangMarker.path, state.rootPath);
+      log("[move] adopting existing marker", newRel);
+      // Update the project's stored language if the marker declares one.
+      if (sameLangMarker.language && sameLangMarker.language !== project.language) {
+        const moved = { ...project, language: sameLangMarker.language as Language };
+        await invoke("save_project", { root: state.rootPath, project: moved });
+      }
+    } else {
+      // Write a fresh marker.
+      const plannedName = await invoke<string>("plan_craidd_filename", {
+        folder: newFolderAbs,
+        language: targetLanguage,
+      });
+      const absPath = `${newFolderAbs.replace(/\/+$/, "")}/${plannedName}`;
+      newRel = toRel(absPath, state.rootPath);
+      const moved = {
+        ...project,
+        language: targetLanguage,
+        path: newRel,
+        folder: newRel.includes("/") ? newRel.slice(0, newRel.lastIndexOf("/")) : ".",
+      };
+      await invoke("save_project", { root: state.rootPath, project: moved });
+      log("[move] wrote fresh marker", newRel);
+    }
+
+    // 5. Repoint the .cln.
+    log("[move] invoking edit_cln_repoint_entry", { oldPath: project.path, newPath: newRel });
+    await invoke("edit_cln_repoint_entry", {
+      root: state.rootPath,
+      oldPath: project.path,
+      newPath: newRel,
+    });
+    log("[move] edit_cln_repoint_entry returned ok");
+
+    // 6. Reload.
+    if (state.clnPath) {
+      const r = await get().openSolution(state.clnPath).catch((e) => {
+        logErr("reload after moveProjectTo failed:", e);
+        return null;
+      });
+      log("[move] reload result", r);
+    } else {
+      logErr("[move] no clnPath — skipping reload");
+    }
+  },
+
+
   addConfigHere: async (projectId) => {
     const state = get();
     if (!state.rootPath || !state.solution) return;
@@ -916,6 +1190,31 @@ export const useSolution = create<SolutionState>((set, get) => ({
         projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
       },
     });
+  },
+
+  refreshProjectMarkers: async () => {
+    const state = get();
+    if (!state.rootPath || !state.solution) return;
+    const projects = state.solution.projects;
+    if (projects.length === 0) return;
+
+    // Batch-stat every marker. Compare against the store's current
+    // notion of "missing". If nothing changed, do nothing — this is
+    // the cheap path, and it's what runs on every focus event.
+    const statMap = await statCraidds(state.rootPath, projects);
+    let changed = false;
+    for (const p of projects) {
+      const exists = statMap.get(p.path) ?? true;
+      if (exists === !!p.missing) { changed = true; break; }
+    }
+    if (!changed) return;
+
+    // Something changed on disk. Re-populate the whole solution.
+    const refreshed: CraiddProject[] = [];
+    for (const pr of projects) {
+      refreshed.push(await populateTrees(state.rootPath, pr, statMap));
+    }
+    set({ solution: { ...state.solution, projects: refreshed } });
   },
 
   heal: async () => {

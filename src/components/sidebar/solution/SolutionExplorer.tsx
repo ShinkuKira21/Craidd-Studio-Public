@@ -5,7 +5,7 @@ import type { Language, FileNode, CraiddProject } from "../../../types/project";
 import FileTree from "../FileTree";
 import SolutionBanner from "./SolutionBanner";
 import NewProjectDialog from "../../dialogs/NewProjectDialog";
-import DeclarePlaceholderDialog from "../../dialogs/DeclarePlaceholderDialog";
+import MissingProjectDialog from "../../dialogs/MissingProjectDialog";
 import DeleteConfirmDialog from "../../dialogs/DeleteConfirmDialog";
 import DeleteProjectDialog from "../../dialogs/DeleteProjectDialog";
 import NewFileDialog, { type NewFileMode } from "../../dialogs/NewFileDialog";
@@ -29,7 +29,7 @@ export default function SolutionExplorer() {
   const [newFileTarget, setNewFileTarget] = useState<{ parentPath: string; language: Language | null; mode: NewFileMode } | null>(null);
   const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
-  const [declareTarget, setDeclareTarget] = useState<{ path: string; name: string } | null>(null);
+  const [declareTarget, setDeclareTarget] = useState<CraiddProject | null>(null);
   const [treeCtxMenu, setTreeCtxMenu] = useState<{
     x: number; y: number;
     node: FileNode;
@@ -289,7 +289,7 @@ export default function SolutionExplorer() {
                     <div className="px-6 py-2 text-[11px] text-zinc-500 leading-5">
                       This project is not declared.{" "}
                       <button
-                        onClick={() => setDeclareTarget({ path: project.path, name: project.name })}
+                        onClick={() => setDeclareTarget(project)}
                         className="text-blue-400 hover:text-blue-300"
                       >
                         Redeclare
@@ -368,7 +368,7 @@ export default function SolutionExplorer() {
                   onClick={() => {
                     const project = solution?.projects.find((p) => p.id === ctxMenu.projectId);
                     if (!project) return;
-                    setDeclareTarget({ path: project.path, name: project.name });
+                    setDeclareTarget(project);
                     setCtxMenu(null);
                   }}
                   className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
@@ -591,9 +591,8 @@ export default function SolutionExplorer() {
         />
       )}
       {declareTarget && (
-        <DeclarePlaceholderDialog
-          projectPath={declareTarget.path}
-          guessedName={declareTarget.name}
+        <MissingProjectDialog
+          project={declareTarget}
           onClose={() => setDeclareTarget(null)}
         />
       )}

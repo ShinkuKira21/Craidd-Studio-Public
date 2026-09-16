@@ -289,16 +289,17 @@ pub fn rename_path(from: String, to: String) -> Result<(), String> {
 
 /// True if `dir` contains `{folder_name}.craidd` or `{folder_name}.*.craidd`.
 /// Used by the boundary rule: any of these marks the folder as a project.
-fn folder_has_craidd(dir: &Path, folder_name: &str) -> bool {
+fn folder_has_craidd(dir: &Path, _folder_name: &str) -> bool {
+    // Any .craidd file is a boundary. The name is a convention; the
+    // marker's existence is the declaration. A folder can host a project
+    // whose .craidd was moved in from elsewhere and therefore doesn't
+    // match the folder's own name.
     let Ok(entries) = fs::read_dir(dir) else { return false; };
-    let canonical = format!("{folder_name}.craidd");
-    let prefix = format!("{folder_name}.");
     for entry in entries.flatten() {
         let p = entry.path();
         if !p.is_file() { continue; }
         let Some(n) = p.file_name().map(|s| s.to_string_lossy().to_string()) else { continue; };
-        if n == canonical { return true; }
-        if n.starts_with(&prefix) && n.ends_with(".craidd") { return true; }
+        if n.ends_with(".craidd") { return true; }
     }
     false
 }
