@@ -13,6 +13,10 @@ interface BuildEvent {
 
 interface BuildState {
   projectPath: string | null;
+  selectedConfigName: string | null;
+  selectedProfileName: string | null;
+  setSelectedConfig: (name: string | null) => void;
+  setSelectedProfile: (name: string | null) => void;
   profile: Profile;
   status: Status;
   activeId: number | null;
@@ -53,6 +57,10 @@ async function ensureEvents() {
 
 export const useBuild = create<BuildState>((set, get) => ({
   projectPath: null,
+  selectedConfigName: null,
+  selectedProfileName: null,
+  setSelectedConfig: (name) => set({ selectedConfigName: name }),
+  setSelectedProfile: (name) => set({ selectedProfileName: name }),
   profile: "debug",
   status: "idle",
   activeId: null,

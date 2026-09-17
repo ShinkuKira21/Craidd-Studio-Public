@@ -11,6 +11,7 @@ import DeleteProjectDialog from "../../dialogs/DeleteProjectDialog";
 import NewFileDialog, { type NewFileMode } from "../../dialogs/NewFileDialog";
 import NewFolderDialog from "../../dialogs/NewFolderDialog";
 import FineTuneDialog from "../../dialogs/FineTuneDialog";
+import ToolchainConfigurationDialog from "../../dialogs/ToolchainConfigurationDialog";
 
 export default function SolutionExplorer() {
   const rootPath = useSolution((s) => s.rootPath);
@@ -42,6 +43,7 @@ export default function SolutionExplorer() {
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<{ id: string; name: string; folder: string } | null>(null);
   const [fineTuneTarget, setFineTuneTarget] = useState<{ projectId: string; mode: "fine-tune" | "recalibrate" } | null>(null);
   const [pendingFineTuneName, setPendingFineTuneName] = useState<string | null>(null);
+  const [toolchainTarget, setToolchainTarget] = useState<CraiddProject | null>(null);
 
   // Auto-open Fine Tune for a freshly created project if requested.
   useEffect(() => {
@@ -403,6 +405,18 @@ export default function SolutionExplorer() {
                 <div className="my-1 h-px bg-zinc-800" />
                 <button
                   onClick={() => {
+                    const project = solution?.projects.find((p) => p.id === ctxMenu.projectId);
+                    if (!project) return;
+                    setToolchainTarget(project);
+                    setCtxMenu(null);
+                  }}
+                  className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
+                >
+                  Toolchain Configuration…
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                <button
+                  onClick={() => {
                     if (ctxMenu.projectId) removeProject(ctxMenu.projectId);
                     setCtxMenu(null);
                   }}
@@ -619,6 +633,12 @@ export default function SolutionExplorer() {
         <MissingProjectDialog
           project={declareTarget}
           onClose={() => setDeclareTarget(null)}
+        />
+      )}
+      {toolchainTarget && (
+        <ToolchainConfigurationDialog
+          project={toolchainTarget}
+          onClose={() => setToolchainTarget(null)}
         />
       )}
       {fineTuneTarget && (() => {

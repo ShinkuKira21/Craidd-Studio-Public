@@ -46,9 +46,18 @@ fn manifest_dir(root: &Path, marker: &str) -> Result<PathBuf, String> {
         if dir.join("Cargo.toml").is_file() { return Ok(dir.to_path_buf()); }
         if dir == root { break; }
         dir = dir.parent().ok_or("No Cargo.toml found for this project")?;
-        if !dir.starts_with(root) { break; }
+        if !dir.starts_with(root) {
+            // The guard tripped. This is not "keep searching" — it means
+            // there is no manifest for this project inside the loaded
+            // solution's folder. Ascending further would escape into a
+            // sibling or parent workspace, which is the anchor bug.
+            break;
+        }
     }
-    Err(format!("No Cargo.toml found for {marker}"))
+    Err(format!(
+        "No Cargo.toml for {marker} inside the loaded solution ({}).          If this project's manifest lives outside the solution folder,          open that folder as its own solution.",
+        root.display()
+    ))
 }
 
 fn stream_lines<R: Read + Send + 'static>(app: AppHandle, id: u64, reader: R, json: bool) -> thread::JoinHandle<()> {

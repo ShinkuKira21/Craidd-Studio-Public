@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{AncestorInfo, BuildEntry, CraiddProject, CraiddSolution};
+use crate::types::{AncestorInfo, BuildEntry, ConfigEntry, CraiddProject, CraiddSolution, SolutionWithPath};
 
 const IGNORE_DIRS: &[&str] = &[
     ".git", "node_modules", "target", "dist", "build", "bin", "obj",
@@ -128,20 +128,28 @@ fn walk_for_craidd(root: &Path, current: &Path, out: &mut Vec<String>, depth: u3
 // NOTE: parameter is `path` (a folder path), matching the TS invoke calls.
 
 #[tauri::command]
-pub fn load_solution(path: String) -> Result<Option<CraiddSolution>, String> {
+pub fn load_solution(path: String) -> Result<Option<SolutionWithPath>, String> {
     let root_path = PathBuf::from(&path);
     if !root_path.is_dir() { return Err(format!("Not a directory: {path}")); }
     let Some(cln_path) = find_cln_in(&root_path)? else { return Ok(None); };
-    load_solution_from_cln(&root_path, &cln_path)
+    let Some(solution) = load_solution_from_cln(&root_path, &cln_path)? else { return Ok(None); };
+    Ok(Some(SolutionWithPath {
+        cln_path: cln_path.to_string_lossy().into_owned(),
+        solution,
+    }))
 }
 
 #[tauri::command]
-pub fn load_solution_named(path: String, cln_name: String) -> Result<Option<CraiddSolution>, String> {
+pub fn load_solution_named(path: String, cln_name: String) -> Result<Option<SolutionWithPath>, String> {
     let root_path = PathBuf::from(&path);
     if !root_path.is_dir() { return Err(format!("Not a directory: {path}")); }
     let cln_path = root_path.join(&cln_name);
     if !cln_path.is_file() { return Ok(None); }
-    load_solution_from_cln(&root_path, &cln_path)
+    let Some(solution) = load_solution_from_cln(&root_path, &cln_path)? else { return Ok(None); };
+    Ok(Some(SolutionWithPath {
+        cln_path: cln_path.to_string_lossy().into_owned(),
+        solution,
+    }))
 }
 
 fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<CraiddSolution>, String> {
@@ -188,6 +196,15 @@ fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<Cr
         .and_then(|v| v.as_str()).map(String::from);
     let default_build = parsed.get("solution").and_then(|t| t.get("default_build"))
         .and_then(|v| v.as_str()).map(String::from);
+    let default_config = parsed.get("solution").and_then(|t| t.get("default_config"))
+        .and_then(|v| v.as_str()).map(String::from);
+
+    // [[config]] entries.
+    let configs: Vec<ConfigEntry> = parsed
+        .get("config")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(parse_config_entry).collect())
+        .unwrap_or_default();
 
     Ok(Some(CraiddSolution {
         name,
@@ -199,7 +216,42 @@ fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<Cr
         autostart,
         default_project,
         default_build,
+        configs,
+        default_config,
+        inferred_configs: vec![],   // filled in by the frontend via infer_configs
     }))
+}
+
+fn parse_config_entry(v: &toml::Value) -> Option<ConfigEntry> {
+    let t = v.as_table()?;
+    let name = t.get("name").and_then(|x| x.as_str())?.to_string();
+    Some(ConfigEntry {
+        name,
+        kind: t.get("kind").and_then(|x| x.as_str()).unwrap_or("run").to_string(),
+        target: t.get("target").and_then(|x| x.as_str()).unwrap_or(".").to_string(),
+        method: t.get("method").and_then(|x| x.as_str()).map(String::from),
+        command: t.get("command").and_then(|x| x.as_str()).map(String::from),
+        cwd: t.get("cwd").and_then(|x| x.as_str()).map(String::from),
+        origin: t.get("origin").and_then(|x| x.as_str()).unwrap_or("user").to_string(),
+        profiles: parse_profiles(t.get("profile")),
+        default_profile: t.get("default_profile").and_then(|x| x.as_str()).map(String::from),
+    })
+}
+
+fn parse_profiles(v: Option<&toml::Value>) -> Vec<crate::types::Profile> {
+    let Some(arr) = v.and_then(|x| x.as_array()) else { return vec![]; };
+    arr.iter().filter_map(|entry| {
+        let t = entry.as_table()?;
+        let name = t.get("name").and_then(|x| x.as_str())?.to_string();
+        let args = t.get("args").and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let env = t.get("env").and_then(|x| x.as_table())
+            .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+            .unwrap_or_default();
+        let description = t.get("description").and_then(|x| x.as_str()).map(String::from);
+        Some(crate::types::Profile { name, args, env, description })
+    }).collect()
 }
 
 fn parse_build_entry(v: &toml::Value) -> Option<BuildEntry> {
@@ -246,6 +298,7 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             main_exclude: vec![],
             config_include: vec![],
             config_exclude: vec![],
+            manifests: vec![],
             missing: true,
             external,
         };
@@ -274,6 +327,7 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             main_exclude: vec![],
             config_include: vec![],
             config_exclude: vec![],
+            manifests: vec![],
             missing: true,
             external,
         },
@@ -334,6 +388,7 @@ fn load_craidd_file(full: &Path) -> Result<CraiddProject, String> {
         main_exclude: paths("main_exclude"),
         config_include: paths("config_include"),
         config_exclude: paths("config_exclude"),
+            manifests: vec![],
         missing: false,
         external: false,
     })
@@ -524,12 +579,47 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
     text.push_str(&format!("name = \"{}\"\n", escape(&solution.name)));
     text.push_str("version = \"1.0\"\n");
     if let Some(project) = &solution.default_project { text.push_str(&format!("default_project = \"{}\"\n", escape(project))); }
+    if let Some(config) = &solution.default_config { text.push_str(&format!("default_config = \"{}\"\n", escape(config))); }
     if let Some(build) = &solution.default_build { text.push_str(&format!("default_build = \"{}\"\n", escape(build))); }
     text.push_str("\nprojects = [\n");
     for p in &merged_paths {
         text.push_str(&format!("  \"{}\",\n", escape(p)));
     }
     text.push_str("]\n");
+
+    // Write user-authored configurations. Inferred configs are never
+    // written — they're session-only and derived from manifests on
+    // every load.
+    for cfg in &solution.configs {
+        if cfg.origin == "inferred" { continue; }
+        text.push('\n');
+        text.push_str("[[config]]\n");
+        text.push_str(&format!("name = \"{}\"\n", escape(&cfg.name)));
+        text.push_str(&format!("kind = \"{}\"\n", escape(&cfg.kind)));
+        text.push_str(&format!("target = \"{}\"\n", escape(&cfg.target)));
+        if let Some(m) = &cfg.method { text.push_str(&format!("method = \"{}\"\n", escape(m))); }
+        if let Some(c) = &cfg.command { text.push_str(&format!("command = \"{}\"\n", escape(c))); }
+        if let Some(c) = &cfg.cwd { text.push_str(&format!("cwd = \"{}\"\n", escape(c))); }
+        if let Some(p) = &cfg.default_profile { text.push_str(&format!("default_profile = \"{}\"\n", escape(p))); }
+
+        for prof in &cfg.profiles {
+            text.push_str("\n[[config.profile]]\n");
+            text.push_str(&format!("name = \"{}\"\n", escape(&prof.name)));
+            if !prof.args.is_empty() {
+                let args = prof.args.iter().map(|a| format!("\"{}\"", escape(a))).collect::<Vec<_>>().join(", ");
+                text.push_str(&format!("args = [{}]\n", args));
+            }
+            if !prof.env.is_empty() {
+                text.push_str("[config.profile.env]\n");
+                for (k, v) in &prof.env {
+                    text.push_str(&format!("\"{}\" = \"{}\"\n", escape(k), escape(v)));
+                }
+            }
+            if let Some(d) = &prof.description {
+                text.push_str(&format!("description = \"{}\"\n", escape(d)));
+            }
+        }
+    }
 
     if !solution.build.is_empty() {
         text.push('\n');

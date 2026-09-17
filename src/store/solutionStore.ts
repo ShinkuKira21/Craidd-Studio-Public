@@ -2,9 +2,11 @@ import { create } from "zustand";
 import type {
   CraiddSolution,
   CraiddProject,
+  ConfigEntry,
   FileNode,
   EditorTab,
   Language,
+  Manifest,
   ProjectKind,
 } from "../types/project";
 import { languageFromFilename, monacoLanguageForFilename, projectExtensions, projectWellKnownFiles, languageMeta } from "../lib/languages";
@@ -102,6 +104,32 @@ interface SolutionState {
   refreshDiskStates: () => Promise<void>;
   refreshDiskStateFor: (fileId: string) => Promise<void>;
   discardTab: (fileId: string) => void;
+}
+
+
+/** Ensure the required config fields are present on a freshly-loaded
+ *  solution, then ask Rust to infer defaults from the projects' manifests.
+ *  Inferred entries are stored on `inferredConfigs` and are never written
+ *  to disk. */
+async function withInferredConfigs(
+  solution: CraiddSolution,
+): Promise<CraiddSolution> {
+  const base: CraiddSolution = {
+    ...solution,
+    configs: solution.configs ?? [],
+    inferredConfigs: solution.inferredConfigs ?? [],
+  };
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const inferred = await invoke<ConfigEntry[]>("infer_configs", {
+      solution: base,
+    });
+    log("infer_configs result:", inferred.map((c) => `${c.name} (${c.kind})`));
+    return { ...base, inferredConfigs: inferred };
+  } catch (err) {
+    logErr("infer_configs failed:", err);
+    return base;
+  }
 }
 
 const log = (...args: unknown[]) => console.log("[craidd]", ...args);
@@ -271,6 +299,56 @@ async function populateTrees(
     next.configBasePath = undefined;
   }
 
+  // Read manifests from the folders the user's declaration points at.
+  // Two folders, maximum, both inside the loaded solution:
+  //
+  //   1. The project's own resolved folder.
+  //   2. The config folder, when [config].directory is declared and
+  //      resolves somewhere other than the project folder.
+  //
+  // No parent walk. No "just in case" inside the project folder. If the
+  // user didn't declare a config folder, we assume there isn't one, and
+  // the project simply has no manifests outside its own folder.
+  //
+  // See src-tauri/src/commands/manifests.rs.
+  const manifestFolder = projectFolderAbs(solutionRoot, project);
+  const collected: Manifest[] = [];
+  const seenPaths = new Set<string>();
+
+  const readInto = async (folder: string, label: string) => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const found = await invoke<Manifest[]>("read_manifests", { folder });
+      for (const m of found) {
+        if (seenPaths.has(m.path)) continue;
+        seenPaths.add(m.path);
+        collected.push(m);
+      }
+    } catch (err) {
+      logErr(`read_manifests (${label}) failed for`, folder, err);
+    }
+  };
+
+  await readInto(manifestFolder, "project");
+
+  const configFolder = next.configBasePath;
+  if (
+    configFolder &&
+    configFolder !== manifestFolder &&
+    isInside(solutionRoot, configFolder)
+  ) {
+    await readInto(configFolder, "config");
+  }
+
+  next.manifests = collected;
+  log("populateTrees: manifests", {
+    project: project.path,
+    projectFolder: manifestFolder,
+    configFolder: configFolder ?? null,
+    count: collected.length,
+    kinds: collected.map((m) => m.kind),
+  });
+
   return next;
 }
 
@@ -364,11 +442,15 @@ export const useSolution = create<SolutionState>((set, get) => ({
       return { status: "error", message: msg };
     }
 
-    let solution: CraiddSolution | null = null;
+    let loaded: { solution: CraiddSolution; clnPath: string } | null = null;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      solution = await invoke<CraiddSolution | null>("load_solution", { path });
-      log("load_solution result:", solution ? `${solution.projects.length} projects` : "null");
+      const raw = await invoke<{ solution: CraiddSolution; clnPath: string } | null>(
+        "load_solution",
+        { path },
+      );
+      loaded = raw;
+      log("load_solution result:", raw ? `${raw.solution.projects.length} projects @ ${raw.clnPath}` : "null");
     } catch (err) {
       const msg = `Failed to load solution: ${String(err)}`;
       logErr(msg);
@@ -376,15 +458,23 @@ export const useSolution = create<SolutionState>((set, get) => ({
       return { status: "error", message: msg };
     }
 
-    if (solution) {
-      const statMap = await statCraidds(path, solution.projects);
-      const withTrees = await Promise.all(solution.projects.map((p) => populateTrees(path, p, statMap)));
-      // Best-effort clnPath: {solutionName}.cln inside the root.
-      // (load_solution picked whichever .cln it found; we mirror that here.)
-      const foundCln = `${path.replace(/\/+$/, "")}/${solution.name}.cln`;
+    if (loaded) {
+      // The .cln's own folder is the floor. Not the folder the user opened.
+      // If they opened a parent, the .cln wins — the solution defines its root.
+      const clnFolder = loaded.clnPath.slice(0, loaded.clnPath.lastIndexOf("/"));
+      const effectiveRoot = clnFolder || path;
+      const statMap = await statCraidds(effectiveRoot, loaded.solution.projects);
+      const withTrees = await Promise.all(
+        loaded.solution.projects.map((p) => populateTrees(effectiveRoot, p, statMap)),
+      );
+      const finalSolution = await withInferredConfigs({
+        ...loaded.solution,
+        projects: withTrees,
+      });
       set({
-        solution: { ...solution, projects: withTrees },
-        clnPath: foundCln,
+        rootPath: effectiveRoot,
+        solution: finalSolution,
+        clnPath: loaded.clnPath,
         isSolutionLoading: false,
         tabs: [],
         activeFileId: null,
@@ -471,22 +561,31 @@ export const useSolution = create<SolutionState>((set, get) => ({
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const discovery = await invoke<FileNode>("read_dir_children", { root, path: root });
-      const solution = await invoke<CraiddSolution | null>("load_solution_named", { path: root, clnName });
+      const loaded = await invoke<{ solution: CraiddSolution; clnPath: string } | null>(
+        "load_solution_named",
+        { path: root, clnName },
+      );
 
-      if (!solution) {
+      if (!loaded) {
         const msg = `Solution file not found: ${clnName}`;
         logErr(msg);
         set({ discovery, solutionError: msg, bannerState: "error", bannerMessage: msg, isSolutionLoading: false });
         return { status: "error", message: msg };
       }
 
-      log("openSolution loaded:", solution.projects.length, "projects");
+      log("openSolution loaded:", loaded.solution.projects.length, "projects @", loaded.clnPath);
 
-      const statMap = await statCraidds(root, solution.projects);
-      const withTrees = await Promise.all(solution.projects.map((p) => populateTrees(root, p, statMap)));
+      const statMap = await statCraidds(root, loaded.solution.projects);
+      const withTrees = await Promise.all(
+        loaded.solution.projects.map((p) => populateTrees(root, p, statMap)),
+      );
 
+      const finalSolution = await withInferredConfigs({
+        ...loaded.solution,
+        projects: withTrees,
+      });
       set({
-        solution: { ...solution, projects: withTrees },
+        solution: finalSolution,
         discovery,
         isSolutionLoading: false,
         tabs: [],
@@ -539,6 +638,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
         const name = path.split("/").filter(Boolean).pop() || "solution";
         const empty: CraiddSolution = {
           name, root: path, projects: [], build: [], autostart: [],
+          configs: [], inferredConfigs: [],
         };
         await invoke("save_solution", { root: path, solution: empty });
         set({
@@ -578,6 +678,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
         const name = path.split("/").filter(Boolean).pop() || "solution";
         const empty: CraiddSolution = {
           name, root: path, projects: [], build: [], autostart: [],
+          configs: [], inferredConfigs: [],
         };
         await invoke("save_solution", { root: path, solution: empty });
 
@@ -703,6 +804,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
       autostart: existing?.autostart ?? [],
       runDefault: existing?.runDefault,
       debugDefault: existing?.debugDefault,
+      configs: existing?.configs ?? [],
+      inferredConfigs: [],
     };
     await invoke("save_solution", { root: state.rootPath, solution: nextSolution });
 
@@ -763,6 +866,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
       autostart: existing?.autostart ?? [],
       runDefault: existing?.runDefault,
       debugDefault: existing?.debugDefault,
+      configs: existing?.configs ?? [],
+      inferredConfigs: [],
     };
     await invoke("save_solution", { root: state.rootPath, solution: nextSolution });
 
