@@ -274,6 +274,25 @@ async function populateTrees(
   return next;
 }
 
+// A slower tree read must never put a deleted file back after a newer refresh.
+let treeRefreshEpoch = 0;
+
+async function refreshAllProjectTrees(
+  get: () => SolutionState,
+  set: (partial: Partial<SolutionState>) => void,
+): Promise<void> {
+  const state = get();
+  if (!state.rootPath || !state.solution) return;
+  const epoch = ++treeRefreshEpoch;
+  const root = state.rootPath;
+  const projects = state.solution.projects;
+  const statMap = await statCraidds(root, projects);
+  const refreshed = await Promise.all(projects.map((p) => populateTrees(root, p, statMap)));
+  const latest = get();
+  if (epoch !== treeRefreshEpoch || latest.rootPath !== root || latest.solution !== state.solution) return;
+  set({ solution: { ...latest.solution, projects: refreshed } });
+}
+
 export const useSolution = create<SolutionState>((set, get) => ({
   rootPath: null,
   clnPath: null,
@@ -1200,13 +1219,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (!state.rootPath || !state.solution) return;
     const project = state.solution.projects.find((p) => p.id === projectId);
     if (!project) return;
-    const populated = await populateTrees(state.rootPath, project);
-    set({
-      solution: {
-        ...state.solution,
-        projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
-      },
-    });
+    await refreshAllProjectTrees(get, set);
   },
 
   refreshProjectMarkers: async () => {
@@ -1227,11 +1240,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (!changed) return;
 
     // Something changed on disk. Re-populate the whole solution.
-    const refreshed: CraiddProject[] = [];
-    for (const pr of projects) {
-      refreshed.push(await populateTrees(state.rootPath, pr, statMap));
-    }
-    set({ solution: { ...state.solution, projects: refreshed } });
+    await refreshAllProjectTrees(get, set);
   },
 
   heal: async () => {
@@ -1353,16 +1362,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     }));
 
     await get().refreshDiscovery();
-    const state = get();
-    if (state.solution) {
-      const solution = state.solution;
-      const refreshed: CraiddProject[] = [];
-      const statMap = await statCraidds(state.rootPath ?? "", solution.projects);
-      for (const pr of solution.projects) {
-        refreshed.push(await populateTrees(state.rootPath ?? "", pr, statMap));
-      }
-      set({ solution: { ...solution, projects: refreshed } });
-    }
+    await refreshAllProjectTrees(get, set);
   },
 
   deletePath: async (path, recursive) => {
@@ -1374,16 +1374,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     await get().refreshDiskStates();
 
     await get().refreshDiscovery();
-    const state = get();
-    if (state.solution) {
-      const solution = state.solution;
-      const refreshed: CraiddProject[] = [];
-      const statMap = await statCraidds(state.rootPath ?? "", solution.projects);
-      for (const pr of solution.projects) {
-        refreshed.push(await populateTrees(state.rootPath ?? "", pr, statMap));
-      }
-      set({ solution: { ...solution, projects: refreshed } });
-    }
+    await refreshAllProjectTrees(get, set);
   },
 
   openFile: async (absolutePath, fileName) => {

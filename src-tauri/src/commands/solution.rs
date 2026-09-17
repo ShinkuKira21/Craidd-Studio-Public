@@ -184,6 +184,10 @@ fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<Cr
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+    let default_project = parsed.get("solution").and_then(|t| t.get("default_project"))
+        .and_then(|v| v.as_str()).map(String::from);
+    let default_build = parsed.get("solution").and_then(|t| t.get("default_build"))
+        .and_then(|v| v.as_str()).map(String::from);
 
     Ok(Some(CraiddSolution {
         name,
@@ -193,6 +197,8 @@ fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<Cr
         run_default,
         debug_default,
         autostart,
+        default_project,
+        default_build,
     }))
 }
 
@@ -517,6 +523,8 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
     text.push_str("[solution]\n");
     text.push_str(&format!("name = \"{}\"\n", escape(&solution.name)));
     text.push_str("version = \"1.0\"\n");
+    if let Some(project) = &solution.default_project { text.push_str(&format!("default_project = \"{}\"\n", escape(project))); }
+    if let Some(build) = &solution.default_build { text.push_str(&format!("default_build = \"{}\"\n", escape(build))); }
     text.push_str("\nprojects = [\n");
     for p in &merged_paths {
         text.push_str(&format!("  \"{}\",\n", escape(p)));
@@ -537,6 +545,26 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
 
     fs::write(&file_path, text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_solution_build_defaults(cln_path: String, project: String, profile: String) -> Result<(), String> {
+    if profile != "debug" && profile != "release" { return Err("Unsupported build profile".into()); }
+    let path = Path::new(&cln_path);
+    if path.extension().and_then(|e| e.to_str()) != Some("cln") { return Err("Expected a .cln file".into()); }
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut parsed: toml::Value = text.parse().map_err(|e| format!("Invalid .cln: {e}"))?;
+    let solution = parsed.get_mut("solution").and_then(|v| v.as_table_mut())
+        .ok_or("Missing [solution] table")?;
+    let known = solution.get("projects").and_then(|v| v.as_array())
+        .is_some_and(|entries| entries.iter().any(|entry| entry.as_str() == Some(&project)));
+    if !known { return Err("Selected project is not declared in this solution".into()); }
+    solution.insert("default_project".into(), toml::Value::String(project));
+    solution.insert("default_build".into(), toml::Value::String(profile));
+    let temp = path.with_extension(format!("cln.{}.tmp", std::process::id()));
+    fs::write(&temp, toml::to_string_pretty(&parsed).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    fs::rename(&temp, path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

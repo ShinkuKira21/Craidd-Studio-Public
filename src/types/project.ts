@@ -52,6 +52,8 @@ export interface CraiddSolution {
   runDefault?: string;            // path to the .craidd
   debugDefault?: string;
   autostart: string[];
+  defaultProject?: string;
+  defaultBuild?: "debug" | "release";
 }
 
 export interface FileNode {

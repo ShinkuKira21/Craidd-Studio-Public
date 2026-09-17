@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
+import { useBuild } from "../store/buildStore";
 
 export function useKeyboardShortcuts(
   openCommandPalette: () => void,
@@ -10,6 +11,22 @@ export function useKeyboardShortcuts(
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
+
+      if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        await useBuild.getState().start("build");
+        return;
+      }
+      if (mod && e.key === "F5") {
+        e.preventDefault();
+        await useBuild.getState().start("run");
+        return;
+      }
+      if (e.shiftKey && e.key === "F5") {
+        e.preventDefault();
+        await useBuild.getState().stop();
+        return;
+      }
 
       // ── Save ─────────────────────────────────────────────
       if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {

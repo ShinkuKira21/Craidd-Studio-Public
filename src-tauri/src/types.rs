@@ -63,6 +63,10 @@ pub struct CraiddSolution {
     pub debug_default: Option<String>,
     #[serde(default)]
     pub autostart: Vec<String>,
+    #[serde(default)]
+    pub default_project: Option<String>,
+    #[serde(default)]
+    pub default_build: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

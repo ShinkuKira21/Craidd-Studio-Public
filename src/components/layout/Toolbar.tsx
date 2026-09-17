@@ -1,60 +1,60 @@
-import { memo } from "react";
-
-const stepIcons = {
-  pause: "M6 4h4v16H6zM14 4h4v16h-4z",
-  stepOver: "M5 12h14M13 5l7 7-7 7",
-  stepInto: "M12 5v14M5 13l7 7 7-7",
-  stepOut: "M12 19V5M5 11l7-7 7 7",
-  restart: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
-  stop: "M6 6h12v12H6z",
-};
-
-function IconButton({ title, path, filled = false }: { title: string; path: string; filled?: boolean }) {
-  return (
-    <button
-      title={title}
-      className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-    >
-      <svg
-        className="w-3.5 h-3.5"
-        fill={filled ? "currentColor" : "none"}
-        stroke={filled ? "none" : "currentColor"}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        viewBox="0 0 24 24"
-      >
-        <path d={path} />
-      </svg>
-    </button>
-  );
-}
+import { memo, useEffect, useState } from "react";
+import { useSolution } from "../../store/solutionStore";
+import { useBuild } from "../../store/buildStore";
 
 function Toolbar() {
+  const solution = useSolution((state) => state.solution);
+  const rootPath = useSolution((state) => state.rootPath);
+  const projectPath = useBuild((state) => state.projectPath);
+  const profile = useBuild((state) => state.profile);
+  const status = useBuild((state) => state.status);
+  const setProjectPath = useBuild((state) => state.setProjectPath);
+  const setProfile = useBuild((state) => state.setProfile);
+  const start = useBuild((state) => state.start);
+  const stop = useBuild((state) => state.stop);
+  const saveDefault = useBuild((state) => state.saveDefault);
+  const [saveMessage, setSaveMessage] = useState("");
+
+  useEffect(() => {
+    const chosen = solution?.defaultProject ?? solution?.projects.find((project) => project.language === "rust")?.path ?? null;
+    if (chosen) setProjectPath(chosen);
+    setProfile(solution?.defaultBuild === "release" ? "release" : "debug");
+  }, [rootPath, solution?.name, solution?.defaultProject, solution?.defaultBuild, setProjectPath, setProfile]);
+
+  const project = solution?.projects.find((item) => item.path === projectPath);
+  const canBuild = project?.language === "rust" && !project.missing && status !== "starting" && status !== "running";
+  const active = status === "starting" || status === "running";
+
+  const markDefault = async () => {
+    setSaveMessage("");
+    try { await saveDefault(); setSaveMessage("Default saved"); }
+    catch (error) { setSaveMessage(String(error)); }
+  };
+
   return (
-    <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-2 shrink-0">
-      <button className="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 flex items-center gap-1.5 text-xs cursor-default">
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-          <path d="M5 3l14 9-14 9V3z" />
-        </svg>
-        Run
-      </button>
-      <button className="px-3 py-1 rounded bg-zinc-800 text-zinc-500 flex items-center gap-1.5 text-xs cursor-default">
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-        </svg>
-        Debug
-      </button>
+    <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-2 shrink-0 text-xs">
+      <select aria-label="Project" title="Project" value={projectPath ?? ""} onChange={(event) => setProjectPath(event.target.value)}
+        disabled={!solution} className="max-w-[200px] min-w-[120px] bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200">
+        {!projectPath && <option value="">Select project</option>}
+        {solution?.projects.map((item) => <option key={item.path} value={item.path}>{item.name}{item.language !== "rust" ? ` (${item.language ?? "config"})` : ""}</option>)}
+      </select>
+      <select aria-label="Build configuration" title="Build configuration" value={profile} onChange={(event) => setProfile(event.target.value as "debug" | "release")}
+        className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200">
+        <option value="debug">Cargo Debug</option>
+        <option value="release">Cargo Release</option>
+      </select>
+      <button onClick={() => void markDefault()} disabled={!solution || !projectPath}
+        title="Save the selected project and build configuration in the solution"
+        className="px-2 py-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 disabled:opacity-40">Set as default</button>
       <div className="w-px h-5 bg-zinc-700 mx-1" />
-      <IconButton title="Pause" path={stepIcons.pause} filled />
-      <IconButton title="Step Over" path={stepIcons.stepOver} />
-      <IconButton title="Step Into" path={stepIcons.stepInto} />
-      <IconButton title="Step Out" path={stepIcons.stepOut} />
-      <IconButton title="Restart" path={stepIcons.restart} />
-      <IconButton title="Stop" path={stepIcons.stop} filled />
-      <div className="ml-auto flex items-center gap-2 text-xs text-zinc-600">
-        <span>Run & debug arrive in Phase 3</span>
-      </div>
+      <button onClick={() => void start("build")} disabled={!canBuild}
+        className="px-3 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white disabled:bg-zinc-800 disabled:text-zinc-500">Build</button>
+      <button onClick={() => void start("run")} disabled={!canBuild}
+        className="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:text-zinc-500">▶ Run</button>
+      <button onClick={() => void stop()} disabled={!active}
+        className="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:text-zinc-600">■ Stop</button>
+      <button disabled title="Rust debugger arrives after the Cargo build path" className="px-3 py-1 rounded text-zinc-600">Debug</button>
+      <span className="ml-auto max-w-[180px] truncate text-zinc-500" title={saveMessage || status}>{saveMessage || status}</span>
     </div>
   );
 }
