@@ -1,17 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CraiddProject, FileNode } from "../../types/project";
 import { languageMeta, projectExtensions, projectWellKnownFiles } from "../../lib/languages";
-
-/**
- * Phase 2.1.2.1 — READ-ONLY viewer.
- *
- * Shows the filesystem under the project's root (and, when the config
- * has a declared non-default location, a second section for the config
- * root). Every `.craidd` is hidden — it's a declaration, not content.
- *
- * Membership is derived from the current automation (extensions +
- * depth-1 rule). Save is a no-op until 2.1.3.
- */
+import { useSolution } from "../../store/solutionStore";
 
 type Mode = "fine-tune" | "recalibrate";
 
@@ -24,6 +14,8 @@ interface Props {
 }
 
 type Membership = "main" | "config" | "both" | "neither";
+type Choice = Membership | "auto";
+type Overrides = Pick<CraiddProject, "mainInclude" | "mainExclude" | "configInclude" | "configExclude">;
 
 interface TreeNode {
   node: FileNode;
@@ -45,8 +37,11 @@ function isCraidd(name: string): boolean {
   return name.toLowerCase().endsWith(".craidd");
 }
 
-function classifyFile(name: string, project: CraiddProject, depth: number): Membership {
-  if (depth > 0) return "neither";
+function isBoundary(node: FileNode): boolean {
+  return node.kind === "folder" && !!node.children?.some((child) => isCraidd(child.name));
+}
+
+function classifyFile(name: string, project: CraiddProject): Membership {
   const lang = project.language;
   const mainHit = lang && lang !== "config"
     ? hasExt(name, projectExtensions(lang)) ||
@@ -59,33 +54,44 @@ function classifyFile(name: string, project: CraiddProject, depth: number): Memb
   return "neither";
 }
 
-function classifyFolder(folder: FileNode, project: CraiddProject, depth: number): Membership {
-  if (depth > 0) return "neither";
-  const children = folder.children ?? [];
-  const lang = project.language;
-  const mainHit = lang && lang !== "config"
-    ? children.some(
-        (c) =>
-          c.kind === "file" &&
-          !isCraidd(c.name) &&
-          (hasExt(c.name, projectExtensions(lang)) ||
-            projectWellKnownFiles(lang).some((w) => w === c.name))
-      )
-    : false;
-  const configHit =
-    project.configEnabled &&
-    children.some((c) => c.kind === "file" && !isCraidd(c.name) && hasExt(c.name, CONFIG_EXTS));
+function classifyFolder(folder: FileNode, project: CraiddProject, isRoot = false): Membership {
+  if (!isRoot && isBoundary(folder)) return "neither";
+  const descendants = (folder.children ?? []).flatMap(function walk(node: FileNode): FileNode[] {
+    if (isCraidd(node.name)) return [];
+    if (isBoundary(node)) return [];
+    return node.kind === "file" ? [node] : (node.children ?? []).flatMap(walk);
+  });
+  const mainHit = descendants.some((c) => ["main", "both"].includes(classifyFile(c.name, project)));
+  const configHit = descendants.some((c) => ["config", "both"].includes(classifyFile(c.name, project)));
   if (mainHit && configHit) return "both";
   if (mainHit) return "main";
   if (configHit) return "config";
   return "neither";
 }
 
-function membershipOf(node: FileNode, project: CraiddProject, depth: number): Membership {
+function membershipOf(node: FileNode, project: CraiddProject, isRoot = false): Membership {
   if (isCraidd(node.name)) return "neither";
   return node.kind === "folder"
-    ? classifyFolder(node, project, depth)
-    : classifyFile(node.name, project, depth);
+    ? classifyFolder(node, project, isRoot)
+    : classifyFile(node.name, project);
+}
+
+function overrideAt(path: string, includes: string[] = [], excludes: string[] = []): boolean | undefined {
+  const parts = path.split("/");
+  for (let i = parts.length; i > 0; i--) {
+    const candidate = parts.slice(0, i).join("/");
+    if (includes.includes(candidate)) return true;
+    if (excludes.includes(candidate)) return false;
+  }
+  if (includes.includes(".")) return true;
+  if (excludes.includes(".")) return false;
+  return undefined;
+}
+
+function membershipWithOverrides(path: string, auto: Membership, overrides: Overrides): Membership {
+  const main = overrideAt(path, overrides.mainInclude, overrides.mainExclude) ?? (auto === "main" || auto === "both");
+  const config = overrideAt(path, overrides.configInclude, overrides.configExclude) ?? (auto === "config" || auto === "both");
+  return main && config ? "both" : main ? "main" : config ? "config" : "neither";
 }
 
 function flatten(
@@ -94,9 +100,16 @@ function flatten(
   depth: number,
   section: "project" | "config",
   openSet: Set<string>,
-  out: TreeNode[]
+  out: TreeNode[],
+  isRoot = true,
+  withinBoundary = false
 ): void {
-  if (!node || !node.children) return;
+  if (!node) return;
+  if (isRoot) {
+    out.push({ node, membership: membershipOf(node, project, true), depth, section });
+    if (openSet.has(section + ":" + node.id)) return;
+  }
+  if (!node.children) return;
   const sorted = [...node.children].sort((a, b) => {
     const ka = a.kind === "folder" ? 0 : 1;
     const kb = b.kind === "folder" ? 0 : 1;
@@ -104,11 +117,12 @@ function flatten(
   });
   for (const child of sorted) {
     if (isCraidd(child.name)) continue;
-    const m = membershipOf(child, project, depth);
+    const boundary = isBoundary(child);
+    const m = withinBoundary || boundary ? "neither" : membershipOf(child, project);
     const key = section + ":" + child.id;
-    out.push({ node: child, membership: m, depth, section });
+    out.push({ node: child, membership: m, depth: depth + 1, section });
     if (child.kind === "folder" && openSet.has(key)) {
-      flatten(child, project, depth + 1, section, openSet, out);
+      flatten(child, project, depth + 1, section, openSet, out, false, withinBoundary || boundary);
     }
   }
 }
@@ -162,6 +176,9 @@ function Section({
   openSet,
   toggle,
   languageColor,
+  overrides,
+  dualRoot,
+  onChoose,
 }: {
   title: string;
   rootAbs: string;
@@ -171,6 +188,9 @@ function Section({
   openSet: Set<string>;
   toggle: (key: string) => void;
   languageColor: string;
+  overrides: Overrides;
+  dualRoot: boolean;
+  onChoose: (section: "project" | "config", path: string, choice: Choice) => void;
 }) {
   const rows = useMemo(() => {
     const out: TreeNode[] = [];
@@ -190,7 +210,31 @@ function Section({
         rows.map((row) => {
           const isFolder = row.node.kind === "folder";
           const key = section + ":" + row.node.id;
-          const isOpen = openSet.has(key);
+          const isOpen = row.node.path === "." ? !openSet.has(key) : openSet.has(key);
+          const membership = membershipWithOverrides(row.node.path, row.membership, overrides);
+          const mainOn = membership === "main" || membership === "both";
+          const configOn = membership === "config" || membership === "both";
+          const toggleConfig = section === "config" || project.language === "config";
+          const checked = toggleConfig ? configOn : mainOn;
+          const chipMembership = dualRoot
+            ? section === "project"
+              ? mainOn ? "main" : "neither"
+              : configOn ? "config" : "neither"
+            : membership;
+          const path = row.node.path;
+          const explicit = (dualRoot
+            ? section === "project"
+              ? [overrides.mainInclude, overrides.mainExclude]
+              : [overrides.configInclude, overrides.configExclude]
+            : [overrides.mainInclude, overrides.mainExclude, overrides.configInclude, overrides.configExclude]
+          ).some((paths) => paths?.includes(path));
+          const selected = explicit
+            ? dualRoot
+              ? section === "project"
+                ? membership === "main" || membership === "both" ? "main" : "neither"
+                : membership === "config" || membership === "both" ? "config" : "neither"
+              : membership
+            : "auto";
           return (
             <div
               key={key}
@@ -217,19 +261,45 @@ function Section({
               ) : (
                 <span className="w-3 shrink-0" />
               )}
-              <MemberChip m={row.membership} languageColor={languageColor} />
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={checked}
+                aria-label={`Include ${row.node.name} in ${toggleConfig ? "config" : "project"}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const nextMain = toggleConfig ? mainOn : !mainOn;
+                  const nextConfig = toggleConfig ? !configOn : configOn;
+                  const choice: Choice = nextMain && nextConfig
+                    ? "both"
+                    : nextMain ? "main" : nextConfig ? "config" : "neither";
+                  onChoose(section, path, choice);
+                }}
+                className="shrink-0 inline-flex w-4 h-4 items-center justify-center rounded-sm cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+              >
+                <MemberChip m={chipMembership} languageColor={languageColor} />
+              </button>
               <span
                 className={
-                  "truncate " + (row.membership === "neither" ? "text-zinc-500" : "text-zinc-200")
+                  "truncate flex-1 " + (membership === "neither" ? "text-zinc-500" : "text-zinc-200")
                 }
               >
                 {row.node.name}
               </span>
-              {isFolder && (
-                <span className="ml-auto text-[10px] text-zinc-600">
-                  {row.node.children?.length ?? 0}
-                </span>
-              )}
+              <select
+                aria-label={`Membership for ${row.node.name}`}
+                title={isFolder ? "Folder choice applies to its contents" : "Choose project membership"}
+                value={selected}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => onChoose(section, path, e.target.value as Choice)}
+                className="ml-auto w-[105px] shrink-0 bg-zinc-950 border border-zinc-700 rounded px-1 py-0.5 text-[10px] text-zinc-300 disabled:opacity-50"
+              >
+                <option value="auto">Automatic</option>
+                {(!dualRoot || section === "project") && project.language !== "config" && <option value="main">Project</option>}
+                {(!dualRoot || section === "config") && project.configEnabled && <option value="config">Config</option>}
+                {!dualRoot && project.configEnabled && project.language !== "config" && <option value="both">Both</option>}
+                <option value="neither">Neither</option>
+              </select>
             </div>
           );
         })
@@ -249,6 +319,14 @@ export default function FineTuneDialog({
   const [configTree, setConfigTree] = useState<FileNode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openSet, setOpenSet] = useState<Set<string>>(new Set());
+  const saveMembership = useSolution((s) => s.saveMembership);
+  const [saving, setSaving] = useState(false);
+  const [overrides, setOverrides] = useState<Overrides>(() => mode === "recalibrate" ? {
+    mainInclude: [], mainExclude: [], configInclude: [], configExclude: [],
+  } : {
+    mainInclude: project.mainInclude ?? [], mainExclude: project.mainExclude ?? [],
+    configInclude: project.configInclude ?? [], configExclude: project.configExclude ?? [],
+  });
 
   const languageColor =
     project.language && project.language !== "config"
@@ -290,6 +368,46 @@ export default function FineTuneDialog({
 
   const dualRoot = !!configBaseAbs && configBaseAbs !== projectBaseAbs;
 
+  const choose = (section: "project" | "config", path: string, choice: Choice) => {
+    setOverrides((prev) => {
+      const next: Overrides = {
+        mainInclude: (prev.mainInclude ?? []).filter((p) => p !== path),
+        mainExclude: (prev.mainExclude ?? []).filter((p) => p !== path),
+        configInclude: (prev.configInclude ?? []).filter((p) => p !== path),
+        configExclude: (prev.configExclude ?? []).filter((p) => p !== path),
+      };
+      if (dualRoot && section === "project") {
+        next.configInclude = prev.configInclude;
+        next.configExclude = prev.configExclude;
+      } else if (dualRoot) {
+        next.mainInclude = prev.mainInclude;
+        next.mainExclude = prev.mainExclude;
+      }
+      if (choice !== "auto") {
+        if ((!dualRoot || section === "project") && project.language !== "config") {
+          next[choice === "main" || choice === "both" ? "mainInclude" : "mainExclude"]!.push(path);
+        }
+        if (project.configEnabled && (!dualRoot || section === "config")) {
+          next[choice === "config" || choice === "both" ? "configInclude" : "configExclude"]!.push(path);
+        }
+      }
+      return next;
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await saveMembership(project.id, overrides);
+      onClose();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60"
@@ -302,7 +420,7 @@ export default function FineTuneDialog({
         <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3 shrink-0">
           <span className="text-sm text-zinc-100 font-medium">{title}</span>
           <span className="text-[10px] uppercase tracking-wide text-zinc-500 border border-zinc-700 rounded px-1.5 py-0.5">
-            read-only preview
+            editable membership
           </span>
         </div>
 
@@ -325,6 +443,9 @@ export default function FineTuneDialog({
               openSet={openSet}
               toggle={toggle}
               languageColor={languageColor}
+              overrides={overrides}
+              dualRoot={dualRoot}
+              onChoose={choose}
             />
           )}
           {projectTree && dualRoot && (
@@ -337,6 +458,9 @@ export default function FineTuneDialog({
               openSet={openSet}
               toggle={toggle}
               languageColor={languageColor}
+              overrides={overrides}
+              dualRoot={dualRoot}
+              onChoose={choose}
             />
           )}
           {dualRoot && configTree && (
@@ -349,16 +473,16 @@ export default function FineTuneDialog({
               openSet={openSet}
               toggle={toggle}
               languageColor={languageColor}
+              overrides={overrides}
+              dualRoot={dualRoot}
+              onChoose={choose}
             />
           )}
         </div>
 
         <div className="px-4 py-2 border-t border-zinc-800 text-[11px] text-zinc-500 shrink-0 leading-5">
-          Membership is derived from the current automation (extension + boundary rules).
-          <br />
-          <span className="text-zinc-600">
-            Deep nodes are never auto-included. Editing &amp; persistence land in 2.1.3.
-          </span>
+          Automatic uses file extensions and project boundaries. Folder choices apply to their contents.
+          {mode === "recalibrate" && <div>Saving will reset previous manual choices.</div>}
         </div>
 
         <div className="px-4 py-3 border-t border-zinc-800 flex justify-end gap-2 shrink-0">
@@ -369,11 +493,11 @@ export default function FineTuneDialog({
             Close
           </button>
           <button
-            disabled
-            title="Editable membership arrives in Phase 2.1.3"
-            className="px-3 py-1 rounded text-xs bg-blue-900/50 text-blue-300/70 cursor-not-allowed"
+            onClick={save}
+            disabled={saving || !projectTree}
+            className="px-3 py-1 rounded text-xs bg-blue-700 hover:bg-blue-600 text-white disabled:opacity-50"
           >
-            Save (2.1.3)
+            {saving ? "Saving…" : "Save"}
           </button>
         </div>
       </div>

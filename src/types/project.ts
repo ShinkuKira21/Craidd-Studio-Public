@@ -21,6 +21,10 @@ export interface CraiddProject {
   configEnabled: boolean;
   configName?: string;
   configDirectory?: string;
+  mainInclude?: string[];
+  mainExclude?: string[];
+  configInclude?: string[];
+  configExclude?: string[];
 
   // Runtime-only
   missing?: boolean;              // true when .craidd file is not on disk

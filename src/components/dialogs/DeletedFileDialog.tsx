@@ -34,6 +34,7 @@ export default function DeletedFileDialog({
       }
     } catch (err) {
       console.error("[craidd] Save As from deleted prompt failed:", err);
+      alert(`Save As failed: ${String(err)}`);
     }
   };
 

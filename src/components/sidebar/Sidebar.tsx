@@ -1,9 +1,10 @@
+import { memo } from "react";
 import { useLayout } from "../../store/layoutStore";
 import SolutionExplorer from "./solution/SolutionExplorer";
 import FileDiscovery from "./discovery/FileDiscovery";
 import SearchPanel from "./search/SearchPanel";
 
-export default function Sidebar() {
+function Sidebar() {
   const activeView = useLayout((s) => s.activeView);
 
   return (
@@ -19,3 +20,5 @@ export default function Sidebar() {
     </div>
   );
 }
+
+export default memo(Sidebar);

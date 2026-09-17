@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 const stepIcons = {
   pause: "M6 4h4v16H6zM14 4h4v16h-4z",
   stepOver: "M5 12h14M13 5l7 7-7 7",
@@ -28,7 +30,7 @@ function IconButton({ title, path, filled = false }: { title: string; path: stri
   );
 }
 
-export default function Toolbar() {
+function Toolbar() {
   return (
     <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-2 shrink-0">
       <button className="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-500 flex items-center gap-1.5 text-xs cursor-default">
@@ -56,3 +58,5 @@ export default function Toolbar() {
     </div>
   );
 }
+
+export default memo(Toolbar);

@@ -73,6 +73,7 @@ interface SolutionState {
 
   addConfigHere: (projectId: string) => Promise<void>;
   setConfigDirectory: (projectId: string, directory: string) => Promise<void>;
+  saveMembership: (projectId: string, overrides: Pick<CraiddProject, "mainInclude" | "mainExclude" | "configInclude" | "configExclude">) => Promise<void>;
   removeConfig: (projectId: string) => Promise<void>;
   refreshProject: (projectId: string) => Promise<void>;
   refreshProjectMarkers: () => Promise<void>;
@@ -142,6 +143,8 @@ async function readTreeFor(
   wellKnownFiles: string[],
   stopAtCraidd: boolean,
   shallow = false,
+  includePaths: string[] = [],
+  excludePaths: string[] = [],
 ): Promise<{ tree: FileNode | null; error: string | null }> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -151,6 +154,8 @@ async function readTreeFor(
       wellKnownFiles,
       stopAtCraidd,
       shallow,
+      includePaths,
+      excludePaths,
     });
     return { tree, error: null };
   } catch (err) {
@@ -231,7 +236,7 @@ async function populateTrees(
     const exts = projectExtensions(project.language);
     const wnf = projectWellKnownFiles(project.language);
     const folder = projectFolderAbs(solutionRoot, project);
-    const { tree, error } = await readTreeFor(folder, exts, wnf, true);
+    const { tree, error } = await readTreeFor(folder, exts, wnf, true, false, project.mainInclude, project.mainExclude);
     next.tree = tree;
     next.treeError = error;
     next.treeBasePath = folder;
@@ -251,7 +256,7 @@ async function populateTrees(
       const resolved = resolveRelPath(folderBase, project.configDirectory);
       configFolder = isInside(solutionRoot, resolved) ? resolved : folderBase;
     }
-    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], false, true);
+    const { tree, error } = await readTreeFor(configFolder, meta.extensions, [], true, false, project.configInclude, project.configExclude);
     next.configTree = tree;
     next.configTreeError = error;
     next.configBasePath = configFolder;
@@ -331,7 +336,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     let discovery: FileNode;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      discovery = await invoke<FileNode>("read_dir_tree", { path });
+      discovery = await invoke<FileNode>("read_dir_children", { root: path, path });
       set({ discovery });
     } catch (err) {
       const msg = `Failed to read folder: ${String(err)}`;
@@ -353,9 +358,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
     }
 
     if (solution) {
-      const withTrees: CraiddProject[] = [];
       const statMap = await statCraidds(path, solution.projects);
-      for (const p of solution.projects) withTrees.push(await populateTrees(path, p, statMap));
+      const withTrees = await Promise.all(solution.projects.map((p) => populateTrees(path, p, statMap)));
       // Best-effort clnPath: {solutionName}.cln inside the root.
       // (load_solution picked whichever .cln it found; we mirror that here.)
       const foundCln = `${path.replace(/\/+$/, "")}/${solution.name}.cln`;
@@ -447,7 +451,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const discovery = await invoke<FileNode>("read_dir_tree", { path: root });
+      const discovery = await invoke<FileNode>("read_dir_children", { root, path: root });
       const solution = await invoke<CraiddSolution | null>("load_solution_named", { path: root, clnName });
 
       if (!solution) {
@@ -459,9 +463,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
 
       log("openSolution loaded:", solution.projects.length, "projects");
 
-      const withTrees: CraiddProject[] = [];
       const statMap = await statCraidds(root, solution.projects);
-      for (const p of solution.projects) withTrees.push(await populateTrees(root, p, statMap));
+      const withTrees = await Promise.all(solution.projects.map((p) => populateTrees(root, p, statMap)));
 
       set({
         solution: { ...solution, projects: withTrees },
@@ -590,7 +593,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (!state.rootPath) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const discovery = await invoke<FileNode>("read_dir_tree", { path: state.rootPath });
+      const discovery = await invoke<FileNode>("read_dir_children", { root: state.rootPath, path: state.rootPath });
       set({ discovery, rootMissing: false });
     } catch (err) {
       const msg = String(err);
@@ -650,22 +653,15 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const existingAtFolder = existing?.projects.find((p) => p.folder === folder && p.language === language);
 
     const id = name.replace(/[^A-Za-z0-9_]/g, "") || folder.split("/").filter(Boolean).pop() || "project";
-    const folderName = folder.split("/").filter(Boolean).pop() || "project";
-
     // Ask Rust which filename this project should take — canonical
     // {folder}.craidd if the folder has no .craidd, else {folder}.{lang}.craidd.
     const folderAbs = folder === "." || folder === ""
       ? state.rootPath
       : `${state.rootPath.replace(/\/+$/, "")}/${folder.replace(/^\/+/, "")}`;
-    let craiddFileName: string;
-    try {
-      craiddFileName = await invoke<string>("plan_craidd_filename", {
-        folder: folderAbs,
-        language,
-      });
-    } catch {
-      craiddFileName = `${folderName}.craidd`;
-    }
+    const craiddFileName = await invoke<string>("plan_craidd_filename", {
+      folder: folderAbs,
+      language,
+    });
     const craiddRelPath = folder === "." || folder === ""
       ? craiddFileName
       : `${folder}/${craiddFileName}`;
@@ -1129,7 +1125,23 @@ export const useSolution = create<SolutionState>((set, get) => ({
         projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
       },
     });
-    await get().refreshDiscovery();
+  },
+
+  saveMembership: async (projectId, overrides) => {
+    const state = get();
+    if (!state.rootPath || !state.solution) throw new Error("No solution is open.");
+    const project = state.solution.projects.find((p) => p.id === projectId);
+    if (!project || project.missing) throw new Error("Project is unavailable.");
+    const updated = { ...project, ...overrides };
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_project", { root: state.rootPath, project: updated });
+    const populated = await populateTrees(state.rootPath, updated);
+    set((s) => s.solution ? ({
+      solution: {
+        ...s.solution,
+        projects: s.solution.projects.map((p) => p.id === projectId ? populated : p),
+      },
+    }) : {});
   },
 
   setConfigDirectory: async (projectId, directory) => {
@@ -1137,6 +1149,11 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (!state.rootPath || !state.solution) return;
     const project = state.solution.projects.find((p) => p.id === projectId);
     if (!project || project.missing) return;
+
+    const resolvedDirectory = resolveRelPath(projectFolderAbs(state.rootPath, project), directory);
+    if (!isInside(state.rootPath, resolvedDirectory)) {
+      throw new Error("Config directory must be inside the solution folder.");
+    }
 
     const { invoke } = await import("@tauri-apps/api/core");
     const updated: CraiddProject = {
@@ -1378,6 +1395,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       const content = await invoke<string>("read_file", { path: absolutePath });
+      const stats = await invoke<{ mtimeMs: number }[]>("stat_files", { paths: [absolutePath] });
       const language = languageFromFilename(fileName);
       const monacoLanguage = monacoLanguageForFilename(fileName);
       const tab: EditorTab = {
@@ -1389,7 +1407,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
         originalContent: content,
         dirty: false,
         diskState: "inSync",
-        mtimeAtLastSync: 0,
+        mtimeAtLastSync: stats[0]?.mtimeMs ?? 0,
       };
       set({ tabs: [...state.tabs, tab], activeFileId: absolutePath });
     } catch (err) {
@@ -1412,13 +1430,16 @@ export const useSolution = create<SolutionState>((set, get) => ({
     void get().refreshDiskStateFor(fileId);
   },
 
-  updateTabContent: (fileId, content) => set((s) => ({
-    tabs: s.tabs.map((t) =>
-      t.fileId === fileId
-        ? { ...t, content, dirty: content !== t.originalContent }
-        : t
-    ),
-  })),
+  updateTabContent: (fileId, content) => {
+    if (get().tabs.find((t) => t.fileId === fileId)?.content === content) return;
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.fileId === fileId
+          ? { ...t, content, dirty: content !== t.originalContent }
+          : t
+      ),
+    }));
+  },
 
   saveFile: async (fileId, force = false) => {
     const state = get();
@@ -1438,12 +1459,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
         return "conflict";
       }
 
-      await invoke("write_file_allow_overwrite", { path: fileId, content: tab.content }).catch(async () => {
-        // Fallback: the original write_file refuses when the file exists.
-        // We need an overwrite path — call fs directly.
-        const { invoke: inv } = await import("@tauri-apps/api/core");
-        await inv("overwrite_file", { path: fileId, content: tab.content });
-      });
+      await invoke("overwrite_file", { path: fileId, content: tab.content });
 
       const after = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
         "stat_files",
@@ -1468,7 +1484,10 @@ export const useSolution = create<SolutionState>((set, get) => ({
   saveFileAs: async (oldFileId, newPath) => {
     const state = get();
     const tab = state.tabs.find((t) => t.fileId === oldFileId);
-    if (!tab) return;
+    if (!tab) throw new Error("The file is no longer open.");
+    if (state.tabs.some((t) => t.fileId === newPath && t.fileId !== oldFileId)) {
+      throw new Error("The destination is already open in another tab.");
+    }
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("overwrite_file", { path: newPath, content: tab.content });
@@ -1483,13 +1502,20 @@ export const useSolution = create<SolutionState>((set, get) => ({
       set((s) => ({
         tabs: s.tabs.map((t) =>
           t.fileId === oldFileId
-            ? { ...t, fileId: newPath, name: fileName, language, originalContent: t.content, dirty: false, diskState: "inSync", mtimeAtLastSync }
+            ? { ...t, fileId: newPath, name: fileName, language, monacoLanguage: monacoLanguageForFilename(fileName), originalContent: t.content, dirty: false, diskState: "inSync", mtimeAtLastSync }
             : t
         ),
         activeFileId: s.activeFileId === oldFileId ? newPath : s.activeFileId,
       }));
+      await get().refreshDiscovery();
+      const latest = get();
+      if (latest.solution && latest.rootPath) {
+        const projects = await Promise.all(latest.solution.projects.map((p) => populateTrees(latest.rootPath!, p)));
+        set((s) => s.solution ? ({ solution: { ...s.solution, projects } }) : {});
+      }
     } catch (err) {
       logErr("saveFileAs failed:", err);
+      throw err;
     }
   },
 

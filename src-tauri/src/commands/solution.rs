@@ -236,6 +236,10 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             config_enabled: false,
             config_name: None,
             config_directory: None,
+            main_include: vec![],
+            main_exclude: vec![],
+            config_include: vec![],
+            config_exclude: vec![],
             missing: true,
             external,
         };
@@ -260,6 +264,10 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             config_enabled: false,
             config_name: None,
             config_directory: None,
+            main_include: vec![],
+            main_exclude: vec![],
+            config_include: vec![],
+            config_exclude: vec![],
             missing: true,
             external,
         },
@@ -296,6 +304,12 @@ fn load_craidd_file(full: &Path) -> Result<CraiddProject, String> {
         .and_then(|c| c.get("name")).and_then(|v| v.as_str()).map(String::from);
     let config_directory = config_sec
         .and_then(|c| c.get("directory")).and_then(|v| v.as_str()).map(String::from);
+    let membership = parsed.get("membership");
+    let paths = |key: &str| -> Vec<String> {
+        membership.and_then(|m| m.get(key)).and_then(|v| v.as_array())
+            .map(|items| items.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
 
     let language = if language.is_none() && config_enabled { Some("config".into()) } else { language };
 
@@ -310,6 +324,10 @@ fn load_craidd_file(full: &Path) -> Result<CraiddProject, String> {
         config_enabled,
         config_name,
         config_directory,
+        main_include: paths("main_include"),
+        main_exclude: paths("main_exclude"),
+        config_include: paths("config_include"),
+        config_exclude: paths("config_exclude"),
         missing: false,
         external: false,
     })
@@ -419,8 +437,50 @@ pub fn save_project(root: String, project: CraiddProject) -> Result<(), String> 
         return Err("Nothing to write — no [project] or [config] section".into());
     }
 
+    if !project.main_include.is_empty() || !project.main_exclude.is_empty()
+        || !project.config_include.is_empty() || !project.config_exclude.is_empty() {
+        text.push_str("\n[membership]\n");
+        for (key, paths) in [
+            ("main_include", &project.main_include),
+            ("main_exclude", &project.main_exclude),
+            ("config_include", &project.config_include),
+            ("config_exclude", &project.config_exclude),
+        ] {
+            if paths.is_empty() { continue; }
+            let values = paths.iter().map(|p| format!("\"{}\"", escape(p))).collect::<Vec<_>>().join(", ");
+            text.push_str(&format!("{key} = [{values}]\n"));
+        }
+    }
+
     fs::write(&file_path, text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    #[test]
+    fn membership_choices_survive_project_save_and_reload() {
+        let dir = std::env::temp_dir().join(format!("craidd-membership-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&dir).unwrap();
+        let project = CraiddProject {
+            id: "demo".into(), name: "demo".into(), language: Some("rust".into()),
+            root: ".".into(), kind: "application".into(), path: "demo.craidd".into(), folder: ".".into(),
+            config_enabled: true, config_name: None, config_directory: None,
+            main_include: vec!["notes.txt".into()], main_exclude: vec!["old.rs".into()],
+            config_include: vec!["settings.custom".into()], config_exclude: vec!["private.json".into()],
+            missing: false, external: false,
+        };
+        save_project(dir.to_string_lossy().into_owned(), project).unwrap();
+        let loaded = load_craidd_file(&dir.join("demo.craidd")).unwrap();
+        assert_eq!(loaded.main_include, ["notes.txt"]);
+        assert_eq!(loaded.main_exclude, ["old.rs"]);
+        assert_eq!(loaded.config_include, ["settings.custom"]);
+        assert_eq!(loaded.config_exclude, ["private.json"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tauri::command]

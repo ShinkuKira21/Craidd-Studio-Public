@@ -21,6 +21,15 @@ pub struct CraiddProject {
     pub config_directory: Option<String>,
 
     #[serde(default)]
+    pub main_include: Vec<String>,
+    #[serde(default)]
+    pub main_exclude: Vec<String>,
+    #[serde(default)]
+    pub config_include: Vec<String>,
+    #[serde(default)]
+    pub config_exclude: Vec<String>,
+
+    #[serde(default)]
     pub missing: bool,
     #[serde(default)]
     pub external: bool,

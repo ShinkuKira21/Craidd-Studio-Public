@@ -25,18 +25,41 @@ export default function FileTree({
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.name);
   const [error, setError] = useState<string | null>(null);
+  const [loadedChildren, setLoadedChildren] = useState<FileNode[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const lastTickRef = useRef(0);
 
+  const isFolder = node.kind === "folder";
+  const absPath = buildAbs(basePath, node);
   const openFile = useSolution((s) => s.openFile);
-  const activeFileId = useSolution((s) => s.activeFileId);
+  const isActive = useSolution((s) => s.activeFileId === absPath);
   const renamingRequest = useSolution((s) => s.renamingRequest);
   const setFocusedTreeTarget = useSolution((s) => s.setFocusedTreeTarget);
 
-  const isFolder = node.kind === "folder";
-  const absPath = buildAbs(basePath, node);
-  const isActive = activeFileId === absPath;
   const indent = { paddingLeft: `${8 + depth * 12}px` };
+
+  useEffect(() => {
+    setLoadedChildren(null);
+    setLoadError(null);
+  }, [node]);
+
+  useEffect(() => {
+    if (source !== "discovery" || !isFolder || !open || node.children !== undefined || loadedChildren !== null || loadError) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const result = await invoke<FileNode>("read_dir_children", { root: basePath, path: absPath });
+        if (!cancelled) setLoadedChildren(result.children ?? []);
+      } catch (err) {
+        if (!cancelled) setLoadError(String(err));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [source, isFolder, open, node.children, loadedChildren, loadError, basePath, absPath]);
+
+  const children = node.children ?? loadedChildren;
 
   useEffect(() => {
     if (!renamingRequest) return;
@@ -180,7 +203,13 @@ export default function FileTree({
           {error}
         </div>
       )}
-      {isFolder && open && node.children?.map((child) => (
+      {isFolder && open && source === "discovery" && loadError && (
+        <div className="pl-6 text-[11px] text-red-400">{loadError}</div>
+      )}
+      {isFolder && open && source === "discovery" && !loadError && children === null && (
+        <div className="pl-6 text-[11px] text-zinc-500">Loading…</div>
+      )}
+      {isFolder && open && children?.map((child) => (
         <FileTree
           key={child.id || child.path}
           node={child}

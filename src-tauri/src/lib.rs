@@ -1,7 +1,7 @@
 mod commands;
 mod types;
 
-use commands::fs::{read_dir_tree, read_dir_tree_filtered, read_file, write_file, create_folder, stat_files, overwrite_file, delete_path, rename_path};
+use commands::fs::{read_dir_tree, read_dir_children, read_dir_tree_filtered, read_file, write_file, create_folder, stat_files, overwrite_file, delete_path, rename_path};
 use commands::search::search_in_path;
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
@@ -39,6 +39,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_file,
             read_dir_tree,
+            read_dir_children,
             read_dir_tree_filtered,
             write_file,
             create_folder,

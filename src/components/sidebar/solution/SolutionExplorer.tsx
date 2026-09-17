@@ -18,6 +18,7 @@ export default function SolutionExplorer() {
   const refreshProject = useSolution((s) => s.refreshProject);
   const addConfigHere = useSolution((s) => s.addConfigHere);
   const setConfigDirectory = useSolution((s) => s.setConfigDirectory);
+  const saveMembership = useSolution((s) => s.saveMembership);
   const removeConfig = useSolution((s) => s.removeConfig);
   const addExistingProject = useSolution((s) => s.addExistingProject);
   const removeProject = useSolution((s) => s.removeProject);
@@ -33,6 +34,7 @@ export default function SolutionExplorer() {
   const [treeCtxMenu, setTreeCtxMenu] = useState<{
     x: number; y: number;
     node: FileNode;
+    projectId: string;
     basePath: string;
     source: "solution-lang" | "solution-config";
   } | null>(null);
@@ -50,6 +52,15 @@ export default function SolutionExplorer() {
       setPendingFineTuneName(null);
     }
   }, [pendingFineTuneName, solution]);
+
+  useEffect(() => {
+    const openFineTune = (event: Event) => {
+      const projectId = (event as CustomEvent<string>).detail;
+      if (projectId) setFineTuneTarget({ projectId, mode: "fine-tune" });
+    };
+    window.addEventListener("craidd:fine-tune-project", openFineTune);
+    return () => window.removeEventListener("craidd:fine-tune-project", openFineTune);
+  }, []);
 
   const toggle = (id: string) =>
     setCollapsed((prev) => {
@@ -240,6 +251,7 @@ export default function SolutionExplorer() {
                                 source="solution-lang"
                                 onContext={(x, y, n) => setTreeCtxMenu({
                                   x, y, node: n,
+                                  projectId: project.id,
                                   basePath: project.treeBasePath ?? projectBase,
                                   source: "solution-lang",
                                 })}
@@ -271,6 +283,7 @@ export default function SolutionExplorer() {
                                 source="solution-config"
                                 onContext={(x, y, n) => setTreeCtxMenu({
                                   x, y, node: n,
+                                  projectId: project.id,
                                   basePath: project.configBasePath ?? projectBase,
                                   source: "solution-config",
                                 })}
@@ -341,11 +354,23 @@ export default function SolutionExplorer() {
             </button>
             <div className="my-1 h-px bg-zinc-800" />
             <button
-              disabled
-              title="Available when Fine Tune becomes editable"
-              className="w-full px-3 py-1 text-left text-zinc-600 cursor-default"
+              onClick={() => {
+                const target = treeCtxMenu;
+                setTreeCtxMenu(null);
+                const project = solution?.projects.find((p) => p.id === target.projectId);
+                if (!project) return;
+                const path = target.node.path;
+                const isConfig = target.source === "solution-config";
+                void saveMembership(project.id, {
+                  mainInclude: isConfig ? project.mainInclude : (project.mainInclude ?? []).filter((p) => p !== path),
+                  mainExclude: isConfig ? project.mainExclude : [...new Set([...(project.mainExclude ?? []), path])],
+                  configInclude: isConfig ? (project.configInclude ?? []).filter((p) => p !== path) : project.configInclude,
+                  configExclude: isConfig ? [...new Set([...(project.configExclude ?? []), path])] : project.configExclude,
+                }).catch((err) => alert(`Could not change membership: ${String(err)}`));
+              }}
+              className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
             >
-              Remove from Project
+              {treeCtxMenu.source === "solution-config" ? "Remove from Config" : "Remove from Project"}
             </button>
           </div>
         </>
@@ -599,16 +624,16 @@ export default function SolutionExplorer() {
       {fineTuneTarget && (() => {
         const project = solution?.projects.find((p) => p.id === fineTuneTarget.projectId);
         if (!project || !rootPath) return null;
-        const base = project.external
+        const base = project.treeBasePath ?? (project.external
           ? (project.path.startsWith("/")
               ? project.path.slice(0, project.path.lastIndexOf("/"))
               : `${rootPath.replace(/\/+$/, "")}/${project.path.slice(0, project.path.lastIndexOf("/"))}`)
-          : projectBasePath(project.folder);
+          : projectBasePath(project.folder));
         return (
           <FineTuneDialog
             project={project}
             projectBaseAbs={base}
-            configBaseAbs={configBasePath(project)}
+            configBaseAbs={project.configEnabled ? (project.configBasePath ?? configBasePath(project)) : null}
             mode={fineTuneTarget.mode}
             onClose={() => setFineTuneTarget(null)}
           />
