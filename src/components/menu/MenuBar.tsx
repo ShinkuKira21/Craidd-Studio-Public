@@ -13,15 +13,17 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
-  const openFolder = useSolution((s) => s.openFolder);
-  const openSolution = useSolution((s) => s.openSolution);
-  const heal = useSolution((s) => s.heal);
   const activeFileId = useSolution((s) => s.activeFileId);
   const buildStatus = useBuild((s) => s.status);
   const startBuild = useBuild((s) => s.start);
   const stopBuild = useBuild((s) => s.stop);
   const runSave = (action: () => Promise<void>) => {
     void action().catch((err) => alert(`Save failed: ${String(err)}`));
+  };
+  const openWelcome = () => {
+    void import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("open_welcome_window"))
+      .catch((error) => alert(`Could not open Get Started: ${String(error)}`));
   };
 
   useEffect(() => {
@@ -36,18 +38,14 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({ directory: true, multiple: false });
-      console.log("[craidd] picker returned:", selected);
       if (typeof selected !== "string") return;
-
-      const result = await openFolder(selected);
-      console.log("[craidd] openFolder result:", result);
-
-      if (result.status === "loaded") {
-        const n = await heal();
-        if (n > 0) console.log(`[craidd] recovered ${n} orphan project(s)`);
-      }
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_workspace_window", { entry: {
+        path: selected, kind: "folder", name: selected.split("/").filter(Boolean).pop() ?? selected, windowLabel: "",
+      } });
     } catch (err) {
       console.error("[craidd] Open Folder failed:", err);
+      alert(`Could not open folder: ${String(err)}`);
     }
   };
 
@@ -58,18 +56,14 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         multiple: false,
         filters: [{ name: "Craidd Solution", extensions: ["cln"] }],
       });
-      console.log("[craidd] picker returned:", selected);
       if (typeof selected !== "string") return;
-
-      const result = await openSolution(selected);
-      console.log("[craidd] openSolution result:", result);
-
-      if (result.status === "loaded") {
-        const n = await heal();
-        if (n > 0) console.log(`[craidd] recovered ${n} orphan project(s)`);
-      }
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_workspace_window", { entry: {
+        path: selected, kind: "solution", name: selected.split("/").filter(Boolean).pop() ?? selected, windowLabel: "",
+      } });
     } catch (err) {
       console.error("[craidd] Open Solution failed:", err);
+      alert(`Could not open solution: ${String(err)}`);
     }
   };
 
@@ -80,7 +74,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         { label: "New Solution…", shortcut: "Ctrl+Shift+N", disabled: true },
         { label: "Open Folder…", shortcut: "Ctrl+K Ctrl+O", action: doOpenFolder },
         { label: "Open Solution…", shortcut: "Ctrl+Shift+O", action: doOpenSolution },
-        { label: "Open Recent", disabled: true },
+        { label: "Open Recent…", action: openWelcome },
+        { label: "Get Started…", action: openWelcome },
         { separator: true },
         { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId, action: () => runSave(saveActiveFile) },
         { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId, action: () => runSave(saveActiveFileAs) },
