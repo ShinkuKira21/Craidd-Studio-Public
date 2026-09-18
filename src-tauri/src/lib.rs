@@ -19,7 +19,6 @@ use commands::solution::{
 };
 use commands::manifests::read_manifests;
 use commands::infer::infer_configs;
-use commands::runner::{RunnerManager, start_config, stop_config};
 
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -41,7 +40,6 @@ fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(BuildManager::default())
-        .manage(RunnerManager::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -83,8 +81,6 @@ pub fn run() {
             write_project_tool_override,
             start_cargo,
             stop_cargo,
-            start_config,
-            stop_config,
             infer_configs,
         ])
         .run(tauri::generate_context!())

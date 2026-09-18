@@ -10,7 +10,6 @@ import type {
   ProjectKind,
 } from "../types/project";
 import { languageFromFilename, monacoLanguageForFilename, projectExtensions, projectWellKnownFiles, languageMeta } from "../lib/languages";
-import { seedMainChoices } from "./buildStore";
 
 export interface AncestorInfo {
   clnPath: string;
@@ -482,7 +481,6 @@ export const useSolution = create<SolutionState>((set, get) => ({
         bannerState: "none",
         bannerMessage: null,
       });
-      seedMainChoices(finalSolution);
       return { status: "loaded" };
     }
 
@@ -595,7 +593,6 @@ export const useSolution = create<SolutionState>((set, get) => ({
         bannerState: "none",
         bannerMessage: null,
       });
-      seedMainChoices(finalSolution);
       return { status: "loaded" };
     } catch (err) {
       const msg = `Failed to open solution: ${String(err)}`;

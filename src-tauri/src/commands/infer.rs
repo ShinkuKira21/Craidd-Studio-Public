@@ -220,7 +220,6 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
 
 /// Cargo's profile set: always includes `debug` and `release`; any
 /// `[profile.<name>]` table in Cargo.toml adds a custom profile.
-#[allow(dead_code)]
 fn profiles_for_cargo(project: &CraiddProject) -> Vec<Profile> {
     let mut out = vec![
         Profile {
@@ -245,7 +244,6 @@ fn profiles_for_cargo(project: &CraiddProject) -> Vec<Profile> {
 
 /// .NET's configuration set: read from <Configurations> in the .csproj
 /// if declared; otherwise the default Debug/Release pair.
-#[allow(dead_code)]
 fn profiles_for_dotnet(project: &CraiddProject) -> Vec<Profile> {
     let mut out = vec![
         Profile {
@@ -270,7 +268,6 @@ fn profiles_for_dotnet(project: &CraiddProject) -> Vec<Profile> {
 
 /// CMake's build types. Standard four; CMakePresets.json overrides
 /// these when present, in a follow-up push.
-#[allow(dead_code)]
 fn profiles_for_cmake() -> Vec<Profile> {
     vec![
         Profile { name: "Debug".into(),           args: vec!["--config".into(), "Debug".into()],           env: std::collections::BTreeMap::new(), description: None },
@@ -282,7 +279,6 @@ fn profiles_for_cmake() -> Vec<Profile> {
 
 /// Python has no built-in profile concept. Inference produces none;
 /// the user extends the set when they want custom variants.
-#[allow(dead_code)]
 fn profiles_for_python() -> Vec<Profile> {
     vec![]
 }
