@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 .backup
 setup-v*.sh
+
+workspaces/*
