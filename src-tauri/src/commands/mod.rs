@@ -5,3 +5,4 @@ pub mod toolchain;
 pub mod build;
 pub mod manifests;
 pub mod infer;
+pub mod window;

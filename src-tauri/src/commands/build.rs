@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -6,13 +7,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use super::toolchain::resolve_tool;
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
-pub struct BuildManager(pub Mutex<Option<ActiveBuild>>);
+pub struct BuildManager(pub Mutex<HashMap<String, ActiveBuild>>);
 
 pub struct ActiveBuild {
     id: u64,
@@ -21,7 +22,7 @@ pub struct ActiveBuild {
 }
 
 impl Default for BuildManager {
-    fn default() -> Self { Self(Mutex::new(None)) }
+    fn default() -> Self { Self(Mutex::new(HashMap::new())) }
 }
 
 #[derive(Clone, Serialize)]
@@ -33,8 +34,8 @@ struct BuildEvent {
     exit_code: Option<i32>,
 }
 
-fn emit(app: &AppHandle, session_id: u64, kind: &'static str, text: Option<String>, exit_code: Option<i32>) {
-    let _ = app.emit("craidd:build", BuildEvent { session_id, kind, text, exit_code });
+fn emit(app: &AppHandle, label: &str, session_id: u64, kind: &'static str, text: Option<String>, exit_code: Option<i32>) {
+    let _ = app.emit_to(label, "craidd:build", BuildEvent { session_id, kind, text, exit_code });
 }
 
 fn manifest_dir(root: &Path, marker: &str) -> Result<PathBuf, String> {
@@ -60,7 +61,7 @@ fn manifest_dir(root: &Path, marker: &str) -> Result<PathBuf, String> {
     ))
 }
 
-fn stream_lines<R: Read + Send + 'static>(app: AppHandle, id: u64, reader: R, json: bool) -> thread::JoinHandle<()> {
+fn stream_lines<R: Read + Send + 'static>(app: AppHandle, label: String, id: u64, reader: R, json: bool) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         for line in BufReader::new(reader).lines() {
             let Ok(line) = line else { break; };
@@ -70,12 +71,12 @@ fn stream_lines<R: Read + Send + 'static>(app: AppHandle, id: u64, reader: R, js
                         Some("compiler-message") => {
                             let rendered = value.get("message").and_then(|m| m.get("rendered"))
                                 .and_then(|v| v.as_str()).unwrap_or(&line);
-                            emit(&app, id, "output", Some(rendered.into()), None);
+                            emit(&app, &label, id, "output", Some(rendered.into()), None);
                             continue;
                         }
                         Some("compiler-artifact") => {
                             if let Some(path) = value.get("executable").and_then(|v| v.as_str()) {
-                                emit(&app, id, "artifact", Some(path.into()), None);
+                                emit(&app, &label, id, "artifact", Some(path.into()), None);
                             }
                             continue;
                         }
@@ -83,13 +84,13 @@ fn stream_lines<R: Read + Send + 'static>(app: AppHandle, id: u64, reader: R, js
                     }
                 }
             }
-            emit(&app, id, "output", Some(line), None);
+            emit(&app, &label, id, "output", Some(line), None);
         }
     })
 }
 
 #[tauri::command]
-pub fn start_cargo(app: AppHandle, state: State<'_, BuildManager>, root: String, project: String,
+pub fn start_cargo(window: WebviewWindow, app: AppHandle, state: State<'_, BuildManager>, root: String, project: String,
     profile: String, action: String) -> Result<u64, String> {
     if profile != "debug" && profile != "release" { return Err("Unsupported Cargo profile".into()); }
     if action != "build" && action != "run" { return Err("Unsupported Cargo action".into()); }
@@ -103,21 +104,22 @@ pub fn start_cargo(app: AppHandle, state: State<'_, BuildManager>, root: String,
     else { command.arg("--color=never"); }
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    let label = window.label().to_string();
     let mut active = state.0.lock().map_err(|e| e.to_string())?;
-    if active.is_some() { return Err("A build or run is already active. Stop it first.".into()); }
+    if active.contains_key(&label) { return Err("A build or run is already active in this window. Stop it first.".into()); }
     let mut child = command.spawn().map_err(|e| format!("Could not start {}: {e}", cargo.display()))?;
     let stdout = child.stdout.take().ok_or("Could not capture Cargo stdout")?;
     let stderr = child.stderr.take().ok_or("Could not capture Cargo stderr")?;
     let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
     let child = Arc::new(Mutex::new(child));
     let cancelled = Arc::new(AtomicBool::new(false));
-    *active = Some(ActiveBuild { id, child: child.clone(), cancelled: cancelled.clone() });
+    active.insert(label.clone(), ActiveBuild { id, child: child.clone(), cancelled: cancelled.clone() });
     drop(active);
 
-    emit(&app, id, "start", Some(format!("{} {} ({}) in {}", cargo.display(), action, profile, cwd.display())), None);
+    emit(&app, &label, id, "start", Some(format!("{} {} ({}) in {}", cargo.display(), action, profile, cwd.display())), None);
     thread::spawn(move || {
-        let out = stream_lines(app.clone(), id, stdout, action == "build");
-        let err = stream_lines(app.clone(), id, stderr, false);
+        let out = stream_lines(app.clone(), label.clone(), id, stdout, action == "build");
+        let err = stream_lines(app.clone(), label.clone(), id, stderr, false);
         let status = loop {
             let result = child.lock().map_err(|e| e.to_string()).and_then(|mut process|
                 process.try_wait().map_err(|e| e.to_string()));
@@ -131,12 +133,12 @@ pub fn start_cargo(app: AppHandle, state: State<'_, BuildManager>, root: String,
         let _ = err.join();
         let was_cancelled = cancelled.load(Ordering::SeqCst);
         match status {
-            Ok(status) => emit(&app, id, if was_cancelled { "cancelled" } else { "finish" }, None, status.code()),
-            Err(error) => emit(&app, id, "error", Some(error), None),
+            Ok(status) => emit(&app, &label, id, if was_cancelled { "cancelled" } else { "finish" }, None, status.code()),
+            Err(error) => emit(&app, &label, id, "error", Some(error), None),
         }
         if let Some(manager) = app.try_state::<BuildManager>() {
             if let Ok(mut active) = manager.0.lock() {
-                if active.as_ref().is_some_and(|build| build.id == id) { *active = None; }
+                if active.get(&label).is_some_and(|build| build.id == id) { active.remove(&label); }
             }
         }
     });
@@ -144,12 +146,23 @@ pub fn start_cargo(app: AppHandle, state: State<'_, BuildManager>, root: String,
 }
 
 #[tauri::command]
-pub fn stop_cargo(state: State<'_, BuildManager>) -> Result<(), String> {
+pub fn stop_cargo(window: WebviewWindow, state: State<'_, BuildManager>) -> Result<(), String> {
     let active = state.0.lock().map_err(|e| e.to_string())?;
-    let Some(build) = active.as_ref() else { return Ok(()); };
+    let Some(build) = active.get(window.label()) else { return Ok(()); };
     build.cancelled.store(true, Ordering::SeqCst);
     let result = build.child.lock().map_err(|e| e.to_string())?.kill().map_err(|e| e.to_string());
     result
+}
+
+pub fn cancel_window_build(window: &tauri::Window) {
+    if let Some(manager) = window.app_handle().try_state::<BuildManager>() {
+        if let Ok(active) = manager.0.lock() {
+            if let Some(build) = active.get(window.label()) {
+                build.cancelled.store(true, Ordering::SeqCst);
+                if let Ok(mut child) = build.child.lock() { let _ = child.kill(); }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

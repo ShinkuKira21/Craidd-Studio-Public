@@ -532,6 +532,7 @@ mod membership_tests {
             config_enabled: true, config_name: None, config_directory: None,
             main_include: vec!["notes.txt".into()], main_exclude: vec!["old.rs".into()],
             config_include: vec!["settings.custom".into()], config_exclude: vec!["private.json".into()],
+            manifests: vec![],
             missing: false, external: false,
         };
         save_project(dir.to_string_lossy().into_owned(), project).unwrap();

@@ -14,35 +14,37 @@ import PreferencesDialog from "../preferences/PreferencesDialog";
 import DeletedFileDialog from "../dialogs/DeletedFileDialog";
 import SaveConflictDialog from "../dialogs/SaveConflictDialog";
 import CriticalWorkspaceBanner from "./CriticalWorkspaceBanner";
+import NewProjectDialog from "../dialogs/NewProjectDialog";
 import { usePreferences } from "../../store/preferencesStore";
 import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useSolution } from "../../store/solutionStore";
 
-export default function AppShell() {
+export default function AppShell({ startProjectDialog = false, onCloseStartProjectDialog }: { startProjectDialog?: boolean; onCloseStartProjectDialog?: () => void }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
   const pendingSave = useSolution((s) => s.pendingSave);
   const setPendingSave = useSolution((s) => s.setPendingSave);
+  const rootPath = useSolution((s) => s.rootPath);
+  const clnPath = useSolution((s) => s.clnPath);
+  const hasSolution = useSolution((s) => !!s.solution);
+  const bannerState = useSolution((s) => s.bannerState);
+  const isSolutionLoading = useSolution((s) => s.isSolutionLoading);
   useKeyboardShortcuts(
     () => setPaletteOpen(true),
     () => setPrefsOpen(true),
   );
 
-  // Show the native window only after React has mounted.
-  // The window is created hidden (visible: false in tauri.conf.json).
-  // Combined with the inline dark style in index.html, this eliminates
-  // the white flash between native window creation and first paint.
   useEffect(() => {
-    (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("show_main_window");
-      } catch {
-        // Running in a plain browser (npm run dev) — no Tauri. Fine.
-      }
-    })();
-  }, []);
+    if (isSolutionLoading || !rootPath) return;
+    const kind = hasSolution && clnPath ? "solution" :
+      !hasSolution && (bannerState === "no-solution" || bannerState === "inside-parent") ? "folder" : null;
+    if (!kind) return;
+    const path = kind === "solution" ? clnPath! : rootPath;
+    void import("@tauri-apps/api/core").then(({ invoke }) =>
+      invoke("record_workspace_open", { path, kind })
+    ).catch((error) => console.error("[craidd] Could not record recent workspace:", error));
+  }, [rootPath, clnPath, hasSolution, bannerState, isSolutionLoading]);
 
   // Refresh disk state for all open tabs whenever the window regains focus.
   useEffect(() => {
@@ -114,6 +116,13 @@ export default function AppShell() {
         />
       )}
       <CriticalWorkspaceBanner />
+      {startProjectDialog && <NewProjectDialog onClose={(options) => {
+        onCloseStartProjectDialog?.();
+        if (options?.fineTuneAfter && options.projectName) {
+          const project = useSolution.getState().solution?.projects.find((item) => item.name === options.projectName);
+          if (project) window.dispatchEvent(new CustomEvent("craidd:fine-tune-project", { detail: project.id }));
+        }
+      }} />}
     </div>
   );
 }
