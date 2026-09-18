@@ -17,7 +17,12 @@ export default function EditorTabs({
 }: {
   requestClose: (fileId: string) => void;
 }) {
-  const tabs = useSolution((s) => s.tabs);
+  // Editing changes tab content on every keystroke. Tab chrome only needs
+  // to repaint when its label or status changes.
+  useSolution((s) => s.tabs.map((t) =>
+    `${t.fileId}\u0000${t.name}\u0000${t.language}\u0000${t.dirty}\u0000${t.diskState}`
+  ).join("\u0001"));
+  const tabs = useSolution.getState().tabs;
   const activeFileId = useSolution((s) => s.activeFileId);
   const setActiveFile = useSolution((s) => s.setActiveFile);
   const closeTab = useSolution((s) => s.closeTab);
@@ -37,8 +42,8 @@ export default function EditorTabs({
         const isActive = tab.fileId === activeFileId;
         const langColor =
           tab.language === "plaintext"
-            ? "bg-zinc-500"
-            : languageMeta(tab.language as any).color.replace("text-", "bg-");
+            ? "text-zinc-500"
+            : languageMeta(tab.language).color;
         const dot = dotClass(tab);
 
         const onClose = (e: React.MouseEvent) => {
@@ -70,17 +75,18 @@ export default function EditorTabs({
                 : "text-zinc-400 hover:bg-zinc-800 border-t-2 border-t-transparent")
             }
           >
-            <span className={"w-2 h-2 rounded-full " + langColor} />
+            <svg aria-hidden="true" className={"w-3 h-3 shrink-0 " + langColor} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M3 1.75h6l4 4v8.5H3z" /><path d="M9 1.75v4h4" />
+            </svg>
             <span className="text-xs whitespace-nowrap">{tab.name}</span>
+            {dot && <span title={tab.diskState === "deleted" ? "Deleted on disk" : tab.diskState === "newer" ? "Changed on disk" : "Unsaved changes"} className={"w-2 h-2 rounded-full shrink-0 " + dot} />}
             <button
               onClick={onClose}
+              title={`Close ${tab.name}`}
+              aria-label={`Close ${tab.name}`}
               className="w-4 h-4 flex items-center justify-center opacity-70 group-hover:opacity-100"
             >
-              {dot ? (
-                <span className={"w-2 h-2 rounded-full " + dot} />
-              ) : (
-                <span className="text-zinc-600 hover:text-zinc-200 text-sm leading-none">×</span>
-              )}
+              <span className="text-zinc-600 hover:text-zinc-200 text-sm leading-none">×</span>
             </button>
           </div>
         );

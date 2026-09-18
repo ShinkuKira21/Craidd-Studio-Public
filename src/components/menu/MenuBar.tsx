@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { usePreferences } from "../../store/preferencesStore";
 import { useSolution } from "../../store/solutionStore";
+import { saveActiveFile, saveActiveFileAs } from "../../lib/fileActions";
+import { useBuild } from "../../store/buildStore";
 
 interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; }
 interface MenuSeparator { separator: true; }
@@ -14,6 +16,13 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
   const openFolder = useSolution((s) => s.openFolder);
   const openSolution = useSolution((s) => s.openSolution);
   const heal = useSolution((s) => s.heal);
+  const activeFileId = useSolution((s) => s.activeFileId);
+  const buildStatus = useBuild((s) => s.status);
+  const startBuild = useBuild((s) => s.start);
+  const stopBuild = useBuild((s) => s.stop);
+  const runSave = (action: () => Promise<void>) => {
+    void action().catch((err) => alert(`Save failed: ${String(err)}`));
+  };
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -73,6 +82,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         { label: "Open Solution…", shortcut: "Ctrl+Shift+O", action: doOpenSolution },
         { label: "Open Recent", disabled: true },
         { separator: true },
+        { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId, action: () => runSave(saveActiveFile) },
+        { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId, action: () => runSave(saveActiveFileAs) },
         { separator: true },
         { label: "Preferences…", shortcut: "Ctrl+,", action: openPreferences },
         { separator: true },
@@ -112,9 +123,10 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     {
       label: "Run",
       items: [
+        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => void startBuild("build"), disabled: buildStatus === "running" || buildStatus === "starting" },
+        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => void startBuild("run"), disabled: buildStatus === "running" || buildStatus === "starting" },
         { label: "Start Debugging", shortcut: "F5", disabled: true },
-        { label: "Run Without Debugging", shortcut: "Ctrl+F5", disabled: true },
-        { label: "Stop", shortcut: "Shift+F5", disabled: true },
+        { label: "Stop", shortcut: "Shift+F5", action: () => void stopBuild(), disabled: buildStatus !== "running" && buildStatus !== "starting" },
       ],
     },
     {

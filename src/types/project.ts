@@ -21,6 +21,10 @@ export interface CraiddProject {
   configEnabled: boolean;
   configName?: string;
   configDirectory?: string;
+  mainInclude?: string[];
+  mainExclude?: string[];
+  configInclude?: string[];
+  configExclude?: string[];
 
   // Runtime-only
   missing?: boolean;              // true when .craidd file is not on disk
@@ -31,6 +35,10 @@ export interface CraiddProject {
   configTree?: FileNode | null;
   configTreeError?: string | null;
   configBasePath?: string;
+
+  // Runtime-only: manifests read from the project's resolved folder.
+  // Session-only. Never written to disk.
+  manifests?: Manifest[];
 }
 
 export interface BuildEntry {
@@ -48,6 +56,16 @@ export interface CraiddSolution {
   runDefault?: string;            // path to the .craidd
   debugDefault?: string;
   autostart: string[];
+  defaultProject?: string;
+  /** Legacy field. Preserved for old .cln files. Not written. */
+  defaultBuild?: "debug" | "release";
+
+  /** Named Configurations declared in .cln under [[config]]. */
+  configs: ConfigEntry[];
+  /** Name of the default Configuration. */
+  defaultConfig?: string;
+  /** Session-only inferred entries. Never written to .cln. */
+  inferredConfigs: ConfigEntry[];
 }
 
 export interface FileNode {
@@ -70,4 +88,33 @@ export interface EditorTab {
   dirty: boolean;
   diskState: DiskState;
   mtimeAtLastSync: number;
+}
+
+export interface Manifest {
+  kind: "cargo" | "npm" | "dotnet" | "cmake";
+  path: string;      // absolute path to the manifest file
+  folder: string;    // absolute path to the folder containing it
+  values: Record<string, unknown>;
+}
+
+export type ConfigKind = "run" | "build" | "debug" | "test";
+export type ConfigOrigin = "user" | "inferred";
+
+export interface ConfigEntry {
+  name: string;
+  kind: ConfigKind;
+  target: string;              // path to the target .craidd, "." for whole solution
+  method?: string;             // "cargo" | "npm" | "dotnet" | "cmake" | "shell" | "composed" | "python"
+  command?: string;            // literal command; overrides method+manifest
+  cwd?: string;                // relative to solution root
+  origin: ConfigOrigin;
+  profiles?: Profile[];
+  defaultProfile?: string;
+}
+
+export interface Profile {
+  name: string;
+  args: string[];
+  env: Record<string, string>;
+  description?: string;
 }

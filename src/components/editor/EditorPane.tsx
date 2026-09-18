@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import EditorTabs from "./EditorTabs";
 import Breadcrumb from "./Breadcrumb";
 import CodeView from "./CodeView";
 import SaveConfirmDialog from "../dialogs/SaveConfirmDialog";
 
-export default function EditorPane() {
+function EditorPane() {
   const [pendingClose, setPendingClose] = useState<string | null>(null);
 
   useEffect(() => {
@@ -30,3 +30,5 @@ export default function EditorPane() {
     </div>
   );
 }
+
+export default memo(EditorPane);

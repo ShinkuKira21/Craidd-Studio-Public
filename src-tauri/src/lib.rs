@@ -1,8 +1,10 @@
 mod commands;
 mod types;
 
-use commands::fs::{read_dir_tree, read_dir_tree_filtered, read_file, write_file, create_folder, stat_files, overwrite_file, delete_path, rename_path};
+use commands::fs::{read_dir_tree, read_dir_children, read_dir_tree_filtered, read_file, write_file, create_folder, stat_files, overwrite_file, delete_path, rename_path};
 use commands::search::search_in_path;
+use commands::toolchain::{get_toolchain, scan_toolchain, set_tool_default, preferences_file_path, read_project_tool_override, write_project_tool_override};
+use commands::build::{BuildManager, start_cargo, stop_cargo};
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
     save_project, save_solution, scan_craidd_files, remove_project, delete_project,
@@ -13,7 +15,10 @@ use commands::solution::{
     wipe_and_recreate_craidd,
     folder_is_empty,
     rescan_language_suggestion,
+    set_solution_build_defaults,
 };
+use commands::manifests::read_manifests;
+use commands::infer::infer_configs;
 
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -34,11 +39,13 @@ fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(BuildManager::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_file,
             read_dir_tree,
+            read_dir_children,
             read_dir_tree_filtered,
             write_file,
             create_folder,
@@ -63,7 +70,18 @@ pub fn run() {
             wipe_and_recreate_craidd,
             folder_is_empty,
             rescan_language_suggestion,
-                    search_in_path,
+            set_solution_build_defaults,
+            search_in_path,
+            read_manifests,
+            get_toolchain,
+            scan_toolchain,
+            set_tool_default,
+            preferences_file_path,
+            read_project_tool_override,
+            write_project_tool_override,
+            start_cargo,
+            stop_cargo,
+            infer_configs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,0 +1,6 @@
+# Craidd Studio edits project metadata while running. These are data files,
+# so changing them must not restart the Tauri development process.
+*.craidd
+*.cln
+**/*.craidd
+**/*.cln

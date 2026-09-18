@@ -139,8 +139,8 @@ export default function NewProjectDialog({ onClose }: Props) {
                     </button>
                   </div>
                   <div className="text-zinc-600 text-[10.5px] leading-4">
-                    Relative to the project folder. Use <span className="font-mono">.</span> for
-                    the project root, or a subpath like <span className="font-mono">config/</span>.
+                    Use <span className="font-mono">.</span> for the project root, a subpath like
+                    <span className="font-mono"> config/</span>, or browse within the solution folder.
                     For program-owned config files (states, save data), this is where they live.
                   </div>
                 </div>
@@ -160,7 +160,7 @@ export default function NewProjectDialog({ onClose }: Props) {
               <span className="text-zinc-300">Fine Tune after creation?</span>
             </label>
             <div className="pl-6 text-zinc-600 text-[10.5px] leading-4 mt-0.5">
-              Opens the membership viewer once the project is created.
+              Opens Fine Tune once the project is created.
             </div>
           </div>
 

@@ -7,6 +7,8 @@ const IGNORE_DIRS: &[&str] = &[
     ".git", "node_modules", "target", "dist", "build", "bin", "obj",
     "__pycache__", "venv", "coverage", "out", "Pods", "vendor",
 ];
+const MAX_TREE_NODES: usize = 12_000;
+const MAX_TREE_DEPTH: usize = 64;
 
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
@@ -17,7 +19,48 @@ pub fn read_file(path: String) -> Result<String, String> {
 pub fn read_dir_tree(path: String) -> Result<FileNode, String> {
     let p = Path::new(&path);
     if !p.exists() { return Err(format!("Path does not exist: {path}")); }
-    build_tree(p, p, None).map_err(|e| format!("read_dir_tree({path}) failed: {e}"))
+    let mut count = 0;
+    build_tree(p, p, None, 0, &mut count).map_err(|e| format!("read_dir_tree({path}) failed: {e}"))
+}
+
+/// Return one directory level for File Discovery. Large workspaces are
+/// expanded on demand instead of serializing the entire tree into the webview.
+#[tauri::command]
+pub fn read_dir_children(root: String, path: String) -> Result<FileNode, String> {
+    let root_path = Path::new(&root);
+    let dir = Path::new(&path);
+    let rel = dir.strip_prefix(root_path).map_err(|_| "Folder is outside the open workspace".to_string())?;
+    if !dir.is_dir() { return Err(format!("Not a directory: {path}")); }
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    let rel = if rel.is_empty() { ".".to_string() } else { rel };
+    let mut children = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| format!("read_dir_children({path}) failed: {e}"))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if kind.is_symlink() || (kind.is_dir() && IGNORE_DIRS.contains(&name.as_str())) { continue; }
+        if !kind.is_dir() && !kind.is_file() { continue; }
+        let child_rel = if rel == "." { name.clone() } else { format!("{rel}/{name}") };
+        children.push(FileNode {
+            id: child_rel.clone(), name, path: child_rel,
+            kind: if kind.is_dir() { "folder" } else { "file" }.into(),
+            children: None,
+        });
+        if children.len() > MAX_TREE_NODES {
+            return Err("Folder has too many entries to display at once.".into());
+        }
+    }
+    children.sort_by(|a, b| {
+        let ka = if a.kind == "folder" { 0 } else { 1 };
+        let kb = if b.kind == "folder" { 0 } else { 1 };
+        ka.cmp(&kb).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(FileNode {
+        id: rel.clone(), path: rel,
+        name: dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone()),
+        kind: "folder".into(), children: Some(children),
+    })
 }
 
 #[tauri::command]
@@ -27,6 +70,8 @@ pub fn read_dir_tree_filtered(
     well_known_files: Vec<String>,
     stop_at_craidd: Option<bool>,
     shallow: Option<bool>,
+    include_paths: Option<Vec<String>>,
+    exclude_paths: Option<Vec<String>>,
 ) -> Result<FileNode, String> {
     let p = Path::new(&path);
     if !p.exists() { return Err(format!("Path does not exist: {path}")); }
@@ -36,10 +81,13 @@ pub fn read_dir_tree_filtered(
     let full = if shal {
         build_tree_shallow(p).map_err(|e| e.to_string())?
     } else {
-        build_tree(p, p, if stop { Some(()) } else { None }).map_err(|e| e.to_string())?
+        let mut count = 0;
+        build_tree(p, p, None, 0, &mut count).map_err(|e| e.to_string())?
     };
 
-    Ok(filter_tree(full, &extensions, &well_known_files, shal).unwrap_or(FileNode {
+    let includes = include_paths.unwrap_or_default();
+    let excludes = exclude_paths.unwrap_or_default();
+    Ok(filter_tree(full, &extensions, &well_known_files, shal, stop, &includes, &excludes, None).unwrap_or(FileNode {
         id: ".".into(),
         name: p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| ".".into()),
         path: ".".into(),
@@ -124,20 +172,31 @@ pub fn create_folder(path: String) -> Result<(), String> {
 }
 
 
-fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String], shallow: bool) -> Option<FileNode> {
+fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String], shallow: bool, stop_at_craidd: bool,
+    includes: &[String], excludes: &[String], inherited: Option<bool>) -> Option<FileNode> {
+    // A nested project is automatic exclusion, not a locked boundary. An
+    // explicit choice on this folder, an ancestor, or a descendant wins.
+    let boundary = stop_at_craidd && node.path != "." && node.kind == "folder"
+        && node.children.as_ref().is_some_and(|children|
+            children.iter().any(|child| child.kind == "file" && child.name.ends_with(".craidd")));
+    let inherited = if boundary && inherited.is_none() { Some(false) } else { inherited };
+    let forced = if includes.iter().any(|p| p == &node.path) { Some(true) }
+        else if excludes.iter().any(|p| p == &node.path) { Some(false) }
+        else { inherited };
     match node.kind.as_str() {
         "file" => {
+            if node.name.ends_with(".craidd") { return None; }
             let lower = node.name.to_lowercase();
             let ext_ok = lower.contains('.')
                 && extensions.iter().any(|e| lower.ends_with(&format!(".{}", e.to_lowercase())));
             let wnf_ok = wnf.iter().any(|w| w == &node.name);
-            if ext_ok || wnf_ok { Some(node) } else { None }
+            if forced.unwrap_or(ext_ok || wnf_ok) { Some(node) } else { None }
         }
         _ => {
             // In shallow mode, folders do not appear in the result at all.
             if shallow {
                 let files = node.children.unwrap_or_default().into_iter()
-                    .filter_map(|c| filter_tree(c, extensions, wnf, shallow))
+                    .filter_map(|c| filter_tree(c, extensions, wnf, shallow, stop_at_craidd, includes, excludes, forced))
                     .collect::<Vec<_>>();
                 if files.is_empty() { return None; }
                 return Some(FileNode {
@@ -146,9 +205,9 @@ fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String], shallow: b
                 });
             }
             let children = node.children.unwrap_or_default().into_iter()
-                .filter_map(|c| filter_tree(c, extensions, wnf, shallow))
+                .filter_map(|c| filter_tree(c, extensions, wnf, shallow, stop_at_craidd, includes, excludes, forced))
                 .collect::<Vec<_>>();
-            if children.is_empty() { None }
+            if children.is_empty() && forced != Some(true) { None }
             else {
                 Some(FileNode { id: node.id, name: node.name, path: node.path, kind: node.kind, children: Some(children) })
             }
@@ -156,12 +215,16 @@ fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String], shallow: b
     }
 }
 
-fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>) -> std::io::Result<FileNode> {
+fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>, depth: usize, count: &mut usize) -> std::io::Result<FileNode> {
+    *count += 1;
+    if *count > MAX_TREE_NODES || depth > MAX_TREE_DEPTH {
+        return Err(std::io::Error::other("Folder is too large to scan at once. Open a smaller folder or project root."));
+    }
     let rel = current.strip_prefix(root).unwrap_or(current).to_string_lossy().replace('\\', "/");
     let name = current.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| rel.clone());
     let id = if rel.is_empty() { ".".to_string() } else { rel.clone() };
     if current.is_file() {
-        return Ok(FileNode { id, name, path: rel, kind: "file".to_string(), children: None });
+        return Ok(FileNode { id: id.clone(), name, path: id, kind: "file".to_string(), children: None });
     }
 
     if stop_at_craidd.is_some() && !rel.is_empty() {
@@ -185,14 +248,14 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>) -> std::i
         if let Ok(md) = fs::symlink_metadata(&p) {
             if md.file_type().is_symlink() { continue; }
         }
-        children.push(build_tree(root, &p, stop_at_craidd)?);
+        children.push(build_tree(root, &p, stop_at_craidd, depth + 1, count)?);
     }
     children.sort_by(|a, b| {
         let ka = if a.kind == "folder" { 0 } else { 1 };
         let kb = if b.kind == "folder" { 0 } else { 1 };
         ka.cmp(&kb).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    Ok(FileNode { id, name, path: rel, kind: "folder".to_string(), children: Some(children) })
+    Ok(FileNode { id: id.clone(), name, path: id, kind: "folder".to_string(), children: Some(children) })
 }
 
 /// Return filesystem metadata for each path. Used by the frontend to
@@ -302,4 +365,54 @@ fn folder_has_craidd(dir: &Path, _folder_name: &str) -> bool {
         if n.ends_with(".craidd") { return true; }
     }
     false
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+
+    fn has_path(node: &FileNode, path: &str) -> bool {
+        node.path == path || node.children.as_ref().is_some_and(|children|
+            children.iter().any(|child| has_path(child, path)))
+    }
+
+    #[test]
+    fn explicit_membership_crosses_nested_project_boundaries() {
+        let root = std::env::temp_dir().join(format!("craidd-boundary-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/src.craidd"), "[project]\nname = \"nested\"\n").unwrap();
+        fs::write(root.join("src/main.ts"), "export {};").unwrap();
+        let path = root.to_string_lossy().into_owned();
+        let read = |include: Vec<&str>, exclude: Vec<&str>| {
+            read_dir_tree_filtered(path.clone(), vec!["ts".into()], vec![], Some(true), Some(false),
+                Some(include.into_iter().map(String::from).collect()),
+                Some(exclude.into_iter().map(String::from).collect())).unwrap()
+        };
+        assert!(!has_path(&read(vec![], vec![]), "src/main.ts"));
+        assert!(has_path(&read(vec!["src"], vec![]), "src/main.ts"));
+        assert!(has_path(&read(vec!["src/main.ts"], vec![]), "src/main.ts"));
+        assert!(has_path(&read(vec!["."], vec![]), "src/main.ts"));
+        assert!(!has_path(&read(vec!["."], vec!["src/main.ts"]), "src/main.ts"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_reads_only_one_level_and_skips_build_folders() {
+        let root = std::env::temp_dir().join(format!("craidd-discovery-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("src/nested/main.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]").unwrap();
+        let root_str = root.to_string_lossy().into_owned();
+        let tree = read_dir_children(root_str.clone(), root_str.clone()).unwrap();
+        let children = tree.children.unwrap();
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().any(|n| n.name == "src" && n.children.is_none()));
+        assert!(children.iter().any(|n| n.name == "Cargo.toml"));
+        let src = read_dir_children(root_str, root.join("src").to_string_lossy().into_owned()).unwrap();
+        assert_eq!(src.children.unwrap()[0].path, "src/nested");
+        fs::remove_dir_all(root).unwrap();
+    }
 }

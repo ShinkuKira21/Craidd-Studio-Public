@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
+import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
+import { useBuild } from "../store/buildStore";
 
 export function useKeyboardShortcuts(
   openCommandPalette: () => void,
@@ -10,40 +12,38 @@ export function useKeyboardShortcuts(
     const onKey = async (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
 
+      if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        await useBuild.getState().start("build");
+        return;
+      }
+      if (mod && e.key === "F5") {
+        e.preventDefault();
+        await useBuild.getState().start("run");
+        return;
+      }
+      if (e.shiftKey && e.key === "F5") {
+        e.preventDefault();
+        await useBuild.getState().stop();
+        return;
+      }
+
       // ── Save ─────────────────────────────────────────────
       if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        const s = useSolution.getState();
-        if (!s.activeFileId) return;
-        const tab = s.tabs.find((t) => t.fileId === s.activeFileId);
-        if (!tab) return;
-        if (tab.diskState === "deleted") {
-          s.setPendingSave({ fileId: s.activeFileId, kind: "deleted" });
-          return;
-        }
-        if (tab.diskState === "newer") {
-          s.setPendingSave({ fileId: s.activeFileId, kind: "newer" });
-          return;
-        }
-        await s.saveFile(s.activeFileId);
+        try { await saveActiveFile(); }
+        catch (err) { alert(`Save failed: ${String(err)}`); }
         return;
       }
 
       // ── Save As ──────────────────────────────────────────
       if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        const s = useSolution.getState();
-        if (!s.activeFileId) return;
-        const tab = s.tabs.find((t) => t.fileId === s.activeFileId);
-        if (!tab) return;
         try {
-          const { save } = await import("@tauri-apps/plugin-dialog");
-          const chosen = await save({ defaultPath: tab.fileId });
-          if (typeof chosen === "string") {
-            await s.saveFileAs(s.activeFileId, chosen);
-          }
+          await saveActiveFileAs();
         } catch (err) {
           console.error("[craidd] Save As failed:", err);
+          alert(`Save As failed: ${String(err)}`);
         }
         return;
       }

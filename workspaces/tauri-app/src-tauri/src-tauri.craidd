@@ -1,0 +1,8 @@
+[project]
+name = "Backend"
+language = "rust"
+root = "."
+
+[config]
+name = "Backend (Config)"
+enabled = true

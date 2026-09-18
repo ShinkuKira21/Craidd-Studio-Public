@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{AncestorInfo, BuildEntry, CraiddProject, CraiddSolution};
+use crate::types::{AncestorInfo, BuildEntry, ConfigEntry, CraiddProject, CraiddSolution, SolutionWithPath};
 
 const IGNORE_DIRS: &[&str] = &[
     ".git", "node_modules", "target", "dist", "build", "bin", "obj",
@@ -128,20 +128,28 @@ fn walk_for_craidd(root: &Path, current: &Path, out: &mut Vec<String>, depth: u3
 // NOTE: parameter is `path` (a folder path), matching the TS invoke calls.
 
 #[tauri::command]
-pub fn load_solution(path: String) -> Result<Option<CraiddSolution>, String> {
+pub fn load_solution(path: String) -> Result<Option<SolutionWithPath>, String> {
     let root_path = PathBuf::from(&path);
     if !root_path.is_dir() { return Err(format!("Not a directory: {path}")); }
     let Some(cln_path) = find_cln_in(&root_path)? else { return Ok(None); };
-    load_solution_from_cln(&root_path, &cln_path)
+    let Some(solution) = load_solution_from_cln(&root_path, &cln_path)? else { return Ok(None); };
+    Ok(Some(SolutionWithPath {
+        cln_path: cln_path.to_string_lossy().into_owned(),
+        solution,
+    }))
 }
 
 #[tauri::command]
-pub fn load_solution_named(path: String, cln_name: String) -> Result<Option<CraiddSolution>, String> {
+pub fn load_solution_named(path: String, cln_name: String) -> Result<Option<SolutionWithPath>, String> {
     let root_path = PathBuf::from(&path);
     if !root_path.is_dir() { return Err(format!("Not a directory: {path}")); }
     let cln_path = root_path.join(&cln_name);
     if !cln_path.is_file() { return Ok(None); }
-    load_solution_from_cln(&root_path, &cln_path)
+    let Some(solution) = load_solution_from_cln(&root_path, &cln_path)? else { return Ok(None); };
+    Ok(Some(SolutionWithPath {
+        cln_path: cln_path.to_string_lossy().into_owned(),
+        solution,
+    }))
 }
 
 fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<CraiddSolution>, String> {
@@ -184,6 +192,19 @@ fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<Cr
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+    let default_project = parsed.get("solution").and_then(|t| t.get("default_project"))
+        .and_then(|v| v.as_str()).map(String::from);
+    let default_build = parsed.get("solution").and_then(|t| t.get("default_build"))
+        .and_then(|v| v.as_str()).map(String::from);
+    let default_config = parsed.get("solution").and_then(|t| t.get("default_config"))
+        .and_then(|v| v.as_str()).map(String::from);
+
+    // [[config]] entries.
+    let configs: Vec<ConfigEntry> = parsed
+        .get("config")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(parse_config_entry).collect())
+        .unwrap_or_default();
 
     Ok(Some(CraiddSolution {
         name,
@@ -193,7 +214,44 @@ fn load_solution_from_cln(root_path: &Path, cln_path: &Path) -> Result<Option<Cr
         run_default,
         debug_default,
         autostart,
+        default_project,
+        default_build,
+        configs,
+        default_config,
+        inferred_configs: vec![],   // filled in by the frontend via infer_configs
     }))
+}
+
+fn parse_config_entry(v: &toml::Value) -> Option<ConfigEntry> {
+    let t = v.as_table()?;
+    let name = t.get("name").and_then(|x| x.as_str())?.to_string();
+    Some(ConfigEntry {
+        name,
+        kind: t.get("kind").and_then(|x| x.as_str()).unwrap_or("run").to_string(),
+        target: t.get("target").and_then(|x| x.as_str()).unwrap_or(".").to_string(),
+        method: t.get("method").and_then(|x| x.as_str()).map(String::from),
+        command: t.get("command").and_then(|x| x.as_str()).map(String::from),
+        cwd: t.get("cwd").and_then(|x| x.as_str()).map(String::from),
+        origin: t.get("origin").and_then(|x| x.as_str()).unwrap_or("user").to_string(),
+        profiles: parse_profiles(t.get("profile")),
+        default_profile: t.get("default_profile").and_then(|x| x.as_str()).map(String::from),
+    })
+}
+
+fn parse_profiles(v: Option<&toml::Value>) -> Vec<crate::types::Profile> {
+    let Some(arr) = v.and_then(|x| x.as_array()) else { return vec![]; };
+    arr.iter().filter_map(|entry| {
+        let t = entry.as_table()?;
+        let name = t.get("name").and_then(|x| x.as_str())?.to_string();
+        let args = t.get("args").and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let env = t.get("env").and_then(|x| x.as_table())
+            .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+            .unwrap_or_default();
+        let description = t.get("description").and_then(|x| x.as_str()).map(String::from);
+        Some(crate::types::Profile { name, args, env, description })
+    }).collect()
 }
 
 fn parse_build_entry(v: &toml::Value) -> Option<BuildEntry> {
@@ -236,6 +294,11 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             config_enabled: false,
             config_name: None,
             config_directory: None,
+            main_include: vec![],
+            main_exclude: vec![],
+            config_include: vec![],
+            config_exclude: vec![],
+            manifests: vec![],
             missing: true,
             external,
         };
@@ -260,6 +323,11 @@ fn load_project_ref(root_path: &Path, rel: &str) -> CraiddProject {
             config_enabled: false,
             config_name: None,
             config_directory: None,
+            main_include: vec![],
+            main_exclude: vec![],
+            config_include: vec![],
+            config_exclude: vec![],
+            manifests: vec![],
             missing: true,
             external,
         },
@@ -296,6 +364,12 @@ fn load_craidd_file(full: &Path) -> Result<CraiddProject, String> {
         .and_then(|c| c.get("name")).and_then(|v| v.as_str()).map(String::from);
     let config_directory = config_sec
         .and_then(|c| c.get("directory")).and_then(|v| v.as_str()).map(String::from);
+    let membership = parsed.get("membership");
+    let paths = |key: &str| -> Vec<String> {
+        membership.and_then(|m| m.get(key)).and_then(|v| v.as_array())
+            .map(|items| items.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
 
     let language = if language.is_none() && config_enabled { Some("config".into()) } else { language };
 
@@ -310,6 +384,11 @@ fn load_craidd_file(full: &Path) -> Result<CraiddProject, String> {
         config_enabled,
         config_name,
         config_directory,
+        main_include: paths("main_include"),
+        main_exclude: paths("main_exclude"),
+        config_include: paths("config_include"),
+        config_exclude: paths("config_exclude"),
+            manifests: vec![],
         missing: false,
         external: false,
     })
@@ -419,8 +498,50 @@ pub fn save_project(root: String, project: CraiddProject) -> Result<(), String> 
         return Err("Nothing to write — no [project] or [config] section".into());
     }
 
+    if !project.main_include.is_empty() || !project.main_exclude.is_empty()
+        || !project.config_include.is_empty() || !project.config_exclude.is_empty() {
+        text.push_str("\n[membership]\n");
+        for (key, paths) in [
+            ("main_include", &project.main_include),
+            ("main_exclude", &project.main_exclude),
+            ("config_include", &project.config_include),
+            ("config_exclude", &project.config_exclude),
+        ] {
+            if paths.is_empty() { continue; }
+            let values = paths.iter().map(|p| format!("\"{}\"", escape(p))).collect::<Vec<_>>().join(", ");
+            text.push_str(&format!("{key} = [{values}]\n"));
+        }
+    }
+
     fs::write(&file_path, text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    #[test]
+    fn membership_choices_survive_project_save_and_reload() {
+        let dir = std::env::temp_dir().join(format!("craidd-membership-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&dir).unwrap();
+        let project = CraiddProject {
+            id: "demo".into(), name: "demo".into(), language: Some("rust".into()),
+            root: ".".into(), kind: "application".into(), path: "demo.craidd".into(), folder: ".".into(),
+            config_enabled: true, config_name: None, config_directory: None,
+            main_include: vec!["notes.txt".into()], main_exclude: vec!["old.rs".into()],
+            config_include: vec!["settings.custom".into()], config_exclude: vec!["private.json".into()],
+            missing: false, external: false,
+        };
+        save_project(dir.to_string_lossy().into_owned(), project).unwrap();
+        let loaded = load_craidd_file(&dir.join("demo.craidd")).unwrap();
+        assert_eq!(loaded.main_include, ["notes.txt"]);
+        assert_eq!(loaded.main_exclude, ["old.rs"]);
+        assert_eq!(loaded.config_include, ["settings.custom"]);
+        assert_eq!(loaded.config_exclude, ["private.json"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tauri::command]
@@ -457,11 +578,48 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
     text.push_str("[solution]\n");
     text.push_str(&format!("name = \"{}\"\n", escape(&solution.name)));
     text.push_str("version = \"1.0\"\n");
+    if let Some(project) = &solution.default_project { text.push_str(&format!("default_project = \"{}\"\n", escape(project))); }
+    if let Some(config) = &solution.default_config { text.push_str(&format!("default_config = \"{}\"\n", escape(config))); }
+    if let Some(build) = &solution.default_build { text.push_str(&format!("default_build = \"{}\"\n", escape(build))); }
     text.push_str("\nprojects = [\n");
     for p in &merged_paths {
         text.push_str(&format!("  \"{}\",\n", escape(p)));
     }
     text.push_str("]\n");
+
+    // Write user-authored configurations. Inferred configs are never
+    // written — they're session-only and derived from manifests on
+    // every load.
+    for cfg in &solution.configs {
+        if cfg.origin == "inferred" { continue; }
+        text.push('\n');
+        text.push_str("[[config]]\n");
+        text.push_str(&format!("name = \"{}\"\n", escape(&cfg.name)));
+        text.push_str(&format!("kind = \"{}\"\n", escape(&cfg.kind)));
+        text.push_str(&format!("target = \"{}\"\n", escape(&cfg.target)));
+        if let Some(m) = &cfg.method { text.push_str(&format!("method = \"{}\"\n", escape(m))); }
+        if let Some(c) = &cfg.command { text.push_str(&format!("command = \"{}\"\n", escape(c))); }
+        if let Some(c) = &cfg.cwd { text.push_str(&format!("cwd = \"{}\"\n", escape(c))); }
+        if let Some(p) = &cfg.default_profile { text.push_str(&format!("default_profile = \"{}\"\n", escape(p))); }
+
+        for prof in &cfg.profiles {
+            text.push_str("\n[[config.profile]]\n");
+            text.push_str(&format!("name = \"{}\"\n", escape(&prof.name)));
+            if !prof.args.is_empty() {
+                let args = prof.args.iter().map(|a| format!("\"{}\"", escape(a))).collect::<Vec<_>>().join(", ");
+                text.push_str(&format!("args = [{}]\n", args));
+            }
+            if !prof.env.is_empty() {
+                text.push_str("[config.profile.env]\n");
+                for (k, v) in &prof.env {
+                    text.push_str(&format!("\"{}\" = \"{}\"\n", escape(k), escape(v)));
+                }
+            }
+            if let Some(d) = &prof.description {
+                text.push_str(&format!("description = \"{}\"\n", escape(d)));
+            }
+        }
+    }
 
     if !solution.build.is_empty() {
         text.push('\n');
@@ -477,6 +635,26 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
 
     fs::write(&file_path, text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_solution_build_defaults(cln_path: String, project: String, profile: String) -> Result<(), String> {
+    if profile != "debug" && profile != "release" { return Err("Unsupported build profile".into()); }
+    let path = Path::new(&cln_path);
+    if path.extension().and_then(|e| e.to_str()) != Some("cln") { return Err("Expected a .cln file".into()); }
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut parsed: toml::Value = text.parse().map_err(|e| format!("Invalid .cln: {e}"))?;
+    let solution = parsed.get_mut("solution").and_then(|v| v.as_table_mut())
+        .ok_or("Missing [solution] table")?;
+    let known = solution.get("projects").and_then(|v| v.as_array())
+        .is_some_and(|entries| entries.iter().any(|entry| entry.as_str() == Some(&project)));
+    if !known { return Err("Selected project is not declared in this solution".into()); }
+    solution.insert("default_project".into(), toml::Value::String(project));
+    solution.insert("default_build".into(), toml::Value::String(profile));
+    let temp = path.with_extension(format!("cln.{}.tmp", std::process::id()));
+    fs::write(&temp, toml::to_string_pretty(&parsed).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    fs::rename(&temp, path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -1,0 +1,9 @@
+[solution]
+default_build = "release"
+default_project = "src-tauri/src-tauri.craidd"
+name = "tauri-app"
+projects = [
+    "src-tauri/src-tauri.craidd",
+    "src/src.craidd",
+]
+version = "1.0"
