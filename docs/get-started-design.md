@@ -14,4 +14,4 @@ Open recent solutions:
 
 All that on left, and right part will show tips, and tricks. Or Rust/C++ Tutorials, or something like that. 
 
-:
+:)
