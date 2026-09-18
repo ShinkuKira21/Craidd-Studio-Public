@@ -1,0 +1,12 @@
+ M src-tauri/Cargo.lock
+M  src-tauri/Cargo.toml
+M  src-tauri/src/commands/build.rs
+A  src-tauri/src/commands/containment.rs
+M  src-tauri/src/commands/mod.rs
+A  src-tauri/src/commands/runner.rs
+M  src-tauri/src/lib.rs
+ M src/components/layout/Toolbar.tsx
+M  src/store/buildStore.ts
+ M src/store/solutionStore.ts
+?? .setup-checkpoints/
+?? recovery.sh

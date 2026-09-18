@@ -139,7 +139,7 @@ function KindButton({
           title={`Other ${kind} configurations`}
           onClick={() => setOpen((v) => !v)}
           className="absolute right-0 bottom-0 w-3 h-3 flex items-center justify-center text-[8px] text-zinc-500 hover:text-zinc-200 rounded"
-        >▾</button>
+        >▲</button>
       )}
 
       {open && (
