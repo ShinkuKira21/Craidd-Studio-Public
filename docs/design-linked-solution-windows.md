@@ -1,175 +1,278 @@
-# Design: Linked actions across duplicated solution windows
+# Design: Linked solution windows
 
-**Status:** Discussion design, 19 September 2026. Documentation only; no UI or runner change.
-**Companion:** [Window model](design-window-model.md), [solution orchestration](design-solution-orchestration.md), and [configuration megamenu](design-configuration-megamenu.md).
+**Status:** Design, 19 September 2026. Documentation only; no UI or
+runner change.
+**Companion:** [Window model](design-window-model.md),
+[solution orchestration](design-solution-orchestration.md),
+[configuration megamenu](design-configuration-megamenu.md).
 
-## The user workflow
+---
 
-Open `polyglot-lab.cln`, duplicate its window, select **Tauri Dev** in one and
-**C# Work API** in the other. Each window keeps its own selected project,
-configuration, profile, editor, runner, output, Problems, debugger, and Stop
-control. Once the selections are distinct, a yellow linked action appears
-beside each ordinary Build, Run, or Debug control that both windows can use.
+## What this is
 
-```text
-Window 1 · polyglot-lab.cln · Tauri Dev     [white ▶] [yellow linked ▶ 2]
-Window 2 · polyglot-lab.cln · C# Work API   [white ▶] [yellow linked ▶ 2]
-```
+A way to work on **two or more processes of one solution** at the same
+time, in separate windows, each with its own debugger, coordinated so
+the user experiences them as one workspace without either debugger
+knowing the other exists.
 
-The white control acts on **this window**. The yellow control sends the same
-kind of action to **the linked windows**, using each window's own selected
-configuration. Yellow is accompanied by a link glyph or window count so
-color is never the only explanation. A useful tooltip is:
+The motivating case is **client/server**. A C# Work API in one window,
+a Tauri client in another. Both belong to the same `.cln`. Both are
+worth running, and both are worth debugging. Today you open two
+windows, set each to its own project, and press Run in each. That
+works, and it is already better than two terminals — but the IDE
+doesn't know the two windows are related, so it can't help with the
+parts that would actually help: launching both in one gesture,
+showing both problem lists together, and (most importantly) raising
+the right window when a breakpoint fires.
 
-> Run linked projects: Tauri Dev + C# Work API (2 windows)
-> Duplicated from polyglot-lab.cln. Each run stays in its own window.
+This design is about that coordination.
 
-This removes the repeated manual launch while preserving the duplicate-window
-isolation the user wants. The yellow controls appear in the existing toolbar;
-there is no separate combined-process runner.
-At narrow widths, the link glyph and count can compress, but the local and
-linked controls must remain separately clickable and keyboard accessible.
+---
 
-## How windows become linked
+## What this is not
 
-1. **Duplicate Window** opens the same canonical `.cln` and carries a
-   temporary duplication-group identity. Opening the same `.cln` separately
-   does not silently join that group.
-2. The group is eligible when at least two open windows select distinct
-   project contexts in that solution. Merely duplicating a window
-   leaves both on the same project and shows no linked control yet.
-3. Changing the selected project/configuration immediately recalculates
-   eligibility. Closing a window or opening another solution removes it from
-   the group. Group membership is session state; it is not written to `.cln`
-   and does not restart actions during session restoration.
-4. In a group of three or more, **every participating window must have a
-   distinct effective project set**. A collision makes the linked action
-   unavailable until one window changes selection. The UI should identify
-   the conflicting windows instead of silently picking one.
+Four things it does not attempt, recorded here so the boundary doesn't
+get relitigated.
 
-The *effective project set* matters more than the chip label. `Tauri Dev`
-may involve both the TypeScript frontend and Rust backend, even though its
-launch command runs from the frontend folder. Linking that window to a
-separate C# API window is valid. Linking it to another window selecting the
-same Rust backend would overlap and could launch the backend twice. A composed
-configuration must expose its participating projects for this check; target
-path alone is insufficient.
+**Mixed-mode debugging.** Stepping from C# into C++ across an FFI
+boundary, or from managed into native code generally. Linux `ptrace`
+permits exactly one tracer per thread, so a .NET debugger and an LLDB
+debugger cannot both attach to the same process. There is no
+adapter-cooperation protocol between `netcoredbg` and `lldb-dap`, and
+no plan to build one. Mixed-mode is out of reach, not deferred.
 
-## Eligibility per action
+**Cross-solution linking.** Two windows with two different `.cln`
+files are two workspaces. The IDE does not invent a relationship
+between them. There is nothing to link, because nothing declares the
+link.
 
-Build, Run, and Debug are checked independently. A yellow **Run** appears
-only when every participating window has a valid Run configuration for its
-selected project. The same applies to Build. There is no silent fallback to a
-different project and no silent skipping of a window that lacks an action.
-Unavailable actions can explain why in a tooltip or the linked action menu.
+**Library cross-debugging.** A C++ library loaded by a C# application
+is not a second process — it lives inside the C# process's address
+space. There is no second debugger to attach. The answer to "how do I
+debug the library" is to give it a driver project (a `main.cpp` that
+links the library and exercises it as its own executable), at which
+point the library becomes its own process and is debuggable normally.
+See **The library case** below.
 
-Yellow **Debug** requires real debugger support for every participating
-project. A configuration that merely runs a command under a `debug` label
-does not qualify. Breakpoints and adapter state remain owned by their project
-window.
+**Session state sharing.** Two linked windows do not share tabs,
+editor state, undo stacks, call stacks, or anything else. Each window
+remains fully independent. Linking adds coordination, not sharing.
 
-Clicking a yellow action takes a snapshot of the participating windows,
-configurations, and profiles. Each window starts its own normal action and
-reports its own result. A second click must not restart a process that is
-already running; the control can offer **Start remaining** when only some
-windows are idle. Stopping one window remains local. A separate **Stop linked
-runs** command may be added later and must name the affected windows before
-use.
+---
 
-One failure does not terminate healthy peers. The group may summarize
-`1 failed · 1 running`, with links to the owning windows, while keeping all
-process output separate. Dispatch is light work; builds and debug adapters
-run through each window's existing background runner. No extra tool scan is
-triggered merely by showing yellow controls.
+## Linking conditions
 
-## Problems across the linked solution
+Gold buttons appear when **all three** hold:
 
-Each window remains the authority for its own diagnostics. A small live
-index can make those diagnostics visible from any window in the group:
+1. **Same solution.** Two or more windows have loaded the same `.cln`
+   — the same file, byte for byte.
+2. **Different default projects.** Each participating window has
+   selected a *different* project as its default. Two windows both
+   showing "C# Work API" are duplicates, not participants.
+3. **Application-kind projects.** Every participating window's
+   selected project is `application`, `console`, `test`, or `service`.
+   **Libraries are excluded.** A library has a build but no standalone
+   run and no attachable process; it cannot participate in a linked
+   action.
 
-```text
-Problems  [This window | Linked solution]
-  Tauri Dev      src/App.tsx:24        Type error
-  C# Work API    Program.cs:41        CS1002
-```
+When any condition fails, gold buttons do not appear. There is no
+partial state and no "link this manually" override in this design —
+if the conditions don't hold, the user has two independent windows,
+which is a valid and useful arrangement.
 
-The linked view needs the source window, project, run/build session, file,
-location, and severity for each entry. Clicking an entry activates the owning
-window and reveals its file and line. Closing a source window removes its live
-entries from the linked view; it does not copy its editor or runner state into
-another window. A new build replaces that window's previous build problems,
-using its session ID to reject late output from an older run.
+---
 
-When an unfocused linked window gets a new failure, highlight that window and
-show a count in the focused window's linked Problems tab. Clicking the count
-brings the failing window forward. Automatic focus stealing is left as an
-explicit UX decision; a failed background build should not unexpectedly
-interrupt typing by default.
+## Gold and white
 
-## What this means for mixed debugging
+The toolbar has two button families for each action:
 
-Linked **Debug** can start independent debugger sessions for, for example,
-a C# API and a Tauri client. The yellow control coordinates launch and
-reports status. Each window owns its breakpoints, call stack, variables,
-step controls, and adapter errors. A step button operates on the focused
-window's stopped session. Group pause/continue could be added as named
-commands once per-window debugging works reliably.
+- **White** — acts on *this window*. Reflects this window's selected
+  project and its available configurations. Dimmed when the action is
+  unavailable; never hidden.
+- **Gold** — acts on the *linked group*. Present in every participating
+  window's toolbar; pressing it anywhere does the same thing
+  everywhere.
 
-This creates a useful mixed-language workspace, with two important technical
-prerequisites:
+The scoping modifier is the color, not the position. Gold is one
+conceptual button, painted into every participating window, that
+dispatches to all of them.
 
-- Rust, C#, TypeScript/WebView, and C++ each need an actual supported debug
-  adapter and a resolvable executable or attach target. CMake supplies a
-  build graph; C++ debugging still needs an executable, debug symbols, and
-  an adapter such as GDB or LLDB.
-- Stepping automatically from a frontend HTTP call into a C# server is a
-  separate cross-process tracing problem. Independent breakpoints on both
-  sides work first; request correlation or coordinated stepping can follow.
+**Gold appears next to its white counterpart.** Gold Build sits beside
+white Build, gold Run beside white Run, and so on. There is no
+separate toolbar and no mode switch.
 
-The linked-window feature therefore makes several debug sessions practical
-to launch and observe. It does not claim that the existing red dots already
-control every language's debugger.
+---
 
-## Relationship to the current sample and window model
+## The gold button set
 
-`workspaces/polyglot-lab` currently includes **Stack: Dev**, a shell script
-that launches the API and Tauri under one runner session. It is useful as a
-temporary runnable example, but its output and failure state are combined.
-Once linked actions exist, the sample should demonstrate yellow Run with two
-windows as its primary IDE flow. The script may remain a CLI convenience.
+While the linking conditions hold:
 
-The existing window model's rule remains: **one solution per window**.
-Several windows may load the same solution. The link group shares only
-coordination and a read-only Problems index. It does not merge trees,
-editor state, process ownership, or debug contexts across windows or across
-different solutions.
+| Button | Visible | Behavior |
+| --- | --- | --- |
+| Gold Build | Always | Runs Build in every participating window, using each window's own selected configuration. |
+| Gold Run | Always | Runs Run in every participating window. |
+| Gold Debug | Always | Starts Debug in every participating window. |
+| Gold Stop | Only while the group is active | Stops running processes and debug sessions in every participating window. |
 
-## Delivery order and acceptance checks
+**Gold Stop is not a separate button.** It is a state the gold Run or
+gold Debug button takes on while its action is active. In a group
+running gold Run, the gold Run slot becomes gold Stop. In a group
+debugging, the gold Debug slot becomes gold Stop. The other gold
+action dims (a second action cannot start while one is active).
 
-1. Duplicate Window preserves the `.cln` identity and opens an independent
-   window with its own selected configuration and runner.
-2. Add transient group membership and collision checks. Show accessible
-   yellow Build/Run controls only for eligible, distinct selections.
-3. Dispatch linked actions to the existing per-window runners. Report
-   partial start/failure without merging output or killing healthy peers.
-4. Add the linked Problems index and click-through to the owning window.
-5. Enable yellow Debug only after the relevant languages have functioning
-   adapters and breakpoint ownership.
+This is the same state-shifting pattern used by the white buttons
+(below), applied consistently.
 
-Acceptance cases: two windows on different projects link; two on the same
-project do not; separately opened or different solutions do not auto-link;
-three distinct project windows show a count of three; a selection collision
-removes eligibility; closing one window updates the group; Tauri Dev plus
-Rust backend is treated as overlapping; Tauri Dev plus C# API can run together;
-one failed run leaves the other active and its problem navigable from either
-window. Build, Run, and Debug each show eligibility based on their own
-available actions.
+---
+
+## The white button set
+
+White buttons are unchanged in principle. Their enablement reflects
+this window's own project and its own configurations.
+
+**Idle.** White Build, Run, and Debug are enabled iff this window's
+selected project has a configuration of that kind.
+
+**Running.** White Run dims (a second run cannot start in the same
+window). White Stop lights up. White Debug dims.
+
+**Debugging.** The white Play slot becomes a three-state button:
+
+- `▶` **Run** — idle, nothing running. Press to start.
+- `⏸` **Pause** — the debugger is running. Press to pause.
+- `▶` **Continue** — the debugger is paused at a breakpoint. Press to
+  resume.
+
+Same slot, same shape, different tooltip. The user learns one control
+that means "make the debugger move, or stop moving." This is the
+media-player convention, and it holds up.
+
+**White Stop** is enabled whenever this window has an active process
+or debug session — running or paused, it does not matter. Pressing it
+terminates this window's process only.
+
+**Isolation is the point.** While the linked group is running, each
+window's white controls remain live. A user can pause one client's
+debugger, step through it, and inspect its state while the server and
+the other client keep running. This is the workflow that makes
+multi-process debugging actually usable, and it is why gold Stop is
+the master control rather than the only control.
+
+---
+
+## Focus follows breakpoint
+
+When a debugger in a participating window pauses — at a breakpoint, on
+a step, on an exception — the IDE can raise that window.
+
+Three modes, exposed as a preference:
+
+| Mode | Behavior |
+| --- | --- |
+| **Always raise** | Any paused debugger brings its window to the front. |
+| **Raise when idle** *(default)* | Raise only if the user has not typed in the focused window for a short interval (≈2 seconds). Prevents interrupting active editing. |
+| **Never raise** | No focus change. A badge appears on the window's title bar and taskbar entry instead. |
+
+The default is **Raise when idle**, because the common failure of
+focus-following is that a background process breaks while the user is
+typing a fix for it. Auto-raising in that moment is hostile. The
+"when idle" heuristic is imperfect, but it is the right compromise.
+
+The preference is global, not per-solution. A user who hates
+focus-stealing hates it everywhere.
+
+---
+
+## The isolation workflow, named
+
+The reason this design exists, in one paragraph:
+
+> Start the server and two clients with gold Run. A bug appears in one
+> client. Pause *that client's* debugger, inspect its state, step
+> through its retry logic. The server keeps serving. The other client
+> keeps making requests. Nothing else loses its state, because nothing
+> else was stopped. Resume the paused client when done. Press gold Stop
+> when the whole session is over.
+
+Every other multi-process debugger forces the user to choose between
+"debug one process and lose the state of the others" and "debug
+nothing, just watch logs." This design refuses that choice. Local
+control is the point; global control is the convenience.
+
+---
+
+## The library case
+
+A C++ library consumed by a C# application is **one process**, not two.
+The library's code runs inside the C# process's address space. There is
+no second debugger to attach, no second window that would help, and no
+coordination mechanism that changes this.
+
+The library therefore:
+
+- **Participates in gold actions?** No. Its kind is `library`, and the
+  linking conditions require application-kind projects.
+- **Gets built when the C# app runs?** Yes — as a `[[config.step]]`
+  inside the C# project's run configuration. The `.cln` already
+  expresses "build C++ first, copy the `.so` to the C# output folder,
+  then run the C# app." That is the correct place for the
+  relationship, and it works today.
+- **Can be debugged?** Not through the C# process, and not by
+  attaching a second debugger to it. The answer is a **driver
+  project**: a small `main.cpp` executable that links the library and
+  exercises it as its own process. Then it is debuggable normally,
+  and — if the driver is application-kind — it becomes a valid
+  participant in linked actions.
+
+A future **Add Debug Driver…** wizard would generate that driver. It
+is not designed here; it is named so the fallback is on the record.
+
+---
+
+## Delivery order and acceptance
+
+1. **Duplicate Window preserves `.cln` identity.** Opens the same
+   solution in a fresh window with independent selection, profile,
+   editor, runner, and debugger.
+2. **Linking conditions computed.** Gold buttons appear when the
+   three conditions hold and disappear when they do not.
+3. **Gold actions dispatch through each window's existing runner.**
+   Partial failure reports per-window; healthy peers keep running.
+4. **Focus-follows-breakpoint preference.** Three modes, default
+   "raise when idle."
+5. **Gold Stop as a state shift on gold Run/Debug.** No separate
+   button.
+6. **Gold Debug enabled only when every participating project has a
+   real debugger adapter.** Running a command under a `debug` label
+   does not qualify.
+
+Acceptance checks:
+
+- Two windows on the same solution with different application-kind
+  projects selected: gold buttons appear.
+- Two windows with the same project selected: no gold buttons.
+- Two windows with different solutions loaded: no gold buttons.
+- One window with a library selected, one with an application: gold
+  buttons absent (library is not application-kind, so the group does
+  not form).
+- Gold Run active: gold Run slot shows gold Stop; white Run dims;
+  white Stop enabled in every participating window.
+- One window's debugger paused: the other windows' debuggers keep
+  running; their white step controls remain live.
+- Gold Stop pressed: every participating window's process terminates.
+
+---
 
 ## Decisions still to validate in the UI
 
-- Should a failed background window ever be raised automatically, or should
-  highlighting and click-through be the only default?
-- How should the yellow control present **Start remaining** and a future
-  **Stop linked runs** command without turning Play into a toggle?
-- Should an explicitly opened copy of the same solution be allowed to join
-  an existing group through a manual **Link Window** command?
+- Should a failed background window be raised automatically under the
+  "raise when idle" default, or should the badge be the only signal?
+- Should **Add Debug Driver…** be reachable from a library project's
+  context menu in this phase, or deferred?
+- Is `⇄` a clearer icon than a color treatment for the gold family, if
+  the toolbar is ever reviewed for visual consistency?
+
+---
+
+*Last updated: Phase 2.4.1. Author: skira24.*
+*This document is a design. It governs linked-window coordination.*
