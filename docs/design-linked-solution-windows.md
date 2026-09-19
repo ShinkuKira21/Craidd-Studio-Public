@@ -35,11 +35,13 @@ Four things it does not attempt, recorded here so the boundary doesn't
 get relitigated.
 
 **Mixed-mode debugging.** Stepping from C# into C++ across an FFI
-boundary, or from managed into native code generally. Linux `ptrace`
-permits exactly one tracer per thread, so a .NET debugger and an LLDB
-debugger cannot both attach to the same process. There is no
-adapter-cooperation protocol between `netcoredbg` and `lldb-dap`, and
-no plan to build one. Mixed-mode is out of reach, not deferred.
+boundary, or from managed into native code generally. This is a
+Linux-wide limitation, not a Craidd one. The reasoning is long enough
+to deserve its own home: see
+[philosophy-mixed-debugging.md](philosophy-mixed-debugging.md). The
+short version: `ptrace` permits one tracer per thread, and no
+.NET↔LLDB cooperation protocol exists. Mixed-mode is out of reach on
+Linux, not deferred.
 
 **Cross-solution linking.** Two windows with two different `.cln`
 files are two workspaces. The IDE does not invent a relationship
