@@ -165,6 +165,8 @@ fn parse_package_json(path: &Path) -> Manifest {
     let values = match read_text(path).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
         Some(json) => {
             let scripts = json.get("scripts").cloned().unwrap_or(serde_json::json!({}));
+            let lockfile = ["pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "package-lock.json", "npm-shrinkwrap.json"]
+                .into_iter().find(|name| Path::new(&folder).join(name).is_file());
             let dep_keys: Vec<String> = json
                 .get("dependencies")
                 .and_then(|v| v.as_object())
@@ -180,6 +182,8 @@ fn parse_package_json(path: &Path) -> Manifest {
                 "name": json.get("name").and_then(|v| v.as_str()),
                 "version": json.get("version").and_then(|v| v.as_str()),
                 "scripts": scripts,
+                "packageManager": json.get("packageManager").and_then(|v| v.as_str()),
+                "lockfile": lockfile,
                 "dependencyNames": dep_keys,
                 "devDependencyNames": dev_dep_keys,
             })
@@ -206,6 +210,10 @@ fn parse_csproj(path: &Path) -> Manifest {
             let sdk = extract_csproj_sdk(&text);
             let output_type = extract_xml_tag_text(&text, "OutputType");
             let target_framework = extract_xml_tag_text(&text, "TargetFramework");
+            let configurations = extract_xml_tag_text(&text, "Configurations");
+            let platforms = extract_xml_tag_text(&text, "Platforms");
+            let platform_target = extract_xml_tag_text(&text, "PlatformTarget");
+            let runtime_identifier = extract_xml_tag_text(&text, "RuntimeIdentifier");
             let package_refs = extract_xml_tag_attrs(&text, "PackageReference", "Include");
             let project_refs = extract_xml_tag_attrs(&text, "ProjectReference", "Include");
             let native_libs = extract_xml_tag_attrs(&text, "NativeLibrary", "Include");
@@ -214,6 +222,10 @@ fn parse_csproj(path: &Path) -> Manifest {
                 "sdk": sdk,
                 "outputType": output_type,
                 "targetFramework": target_framework,
+                "configurations": configurations,
+                "platforms": platforms,
+                "platformTarget": platform_target,
+                "runtimeIdentifier": runtime_identifier,
                 "packageReferences": package_refs,
                 "projectReferences": project_refs,
                 "nativeLibraries": native_libs,
@@ -418,6 +430,7 @@ mod tests {
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
+    <Configurations>Debug;Release;Staging</Configurations>
   </PropertyGroup>
 </Project>"#).unwrap();
         let m = parse_csproj(&dir.join("demo.csproj"));
@@ -425,6 +438,7 @@ mod tests {
         assert_eq!(m.values["sdk"], "Microsoft.NET.Sdk");
         assert_eq!(m.values["outputType"], "Exe");
         assert_eq!(m.values["targetFramework"], "net8.0");
+        assert_eq!(m.values["configurations"], "Debug;Release;Staging");
         fs::remove_dir_all(&dir).unwrap();
     }
 

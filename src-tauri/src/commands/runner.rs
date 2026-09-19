@@ -27,6 +27,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use super::containment::{guard, signal_name};
+use super::toolchain::resolve_known_program;
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
@@ -118,18 +119,22 @@ fn stream_lines<R: Read + Send + 'static>(
 }
 
 #[tauri::command]
-pub fn start_config(
+pub async fn start_config(
     window: WebviewWindow,
     app: AppHandle,
-    state: State<'_, RunnerManager>,
     spec: RunSpec,
 ) -> Result<u64, String> {
+    let label = window.label().to_string();
     let cwd = Path::new(&spec.cwd);
     if !cwd.is_dir() {
         return Err(format!("Working directory does not exist: {}", spec.cwd));
     }
 
-    let mut command = Command::new(&spec.program);
+    let requested_program = spec.program.clone();
+    let program = tauri::async_runtime::spawn_blocking(move || resolve_known_program(&requested_program))
+        .await.map_err(|error| error.to_string())??
+        .unwrap_or_else(|| spec.program.clone().into());
+    let mut command = Command::new(&program);
     command
         .current_dir(cwd)
         .args(&spec.args)
@@ -147,7 +152,7 @@ pub fn start_config(
         });
     }
 
-    let label = window.label().to_string();
+    let state = app.state::<RunnerManager>();
     let mut active = state.0.lock().map_err(|e| e.to_string())?;
     if active.contains_key(&label) {
         return Err("A run is already active in this window. Stop it first.".into());

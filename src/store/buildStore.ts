@@ -93,6 +93,7 @@ function resolveSpec(
   config: ConfigEntry,
   solutionRoot: string,
   solution: CraiddSolution,
+  selectedProfileName: string | null,
 ): RunSpec | null {
   const root = solutionRoot.replace(/\/+$/, "");
 
@@ -113,7 +114,9 @@ function resolveSpec(
 
   // Profile env (from the selected profile, if any).
   const profiles = config.profiles ?? [];
-  const chosen = profiles.find((p) => p.name === config.defaultProfile) ?? profiles[0];
+  const chosen = profiles.find((p) => p.name === selectedProfileName)
+    ?? profiles.find((p) => p.name === config.defaultProfile)
+    ?? profiles[0];
   const env: Record<string, string> = { ...(chosen?.env ?? {}) };
   const profileArgs = chosen?.args ?? [];
 
@@ -123,7 +126,7 @@ function resolveSpec(
     if (parts.length === 0) return null;
     const [program, ...rest] = parts;
     return {
-      label: config.command.trim(),
+      label: [config.command.trim(), ...profileArgs].join(" "),
       program,
       args: [...rest, ...profileArgs],
       env,
@@ -145,7 +148,7 @@ function resolveSpec(
       return { label: "npm run dev", program: "npm", args: ["run", "dev", ...profileArgs], env, cwd };
     case "dotnet":
       return {
-        label: `dotnet ${config.kind === "run" ? "run" : "build"}`,
+        label: `dotnet ${config.kind === "run" ? "run" : "build"}${profileArgs.length ? " " + profileArgs.join(" ") : ""}`,
         program: "dotnet",
         args: [config.kind === "run" ? "run" : "build", ...profileArgs],
         env,
@@ -207,7 +210,7 @@ export const useBuild = create<BuildState>((set, get) => ({
   selectedProfileName: null,
   activeConfigName: null,
   mainChoices: { build: null, run: null, debug: null },
-  setSelectedConfig: (name) => set({ selectedConfigName: name }),
+  setSelectedConfig: (name) => set({ selectedConfigName: name, selectedProfileName: null }),
   setSelectedProfile: (name) => set({ selectedProfileName: name }),
   setMainChoice: (kind, name) =>
     set((s) => ({ mainChoices: { ...s.mainChoices, [kind]: name } })),
@@ -259,7 +262,7 @@ export const useBuild = create<BuildState>((set, get) => ({
 
     if (state.activeId !== null || state.status === "starting") return;
 
-    const spec = resolveSpec(chosen, rootPath, solution);
+    const spec = resolveSpec(chosen, rootPath, solution, state.selectedProfileName);
     if (!spec) {
       set({ status: "failed", output: `Could not resolve a command for "${chosen.name}".\n` });
       return;

@@ -3,7 +3,7 @@ mod types;
 
 use commands::fs::{read_dir_tree, read_dir_children, read_dir_tree_filtered, read_file, write_file, create_folder, stat_files, overwrite_file, delete_path, rename_path};
 use commands::search::search_in_path;
-use commands::toolchain::{get_toolchain, scan_toolchain, set_tool_default, preferences_file_path, read_project_tool_override, write_project_tool_override};
+use commands::toolchain::{get_toolchain, scan_toolchain, ensure_project_toolchain, set_tool_default, preferences_file_path, read_project_tool_override, write_project_tool_override};
 use commands::build::{BuildManager, start_cargo, stop_cargo, cancel_window_build};
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
@@ -83,6 +83,7 @@ pub fn run() {
             read_manifests,
             get_toolchain,
             scan_toolchain,
+            ensure_project_toolchain,
             set_tool_default,
             preferences_file_path,
             read_project_tool_override,

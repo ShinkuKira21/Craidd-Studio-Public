@@ -1,6 +1,5 @@
 import type { ConfigEntry } from "../../../../../types/project";
 import { useSolution } from "../../../../../store/solutionStore";
-import InheritedField from "../InheritedField";
 
 export default function DotnetFields({ config }: { config: ConfigEntry }) {
   const solution = useSolution((s) => s.solution);
@@ -10,27 +9,23 @@ export default function DotnetFields({ config }: { config: ConfigEntry }) {
   const sdk = (csproj?.values?.sdk as string | undefined) ?? "—";
   const framework = (csproj?.values?.targetFramework as string | undefined) ?? "—";
   const outputType = (csproj?.values?.outputType as string | undefined) ?? "—";
+  const platformTarget = (csproj?.values?.platformTarget as string | undefined) ?? "AnyCPU (default)";
+  const runtimeId = (csproj?.values?.runtimeIdentifier as string | undefined) ?? "Portable (default)";
+  const platforms = csproj?.values?.platforms as string | undefined;
   const isWeb = sdk.includes(".Web");
 
   return (
     <div className="space-y-2.5">
-      <StaticField label="Project"     value={`${project?.name ?? "—"}.csproj`} />
+      <StaticField label="Project"     value={csproj?.path.split(/[\\/]/).pop() ?? "—"} />
       <StaticField label="SDK"         value={sdk} />
-      <StaticField label="Output type" value={outputType} />
+      <StaticField label="Output type" value={isWeb && outputType === "—" ? "Exe (Web SDK default)" : outputType} />
       <StaticField label="Framework"   value={framework} />
-      <InheritedField
-        label="Runtime ID"
-        value="linux-x64"
-        source="from host"
-      />
+      {platforms && <StaticField label="Platforms" value={platforms} />}
+      <StaticField label="Platform target" value={platformTarget} />
+      <StaticField label="Runtime ID" value={runtimeId} />
       {isWeb && (
-        <StaticField label="URL" value="https://localhost:5001" />
+        <StaticField label="URL" value="See run output" />
       )}
-      <InheritedField
-        label="dotnet"
-        value="/usr/bin/dotnet"
-        source="from preferences"
-      />
     </div>
   );
 }

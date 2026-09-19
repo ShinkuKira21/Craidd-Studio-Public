@@ -12,7 +12,9 @@ const KIND_TITLE: Record<Kind, string> = { build: "Build", run: "Run", debug: "D
 function Toolbar() {
   const solution = useSolution((s) => s.solution);
   const selectedConfigName = useBuild((s) => s.selectedConfigName);
+  const selectedProfileName = useBuild((s) => s.selectedProfileName);
   const setSelectedConfig = useBuild((s) => s.setSelectedConfig);
+  const setSelectedProfile = useBuild((s) => s.setSelectedProfile);
   const status = useBuild((s) => s.status);
   const activeConfigName = useBuild((s) => s.activeConfigName);
   const start = useBuild((s) => s.start);
@@ -30,19 +32,26 @@ function Toolbar() {
   }, [solution]);
 
   useEffect(() => {
-    if (!selectedConfigName && configs.length > 0) {
+    if (configs.length > 0 && !configs.some((config) => config.name === selectedConfigName)) {
       const preferred = configs.find((c) => c.kind === "run") ?? configs[0];
       setSelectedConfig(preferred.name);
     }
   }, [solution, selectedConfigName, configs, setSelectedConfig]);
 
   const running = status === "starting" || status === "running";
+  const selectedConfig = configs.find((config) => config.name === selectedConfigName);
 
   const onChipSelect = (name: string) => {
     setSelectedConfig(name);
     const c = configs.find((x) => x.name === name);
     if (c && (c.kind === "build" || c.kind === "run" || c.kind === "debug")) {
       setMainChoice(c.kind, name);
+      if (c.method === "dotnet" && (c.kind === "build" || c.kind === "run")) {
+        const companionKind = c.kind === "build" ? "run" : "build";
+        const companion = configs.find((candidate) =>
+          candidate.method === "dotnet" && candidate.kind === companionKind && candidate.target === c.target);
+        if (companion) setMainChoice(companionKind, companion.name);
+      }
     }
   };
 
@@ -58,6 +67,15 @@ function Toolbar() {
         onSelect={onChipSelect}
         onOpenDialog={() => setDialogOpen(true)}
       />
+
+      {selectedConfig && (selectedConfig.profiles?.length ?? 0) > 0 && (
+        <ProfileChip
+          config={selectedConfig}
+          selectedName={selectedProfileName}
+          onSelect={setSelectedProfile}
+          disabled={running}
+        />
+      )}
 
       <KindButton kind="run" configs={configs} running={running}
                   onFire={(name) => void start("run", name)} />
@@ -90,6 +108,55 @@ function Toolbar() {
 
       {dialogOpen && (
         <ConfigurationsDialog onClose={() => setDialogOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+function ProfileChip({
+  config, selectedName, onSelect, disabled,
+}: {
+  config: ConfigEntry;
+  selectedName: string | null;
+  onSelect: (name: string) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const profiles = config.profiles ?? [];
+  const current = profiles.find((profile) => profile.name === selectedName)
+    ?? profiles.find((profile) => profile.name === config.defaultProfile)
+    ?? profiles[0];
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        title={`Build profile for ${config.name}: ${current.name}`}
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+        className="h-8 px-2.5 rounded border border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800/40 disabled:opacity-50 disabled:cursor-default flex items-center gap-2 text-[12px]"
+      >
+        <span className="text-zinc-500">Profile</span>
+        <span>{current.name}</span>
+        <span className="text-zinc-500">▾</span>
+      </button>
+      {open && !disabled && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 min-w-[160px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 z-50 text-xs">
+            {profiles.map((profile) => (
+              <button
+                key={profile.name}
+                type="button"
+                onClick={() => { onSelect(profile.name); setOpen(false); }}
+                className={"w-full px-3 py-1.5 text-left " +
+                  (profile.name === current.name
+                    ? "bg-blue-900/40 text-zinc-100"
+                    : "text-zinc-200 hover:bg-blue-700 hover:text-white")}
+              >{profile.name}</button>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );

@@ -1,27 +1,15 @@
-import { useEffect, useState } from "react";
 import type { ConfigEntry, Profile } from "../../../../../types/project";
+import { useBuild } from "../../../../../store/buildStore";
 
 export default function CommonSection({ config }: { config: ConfigEntry }) {
   const profiles = config.profiles ?? [];
   const hasProfiles = profiles.length > 0;
-
-  // Which profile is currently *shown* in the form. Initialised to the
-  // config's defaultProfile, falling back to the first profile.
-  const initial =
-    profiles.find((p) => p.name === config.defaultProfile)?.name ??
-    profiles[0]?.name ??
-    "";
-  const [selected, setSelected] = useState<string>(initial);
-
-  // Re-sync when the config changes (user clicks a different tree row).
-  useEffect(() => {
-    const next =
-      profiles.find((p) => p.name === config.defaultProfile)?.name ??
-      profiles[0]?.name ??
-      "";
-    setSelected(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.target, config.name, profiles.length]);
+  const selectedProfileName = useBuild((state) => state.selectedProfileName);
+  const setSelectedProfile = useBuild((state) => state.setSelectedProfile);
+  const selected = profiles.find((p) => p.name === selectedProfileName)?.name
+    ?? profiles.find((p) => p.name === config.defaultProfile)?.name
+    ?? profiles[0]?.name
+    ?? "";
 
   const current: Profile | undefined =
     profiles.find((p) => p.name === selected) ?? profiles[0];
@@ -32,7 +20,7 @@ export default function CommonSection({ config }: { config: ConfigEntry }) {
         {hasProfiles ? (
           <select
             value={selected}
-            onChange={(e) => setSelected(e.target.value)}
+            onChange={(e) => setSelectedProfile(e.target.value)}
             className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-[12px] text-zinc-300 focus:border-blue-500 outline-none"
           >
             {profiles.map((p) => (

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { ConfigEntry } from "../../../../types/project";
+import { useBuild } from "../../../../store/buildStore";
 
 /**
  * "Will run" preview. Renders the resolved command for this Configuration.
@@ -9,7 +10,8 @@ import type { ConfigEntry } from "../../../../types/project";
  * Nothing is executed — this is a display string.
  */
 export default function CommandPreview({ config }: { config: ConfigEntry }) {
-  const line = useMemo(() => resolve(config), [config]);
+  const selectedProfileName = useBuild((state) => state.selectedProfileName);
+  const line = useMemo(() => resolve(config, selectedProfileName), [config, selectedProfileName]);
   return (
     <div className="px-5 py-3 border-t border-zinc-800 bg-zinc-950/60 shrink-0">
       <div className="text-[10.5px] uppercase tracking-wider text-zinc-600 mb-1.5">
@@ -22,14 +24,17 @@ export default function CommandPreview({ config }: { config: ConfigEntry }) {
   );
 }
 
-function resolve(config: ConfigEntry): string {
-  if (config.command && config.command.trim().length > 0) {
-    return config.command.trim();
-  }
-  const method = config.method ?? "";
-  const profile = (config.profiles ?? [])[0];
+function resolve(config: ConfigEntry, selectedProfileName: string | null): string {
+  const profiles = config.profiles ?? [];
+  const profile = profiles.find((entry) => entry.name === selectedProfileName)
+    ?? profiles.find((entry) => entry.name === config.defaultProfile)
+    ?? profiles[0];
   const args = profile?.args ?? [];
   const argStr = args.join(" ");
+  if (config.command && config.command.trim().length > 0) {
+    return `${config.command.trim()}${argStr ? " " + argStr : ""}`;
+  }
+  const method = config.method ?? "";
 
   switch (method) {
     case "cargo":

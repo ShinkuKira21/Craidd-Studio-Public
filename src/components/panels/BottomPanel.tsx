@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useBuild } from "../../store/buildStore";
 
 const tabs = [
@@ -32,10 +33,51 @@ export default function BottomPanel() {
         ))}
       </div>
       <div className="flex-1 overflow-y-auto scroll-thin p-3 mono text-[11.5px] leading-5 text-zinc-400">
-        {tab === "output" && <pre className="whitespace-pre-wrap break-words">{output || "No output yet."}{artifact && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}</pre>}
+        {tab === "output" && (
+          <pre className="whitespace-pre-wrap break-words">
+            {renderOutput(output || "No output yet.")}
+            {artifact && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
+          </pre>
+        )}
         {tab === "problems" && "Compiler messages currently appear in Output. Structured Problems are next."}
         {tab === "terminal" && "Terminal arrives in a future phase."}
       </div>
     </div>
   );
+}
+
+function browserUrl(text: string): string | null {
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    // Kestrel can print a wildcard bind address; browsers need a real host.
+    if (url.hostname === "0.0.0.0" || url.hostname === "[::]") {
+      url.hostname = "localhost";
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function renderOutput(output: string) {
+  return output.split(/(https?:\/\/[^\s<>"']+)/g).map((part, index) => {
+    if (!/^https?:\/\//.test(part)) return part;
+    const trailing = part.match(/[),.;]+$/)?.[0] ?? "";
+    const visible = trailing ? part.slice(0, -trailing.length) : part;
+    const target = browserUrl(visible);
+    if (!target) return part;
+    return (
+      <span key={index}>
+        <button
+          type="button"
+          title={`Open ${target} in browser`}
+          className="text-blue-400 hover:text-blue-300 underline underline-offset-2"
+          onClick={() => void openUrl(target).catch((error) => {
+            useBuild.setState((state) => ({ output: state.output + `Could not open browser: ${String(error)}\n` }));
+          })}
+        >{visible}</button>{trailing}
+      </span>
+    );
+  });
 }

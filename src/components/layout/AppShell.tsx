@@ -14,26 +14,95 @@ import PreferencesDialog from "../preferences/PreferencesDialog";
 import DeletedFileDialog from "../dialogs/DeletedFileDialog";
 import SaveConflictDialog from "../dialogs/SaveConflictDialog";
 import CriticalWorkspaceBanner from "./CriticalWorkspaceBanner";
+import EnvironmentNotice from "./EnvironmentNotice";
 import NewProjectDialog from "../dialogs/NewProjectDialog";
 import { usePreferences } from "../../store/preferencesStore";
 import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useSolution } from "../../store/solutionStore";
 
+interface ProjectToolchainCheck {
+  language: string;
+  missing: string[];
+  newlyFound: boolean;
+  debuggerMissing: boolean;
+}
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  rust: "Rust", typescript: "TypeScript", javascript: "JavaScript",
+  cpp: "C++", csharp: "C#", python: "Python",
+};
+
 export default function AppShell({ startProjectDialog = false, onCloseStartProjectDialog }: { startProjectDialog?: boolean; onCloseStartProjectDialog?: () => void }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  const [prefsArea, setPrefsArea] = useState<"editor" | "toolchains">("editor");
+  const [prefsLanguage, setPrefsLanguage] = useState("rust");
+  const [toolchainChecks, setToolchainChecks] = useState<ProjectToolchainCheck[]>([]);
+  const [toolchainError, setToolchainError] = useState<string | null>(null);
+  const [successVisible, setSuccessVisible] = useState(false);
+  const [issuesDismissed, setIssuesDismissed] = useState(false);
+  const [debugDismissed, setDebugDismissed] = useState(false);
+  const [debugDetailsOpen, setDebugDetailsOpen] = useState(false);
   const pendingSave = useSolution((s) => s.pendingSave);
   const setPendingSave = useSolution((s) => s.setPendingSave);
   const rootPath = useSolution((s) => s.rootPath);
   const clnPath = useSolution((s) => s.clnPath);
   const hasSolution = useSolution((s) => !!s.solution);
+  const solution = useSolution((s) => s.solution);
   const bannerState = useSolution((s) => s.bannerState);
   const isSolutionLoading = useSolution((s) => s.isSolutionLoading);
+  const projectLanguages = [...new Set((solution?.projects ?? [])
+    .filter((project) => !project.missing && project.language && project.language !== "config")
+    .map((project) => project.language!))].sort().join(",");
+  const missingChecks = toolchainChecks.filter((check) => check.missing.length > 0);
+  const rustDebugConfigured = Boolean(solution && [...(solution.configs ?? []), ...(solution.inferredConfigs ?? [])]
+    .some((config) => config.kind === "debug" && config.method === "cargo"
+      && (config.target === "." || solution.projects.some((project) => project.language === "rust" && project.path === config.target))));
+  const debuggerMissing = rustDebugConfigured && toolchainChecks.some((check) => check.language === "rust" && check.debuggerMissing);
+  const openPreferences = (area: "editor" | "toolchains" = "editor", language = "rust") => {
+    setPrefsArea(area);
+    setPrefsLanguage(language);
+    setPrefsOpen(true);
+  };
   useKeyboardShortcuts(
     () => setPaletteOpen(true),
-    () => setPrefsOpen(true),
+    () => openPreferences(),
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    setToolchainChecks([]);
+    setToolchainError(null);
+    setSuccessVisible(false);
+    setIssuesDismissed(false);
+    setDebugDismissed(false);
+    setDebugDetailsOpen(false);
+    if (isSolutionLoading || !solution || !projectLanguages) return;
+    const languages = projectLanguages.split(",");
+    const api = import("@tauri-apps/api/core");
+    for (const language of languages) {
+      void api.then(({ invoke }) =>
+        invoke<ProjectToolchainCheck>("ensure_project_toolchain", { language })
+      ).then((check) => {
+        if (cancelled) return;
+        setToolchainChecks((previous) => [...previous.filter((item) => item.language !== language), check]);
+        if (check.newlyFound) setSuccessVisible(true);
+        if (check.missing.length > 0) setIssuesDismissed(false);
+        if (check.debuggerMissing) setDebugDismissed(false);
+        window.dispatchEvent(new CustomEvent("craidd:toolchains-checked", { detail: [language] }));
+      }).catch((error) => {
+        if (!cancelled) setToolchainError(`${LANGUAGE_LABELS[language] ?? language}: ${String(error)}`);
+      });
+    }
+    return () => { cancelled = true; };
+  }, [rootPath, projectLanguages, isSolutionLoading]);
+
+  useEffect(() => {
+    if (!successVisible) return;
+    const timer = window.setTimeout(() => setSuccessVisible(false), 7000);
+    return () => window.clearTimeout(timer);
+  }, [successVisible, toolchainChecks]);
 
   useEffect(() => {
     if (isSolutionLoading || !rootPath) return;
@@ -69,8 +138,30 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
 
   return (
     <div className="h-screen w-screen flex flex-col bg-zinc-950 text-zinc-300 text-[13px] overflow-hidden">
-      <MenuBar openCommandPalette={() => setPaletteOpen(true)} openPreferences={() => setPrefsOpen(true)} />
+      <MenuBar openCommandPalette={() => setPaletteOpen(true)} openPreferences={() => openPreferences()} />
       <Toolbar />
+      {successVisible && (
+        <EnvironmentNotice tone="info" title="Toolchain found" action="Inspect here"
+          onAction={() => { setSuccessVisible(false); openPreferences("toolchains", toolchainChecks.find((check) => check.newlyFound)?.language ?? "rust"); }}
+          onDismiss={() => setSuccessVisible(false)}>
+          Found a toolchain for your project(s). This notice closes automatically.
+        </EnvironmentNotice>
+      )}
+      {!issuesDismissed && (missingChecks.length > 0 || toolchainError) && (
+        <EnvironmentNotice tone="danger" title="Tools missing" action="Inspect tools"
+          onAction={() => { setIssuesDismissed(true); openPreferences("toolchains", missingChecks[0]?.language ?? "rust"); }}
+          onDismiss={() => setIssuesDismissed(true)}>
+          {missingChecks.map((check) => `${LANGUAGE_LABELS[check.language] ?? check.language}: ${check.missing.join(", ")}`).join(" · ")}
+          {toolchainError && <span className="block">Detection failed: {toolchainError}</span>}
+        </EnvironmentNotice>
+      )}
+      {!debugDismissed && debuggerMissing && (
+        <EnvironmentNotice tone="warning" title="Rust debugger not detected" action="Learn more"
+          onAction={() => setDebugDetailsOpen((open) => !open)} onDismiss={() => setDebugDismissed(true)}>
+          lldb-dap is missing for this Rust debug configuration.
+          {debugDetailsOpen && <span className="block mt-1">Craidd’s debugger integration is still in development. Installing lldb-dap prepares the toolchain, but does not yet enable stepping or variable inspection.</span>}
+        </EnvironmentNotice>
+      )}
 
       <div className="flex-1 flex min-h-0">
         <ActivityBar />
@@ -102,7 +193,7 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
       <StatusBar />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <AncestorSolutionDialog />
-      {prefsOpen && <PreferencesDialog onClose={() => setPrefsOpen(false)} />}
+      {prefsOpen && <PreferencesDialog initialArea={prefsArea} initialLanguage={prefsLanguage} onClose={() => setPrefsOpen(false)} />}
       {pendingSave?.kind === "deleted" && (
         <DeletedFileDialog
           fileId={pendingSave.fileId}
