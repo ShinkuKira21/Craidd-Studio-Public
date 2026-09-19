@@ -142,6 +142,9 @@ fn parse_cargo(path: &Path) -> Manifest {
                 "hasLib": has_lib,
                 "hasMainRs": has_main_rs,
                 "bins": effective_bins,
+                "defaultRun": package
+                    .and_then(|p| p.get("default-run"))
+                    .and_then(|v| v.as_str()),
                 "dependencyNames": dep_keys,
             })
         }

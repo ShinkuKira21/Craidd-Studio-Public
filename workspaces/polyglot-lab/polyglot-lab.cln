@@ -1,0 +1,242 @@
+[solution]
+version = "1.0"
+name = "Polyglot Launch Lab"
+projects = [
+  "Client/Client.craidd",
+  "Client/src-tauri/src-tauri.craidd",
+  "Server/Core/Core.craidd",
+  "Server/Api/Api.craidd",
+  "Server/Api.Tests/Api.Tests.craidd",
+]
+default_project = "Server/Api/Api.craidd"
+default_config = "API: Local"
+
+# Solution-level commands expose the current one-process-per-window limit.
+[[config]]
+name = "Stack: Dev"
+kind = "run"
+target = "."
+command = "bash scripts/dev-stack.sh"
+
+[[config]]
+name = "Stack: Build"
+kind = "build"
+target = "."
+command = "bash scripts/build-all.sh"
+
+[[config]]
+name = "Stack: Tests"
+kind = "run"
+target = "."
+command = "bash scripts/test-all.sh"
+
+# One TypeScript project, six distinct commands.
+[[config]]
+name = "Client: Tauri Dev"
+kind = "run"
+target = "Client/Client.craidd"
+method = "npm"
+command = "npm run tauri dev"
+
+[[config]]
+name = "Client: Browser Dev"
+kind = "run"
+target = "Client/Client.craidd"
+method = "npm"
+command = "npm run dev"
+
+[[config]]
+name = "Client: Preview Build"
+kind = "run"
+target = "Client/Client.craidd"
+method = "npm"
+command = "npm run preview -- --host 127.0.0.1 --port 1536"
+
+[[config]]
+name = "Client: Typecheck"
+kind = "build"
+target = "Client/Client.craidd"
+method = "npm"
+command = "npm run check"
+
+[[config]]
+name = "Client: Frontend Build"
+kind = "build"
+target = "Client/Client.craidd"
+method = "npm"
+command = "npm run build"
+
+[[config]]
+name = "Client: Tauri Bundle"
+kind = "build"
+target = "Client/Client.craidd"
+method = "npm"
+command = "npm run tauri build"
+
+# Cargo actions and profiles; a Rust-only run expects Vite on port 1535.
+[[config]]
+name = "Rust: Cargo Build"
+kind = "build"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "cargo"
+command = "cargo build"
+default_profile = "Debug"
+
+[[config.profile]]
+name = "Debug"
+args = []
+
+[[config.profile]]
+name = "Release"
+args = ["--release"]
+
+[[config]]
+name = "Rust: Cargo Check"
+kind = "build"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "cargo"
+command = "cargo check"
+
+[[config]]
+name = "Rust: Cargo Run (Vite required)"
+kind = "run"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "cargo"
+command = "cargo run"
+
+[[config]]
+name = "Rust: Unit Tests"
+kind = "run"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "cargo"
+command = "cargo test"
+
+[[config]]
+name = "Rust: Debug Launch (no adapter)"
+kind = "debug"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "cargo"
+command = "cargo run"
+
+# The domain library has builds but no runnable target.
+[[config]]
+name = "Core: Build"
+kind = "build"
+target = "Server/Core/Core.craidd"
+method = "dotnet"
+command = "dotnet build Core.csproj"
+
+[[config]]
+name = "Core: Strict Build"
+kind = "build"
+target = "Server/Core/Core.craidd"
+method = "dotnet"
+command = "dotnet build Core.csproj -p:TreatWarningsAsErrors=true"
+
+# The API has multiple builds and run variants, including shared profiles.
+[[config]]
+name = "API: Build"
+kind = "build"
+target = "Server/Api/Api.craidd"
+method = "dotnet"
+command = "dotnet build Api.csproj"
+default_profile = "Debug"
+
+[[config.profile]]
+name = "Debug"
+args = ["-c", "Debug"]
+
+[[config.profile]]
+name = "Release"
+args = ["-c", "Release"]
+
+[[config]]
+name = "API: Strict Build"
+kind = "build"
+target = "Server/Api/Api.craidd"
+method = "dotnet"
+command = "dotnet build Api.csproj -p:TreatWarningsAsErrors=true"
+
+[[config]]
+name = "API: Publish Release"
+kind = "build"
+target = "Server/Api/Api.craidd"
+method = "dotnet"
+command = "dotnet publish Api.csproj -c Release -o ../../out/api"
+
+[[config]]
+name = "API: Local"
+kind = "run"
+target = "Server/Api/Api.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.csproj --no-launch-profile"
+default_profile = "Debug"
+
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--", "--urls", "http://127.0.0.1:5087"]
+[config.profile.env]
+ASPNETCORE_ENVIRONMENT = "Development"
+
+[[config.profile]]
+name = "Release"
+args = ["--configuration", "Release", "--", "--urls", "http://127.0.0.1:5087"]
+[config.profile.env]
+ASPNETCORE_ENVIRONMENT = "Production"
+
+[[config]]
+name = "API: Alternate Port"
+kind = "run"
+target = "Server/Api/Api.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.csproj --no-launch-profile --configuration Debug -- --urls http://127.0.0.1:5088"
+
+[[config]]
+name = "API: Extended Data"
+kind = "run"
+target = "Server/Api/Api.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.csproj --no-launch-profile --configuration Debug -- --urls http://127.0.0.1:5087 --dataset extended"
+
+[[config]]
+name = "API: Debug Launch (no adapter)"
+kind = "debug"
+target = "Server/Api/Api.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.csproj --no-launch-profile --configuration Debug -- --urls http://127.0.0.1:5087"
+
+# The console test runner needs no external NuGet test framework.
+[[config]]
+name = "Tests: Build"
+kind = "build"
+target = "Server/Api.Tests/Api.Tests.craidd"
+method = "dotnet"
+command = "dotnet build Api.Tests.csproj"
+
+[[config]]
+name = "Tests: Unit"
+kind = "run"
+target = "Server/Api.Tests/Api.Tests.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.Tests.csproj --no-launch-profile"
+
+[[config]]
+name = "Tests: Unit Release"
+kind = "run"
+target = "Server/Api.Tests/Api.Tests.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.Tests.csproj --no-launch-profile --configuration Release"
+
+[[config]]
+name = "Tests: Integration (API required)"
+kind = "run"
+target = "Server/Api.Tests/Api.Tests.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.Tests.csproj --no-launch-profile -- --integration http://127.0.0.1:5087"
+
+[[config]]
+name = "Tests: Reserved Test Kind"
+kind = "test"
+target = "Server/Api.Tests/Api.Tests.craidd"
+method = "dotnet"
+command = "dotnet run --project Api.Tests.csproj --no-launch-profile"

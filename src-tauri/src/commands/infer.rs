@@ -52,11 +52,11 @@ fn array_at<'a>(values: &'a serde_json::Value, key: &str) -> Option<&'a Vec<serd
 ///       → "npm run tauri dev" (the Tauri polyglot case)
 ///
 /// Tier 2 — Per-project Defaults:
-///   One entry per project that has an unambiguous manifest.
-///     * cargo manifest with a `bin` → "cargo build"
+///   Entries for projects with an unambiguous manifest.
+///     * cargo manifest with a `bin` → "cargo build" and "cargo run"
 ///     * npm manifest with `scripts.dev` → "npm run dev"
-///     * csproj with OutputType=Exe → "dotnet build"
-///     * CMakeLists.txt with add_executable → "cmake --build ."
+///     * runnable csproj → "dotnet build" and "dotnet run"
+///     * CMakeLists.txt → "cmake --build build"
 #[tauri::command]
 pub fn infer_configs(solution: CraiddSolution) -> Result<Vec<ConfigEntry>, String> {
     let mut out: Vec<ConfigEntry> = Vec::new();
@@ -70,6 +70,16 @@ pub fn infer_configs(solution: CraiddSolution) -> Result<Vec<ConfigEntry>, Strin
     for project in &solution.projects {
         if project.missing { continue; }
         if let Some(entry) = infer_project_default(project) {
+            if entry.method.as_deref() == Some("cargo") && entry.kind == "build"
+                && project.manifests.iter().any(|manifest| manifest.kind == "cargo"
+                    && (array_at(&manifest.values, "bins").is_some_and(|bins| bins.len() == 1)
+                        || str_at(&manifest.values, "defaultRun").is_some())) {
+                let mut run = entry.clone();
+                run.name = format!("{}: cargo run", project.name);
+                run.kind = "run".into();
+                run.command = Some("cargo run".into());
+                out.push(run);
+            }
             if entry.method.as_deref() == Some("dotnet") && entry.kind == "run" {
                 let mut build = entry.clone();
                 build.name = format!("{}: dotnet build", project.name);
@@ -90,7 +100,8 @@ fn infer_solution_default(solution: &CraiddSolution) -> Option<ConfigEntry> {
     //   - at least one TS/JS project whose package.json exposes scripts.tauri
     let mut rust_project: Option<&CraiddProject> = None;
     let mut ts_project: Option<&CraiddProject> = None;
-    let mut tauri_script = false;
+    let mut rust_candidates = 0;
+    let mut ts_candidates = 0;
     let mut ts_manager = "npm";
 
     for p in &solution.projects {
@@ -102,7 +113,10 @@ fn infer_solution_default(solution: &CraiddSolution) -> Option<ConfigEntry> {
                 m.kind == "cargo"
                     && array_at(&m.values, "bins").map(|b| !b.is_empty()).unwrap_or(false)
             });
-            if has_bin { rust_project = Some(p); }
+            if has_bin {
+                rust_project = Some(p);
+                rust_candidates += 1;
+            }
         }
 
         if lang == "typescript" || lang == "javascript" {
@@ -110,22 +124,24 @@ fn infer_solution_default(solution: &CraiddSolution) -> Option<ConfigEntry> {
                 if m.kind != "npm" { continue; }
                 if let Some(scripts) = obj_at(&m.values, "scripts") {
                     if scripts.get("tauri").is_some() {
-                        tauri_script = true;
                         ts_project = Some(p);
                         ts_manager = package_manager(m);
+                        ts_candidates += 1;
                     }
                 }
             }
         }
     }
 
-    if tauri_script && rust_project.is_some() {
+    if rust_candidates == 1 && ts_candidates == 1 {
         // Both halves present. Propose the composed default.
         // The target is the TS project, whose folder is where
         // `npm run tauri dev` should execute.
         let ts = ts_project?;
         return Some(ConfigEntry {
             name: "Tauri Dev".into(),
+            best_fit: true,
+            related_projects: vec![rust_project?.path.clone(), ts.path.clone()],
             kind: "run".into(),
             target: ts.path.clone(),
             method: Some("npm".into()),
@@ -154,6 +170,8 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                     } else {
                         format!("{name}: cargo check (library)")
                     },
+                    best_fit: false,
+                    related_projects: vec![],
                     kind: "build".into(),
                     target: project.path.clone(),
                     method: Some("cargo".into()),
@@ -178,6 +196,8 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                 if let Some(_dev) = dev_script {
                     return Some(ConfigEntry {
                         name: format!("{name}: {manager} run dev"),
+                        best_fit: false,
+                        related_projects: vec![],
                         kind: "run".into(),
                         target: project.path.clone(),
                         method: Some("npm".into()),
@@ -201,6 +221,8 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                 if output_type == "Exe" || output_type == "WinExe" || sdk == "Microsoft.NET.Sdk.Web" {
                     return Some(ConfigEntry {
                         name: format!("{name}: dotnet run"),
+                        best_fit: false,
+                        related_projects: vec![],
                         kind: "run".into(),
                         target: project.path.clone(),
                         method: Some("dotnet".into()),
@@ -213,6 +235,8 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                 } else {
                     return Some(ConfigEntry {
                         name: format!("{name}: dotnet build"),
+                        best_fit: false,
+                        related_projects: vec![],
                         kind: "build".into(),
                         target: project.path.clone(),
                         method: Some("dotnet".into()),
@@ -225,13 +249,13 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                 }
             }
             "cmake" => {
-                let has_executable = array_at(&m.values, "executables")
-                    .map(|e| !e.is_empty())
-                    .unwrap_or(false);
                 let name = project.name.clone();
                 return Some(ConfigEntry {
                     name: format!("{name}: cmake build"),
-                    kind: if has_executable { "run".into() } else { "build".into() },
+                    best_fit: false,
+                    related_projects: vec![],
+                    // CMakeLists alone does not locate a runnable artifact.
+                    kind: "build".into(),
                     target: project.path.clone(),
                     method: Some("cmake".into()),
                     command: Some("cmake --build build".into()),
@@ -373,8 +397,14 @@ mod tests {
             default_config: None,
             inferred_configs: vec![],
         };
-        let inferred = infer_configs(solution).unwrap();
-        assert!(inferred.iter().any(|c| c.name == "Tauri Dev" && c.command.as_deref() == Some("pnpm run tauri dev")));
+        let inferred = infer_configs(solution.clone()).unwrap();
+        assert!(inferred.iter().any(|c| c.name == "Tauri Dev" && c.command.as_deref() == Some("pnpm run tauri dev")
+            && c.best_fit && c.related_projects == ["src-tauri/src-tauri.craidd", "src/src.craidd"]));
+
+        let mut ambiguous = solution;
+        ambiguous.projects.push(mk_project("other-rust", "rust", "other/other.craidd",
+            vec![mk_manifest("cargo", serde_json::json!({ "bins": ["other"] }))]));
+        assert!(!infer_configs(ambiguous).unwrap().iter().any(|c| c.best_fit));
     }
 
     #[test]
@@ -396,8 +426,27 @@ mod tests {
             inferred_configs: vec![],
         };
         let inferred = infer_configs(solution).unwrap();
-        assert_eq!(inferred.len(), 1);
-        assert_eq!(inferred[0].method.as_deref(), Some("cargo"));
+        assert_eq!(inferred.len(), 2);
+        assert!(inferred.iter().any(|entry| entry.kind == "build" && entry.command.as_deref() == Some("cargo build")));
+        assert!(inferred.iter().any(|entry| entry.kind == "run" && entry.command.as_deref() == Some("cargo run")));
+    }
+
+    #[test]
+    fn multiple_cargo_bins_need_a_default_run_target() {
+        let rust = mk_project("tools", "rust", "tools/tools.craidd",
+            vec![mk_manifest("cargo", serde_json::json!({ "bins": ["one", "two"] }))]);
+        let solution = CraiddSolution {
+            name: "tools".into(), root: "/tmp".into(), projects: vec![rust], build: vec![],
+            run_default: None, debug_default: None, autostart: vec![], default_project: None,
+            default_build: None, configs: vec![], default_config: None, inferred_configs: vec![],
+        };
+        let inferred = infer_configs(solution.clone()).unwrap();
+        assert!(inferred.iter().any(|entry| entry.kind == "build"));
+        assert!(!inferred.iter().any(|entry| entry.kind == "run"));
+
+        let mut with_default = solution;
+        with_default.projects[0].manifests[0].values["defaultRun"] = serde_json::json!("one");
+        assert!(infer_configs(with_default).unwrap().iter().any(|entry| entry.kind == "run"));
     }
 
     #[test]
@@ -422,5 +471,14 @@ mod tests {
         let config = infer_project_default(&project).unwrap();
         assert_eq!(config.default_profile.as_deref(), Some("Staging"));
         assert_eq!(config.profiles[1].args, vec!["--configuration", "Release"]);
+    }
+
+    #[test]
+    fn cmake_executable_is_still_a_build_action() {
+        let project = mk_project("Native", "cpp", "Native/native.craidd",
+            vec![mk_manifest("cmake", serde_json::json!({ "executables": ["native"] }))]);
+        let config = infer_project_default(&project).unwrap();
+        assert_eq!(config.kind, "build");
+        assert_eq!(config.command.as_deref(), Some("cmake --build build"));
     }
 }

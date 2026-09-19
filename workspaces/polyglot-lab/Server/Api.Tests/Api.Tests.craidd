@@ -1,0 +1,4 @@
+[project]
+name = "C# API Tests"
+language = "csharp"
+root = "."

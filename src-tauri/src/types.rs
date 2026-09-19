@@ -134,6 +134,11 @@ pub struct SolutionWithPath {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigEntry {
     pub name: String,
+    /// Inference-only metadata for a solution-level recommendation.
+    #[serde(default)]
+    pub best_fit: bool,
+    #[serde(default)]
+    pub related_projects: Vec<String>,
     /// "run" | "build" | "debug" | "test"
     #[serde(default = "default_config_kind")]
     pub kind: String,

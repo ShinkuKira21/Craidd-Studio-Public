@@ -1,0 +1,18 @@
+@api = http://127.0.0.1:5087
+
+GET {{api}}/api/health
+
+###
+GET {{api}}/api/work
+
+###
+POST {{api}}/api/work
+Content-Type: application/json
+
+{ "title": "Try another configuration" }
+
+###
+POST {{api}}/api/work/1/complete
+
+###
+GET {{api}}/api/debug

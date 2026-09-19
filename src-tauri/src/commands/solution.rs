@@ -227,6 +227,8 @@ fn parse_config_entry(v: &toml::Value) -> Option<ConfigEntry> {
     let name = t.get("name").and_then(|x| x.as_str())?.to_string();
     Some(ConfigEntry {
         name,
+        best_fit: false,
+        related_projects: vec![],
         kind: t.get("kind").and_then(|x| x.as_str()).unwrap_or("run").to_string(),
         target: t.get("target").and_then(|x| x.as_str()).unwrap_or(".").to_string(),
         method: t.get("method").and_then(|x| x.as_str()).map(String::from),

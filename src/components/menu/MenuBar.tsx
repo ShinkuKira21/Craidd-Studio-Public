@@ -15,6 +15,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
   const prefs = usePreferences();
   const activeFileId = useSolution((s) => s.activeFileId);
   const buildStatus = useBuild((s) => s.status);
+  const mainChoices = useBuild((s) => s.mainChoices);
   const startBuild = useBuild((s) => s.start);
   const stopBuild = useBuild((s) => s.stop);
   const runSave = (action: () => Promise<void>) => {
@@ -118,8 +119,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     {
       label: "Run",
       items: [
-        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => void startBuild("build"), disabled: buildStatus === "running" || buildStatus === "starting" },
-        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => void startBuild("run"), disabled: buildStatus === "running" || buildStatus === "starting" },
+        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => void startBuild("build"), disabled: !mainChoices.build || buildStatus === "running" || buildStatus === "starting" },
+        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => void startBuild("run"), disabled: !mainChoices.run || buildStatus === "running" || buildStatus === "starting" },
         { label: "Start Debugging", shortcut: "F5", disabled: true },
         { label: "Stop", shortcut: "Shift+F5", action: () => void stopBuild(), disabled: buildStatus !== "running" && buildStatus !== "starting" },
       ],

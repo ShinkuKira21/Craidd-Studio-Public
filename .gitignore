@@ -25,4 +25,5 @@ dist-ssr
 .backup
 setup-v*.sh
 
-workspaces
+workspaces/*
+!workspaces/polyglot-lab/

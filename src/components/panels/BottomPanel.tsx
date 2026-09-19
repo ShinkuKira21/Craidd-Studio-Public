@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useBuild } from "../../store/buildStore";
+import { useSolution } from "../../store/solutionStore";
 
 const tabs = [
   { id: "output", label: "Output" },
@@ -14,6 +15,9 @@ export default function BottomPanel() {
   const [tab, setTab] = useState<Tab>("output");
   const output = useBuild((state) => state.output);
   const artifact = useBuild((state) => state.artifact);
+  const problems = useBuild((state) => state.problems);
+  const revealFile = useSolution((state) => state.revealFile);
+  const errors = problems.filter((problem) => problem.severity === "error").length;
   return (
     <div className="bg-zinc-900 border-t border-zinc-800 flex flex-col shrink-0 h-full">
       <div className="h-8 flex items-center px-3 gap-4 border-b border-zinc-800 text-xs shrink-0">
@@ -28,7 +32,7 @@ export default function BottomPanel() {
                 : "text-zinc-500 hover:text-zinc-300 border-transparent")
             }
           >
-            {t.label}
+            {t.label}{t.id === "problems" && problems.length > 0 ? ` (${errors || problems.length})` : ""}
           </button>
         ))}
       </div>
@@ -39,7 +43,30 @@ export default function BottomPanel() {
             {artifact && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
           </pre>
         )}
-        {tab === "problems" && "Compiler messages currently appear in Output. Structured Problems are next."}
+        {tab === "problems" && (problems.length === 0 ? (
+          <div className="text-zinc-500">No build problems for this run.</div>
+        ) : (
+          <div className="space-y-0.5">
+            {problems.map((problem, index) => (
+              <button
+                key={`${problem.file}:${problem.line}:${problem.column}:${index}`}
+                type="button"
+                onClick={() => void revealFile(problem.file, problem.line, problem.column)}
+                className="w-full flex items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-zinc-800 focus-visible:outline focus-visible:outline-blue-500"
+                title={`${problem.file}:${problem.line}:${problem.column}`}
+              >
+                <span className={problem.severity === "error" ? "text-red-400" : "text-amber-400"}>●</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-zinc-200 break-words">{problem.message}</span>
+                  <span className="block text-[10px] text-zinc-500 truncate">
+                    {problem.file.split("/").pop()}:{problem.line}:{problem.column}
+                    {problem.code ? ` · ${problem.code}` : ""}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
         {tab === "terminal" && "Terminal arrives in a future phase."}
       </div>
     </div>
