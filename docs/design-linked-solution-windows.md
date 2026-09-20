@@ -58,12 +58,12 @@ links the library and exercises it as its own executable), at which
 point the library becomes its own process and is debuggable normally.
 See **The library case** below.
 
-**Editor and debugger state sharing.** Linked windows do not share
-editable tabs, undo stacks, selected frames, or call stacks. Each
-debugger remains independent. Solution breakpoint definitions and
-read-only paused-location metadata are coordinated across windows so
-the focused window can identify a pause and, when the owner is hidden,
-display it without taking ownership of the debugger.
+**Window context ownership.** Each linked window owns its default
+project, tabs, unsaved document state, runner, and debugger. Selecting
+another window in the window manager lets the focused IDE window view
+and control that owner's context. It does not create a second runner,
+debugger, or independent copy of the owner's unsaved document. The
+owner remains authoritative when two IDE windows display it.
 
 ---
 
@@ -94,9 +94,9 @@ which is a valid and useful arrangement.
 
 The toolbar has two button families for each action:
 
-- **White** — acts on *this window*. Reflects this window's selected
-  project and its available configurations. Dimmed when the action is
-  unavailable; never hidden.
+- **White** — acts on the *viewed window context*, which starts as the
+  physical IDE window itself. Reflects that context's selected project
+  and available configurations. Dimmed when unavailable; never hidden.
 - **Gold** — acts on the *linked group*. Present in every participating
   window's toolbar; pressing it anywhere does the same thing
   everywhere.
@@ -140,18 +140,18 @@ This is the same state-shifting pattern used by the white buttons
 
 ## The white button set
 
-White Build and ordinary Run reflect this window's own project and its
-own configurations. White debug transport controls default to this
-window's debugger. The linked-window tray can explicitly select a
-different instance as this window's debug control target; its name
-remains visible beside the controls. See
+White controls reflect the **currently viewed window context**. By
+default that is the physical IDE window itself. Selecting another
+linked window in the upper-right tray makes its project, config,
+profile, runner, debugger, and white Build/Run/Debug/Stop controls
+effective here. The toolbar must label that context. See
 [linked solution window manager](design-linked-window-manager.md).
 
-**Idle.** White Build, Run, and Debug are enabled iff this window's
-selected project has a configuration of that kind.
+**Idle.** White Build, Run, and Debug are enabled iff the viewed
+context's selected project has a configuration of that kind.
 
-**Running.** White Run dims (a second run cannot start in the same
-window). White Stop lights up. White Debug dims.
+**Running.** White Run dims (a second run cannot start in the viewed
+context). White Stop lights up. White Debug dims.
 
 **Debugging.** The white Play slot becomes a three-state button:
 
@@ -164,17 +164,17 @@ Same slot, same shape, different tooltip. The user learns one control
 that means "make the debugger move, or stop moving." This is the
 media-player convention, and it holds up.
 
-**White Stop** terminates this window's ordinary run. During debugging,
-it stops the explicitly selected debug target, which defaults to this
-window's debugger. The control must show that target before it can
-stop a remote session. Gold Stop terminates the linked group's sessions.
+**White Stop** terminates the viewed context's ordinary run or debug
+session. The control must show the context name before it can stop a
+remote session. Gold Stop terminates the linked group's sessions.
 
 **Isolation is the point.** While the linked group is running, each
 window's white controls remain live. By default, a user can pause one
 client's debugger, step through it, and inspect its state while the
 server and the other client keep running. Explicitly selecting another
-instance in the tray redirects only that window's debug controls.
-Gold Stop remains the master control.
+IDE window in the tray changes the effective context for all window
+scoped controls and views; the physical window's own state waits until
+the user selects it again. Gold Stop remains the master control.
 
 ---
 
@@ -182,41 +182,30 @@ Gold Stop remains the master control.
 
 When Window A's debugger pauses while Window C is focused, Window C
 stays focused. The task tray briefly highlights Window A and keeps a
-paused badge visible. If Window A is visible, its editor shows the
-stopped location and its own controls remain available there. Window C
-does not open a duplicate tab automatically. The user may explicitly
-select Window A in Window C's tray to open a labelled, read-only
-preview and control A from C. **Window A does not need to be hidden.**
-Both windows display each subsequent stopped location; a step from
-either one commands the same debugger session. Neither window is
-raised merely because the other issued a step.
+paused badge visible. Window C keeps its own default project, editor,
+and controls until the user selects A's row. This applies whether A
+is visible on another monitor or hidden.
 
-If Window A is hidden, Window C prepares a read-only source preview
-labelled with the owning instance, such as `Client 2 · main.rs (paused)`.
-The preview shows the stopped line and offers Continue, Step Into, Step
-Over, and Step Out **for Window A's debugger**. Preparing the preview
-does not silently change Window C's white debug target; selecting
-Window A in the tray brings its preview forward and targets Window C's
-white debug controls at A. Gold Stop still belongs to the whole
-linked action. The preview is remote control of one debugger, not a
-shared call stack or a second debugger attached to the process.
+Selecting A makes Window C **view A's complete window context**. A's
+default project moves to the top of C's Solution Explorer; C's toolbar,
+editor tabs, breakpoint markers, Problems, output, and white controls
+show A's state. The editor opens A's stopped source location. Stepping
+from either visible view commands A's one debugger session and updates
+both views. C's original project, tabs, and unsaved edits return when
+the user selects C again. Selecting A never raises a hidden A window.
 
-Preparing a preview must not interrupt typing. Create it in the
-background and show a paused badge; the user chooses when to view it
-by selecting that instance in the tray or opening the preview tab.
-Each paused instance has its own preview, reused as that debugger steps.
-Only one preview is foreground in a given window at a time. If several
-instances stop in the same file, their stopped lines and controls
-remain separately labelled; selecting one does not resume the others.
-Closing a preview does not resume or stop its debugger; the paused-session
-list can reopen it.
+If several clients pause, their tray rows remain marked separately.
+Selecting A does not continue B. The user handles one context at a
+time from C or shows the owning IDE windows to work side by side.
+Gold Stop still belongs to the whole linked action.
 
-The preview uses debugger source information or a source snapshot. It
-must not overwrite an editable tab or silently display that tab's
-unsaved contents as the code executing in another instance.
-The owning window retains its own editable tabs; the remote preview
-remains read-only. Debug commands from both windows are serialized for
-that one session, and both receive the resulting paused/running state.
+Both views of A must use one authoritative document and debug state.
+Edits, undo, dirty status, cursor movement, and breakpoint positions
+cannot diverge. Debug commands from both views are serialized for A's
+one session. Until shared writable document state exists, a remote
+selection may offer a clearly labelled read-only paused source preview
+and debug transport controls, but it must not pretend to provide the
+complete window-context switch described above.
 
 ## Breakpoint ownership and persistence
 
@@ -289,11 +278,11 @@ does not erase either the persisted breakpoint or a live pause.
 
 ## Focus follows breakpoint
 
-The default behavior is to keep the focused window in front. A visible
-owning window shows its paused source there; a hidden owning window
-creates a paused preview in the focused window. The tray identifies the
-paused instance in both cases. No preference is needed for debug
-control routing: local is the default, and tray selection is explicit.
+The default behavior is to keep the focused window in front and retain
+its current context. The tray identifies the paused window, visible or
+hidden; the user selects its row to view and control that context. No
+preference is needed for context routing: each window views itself by
+default, and a tray selection is explicit.
 The existing focus preference only affects whether a *visible* owning
 window may be raised:
 
@@ -303,7 +292,7 @@ Three modes, exposed as a preference:
 | --- | --- |
 | **Always raise** | A visible owning window comes to the front when its debugger pauses. |
 | **Raise when idle** | A visible owning window comes forward only if the user has not typed in the focused window for a short interval (≈2 seconds). |
-| **Never raise** *(default)* | No window focus change. Highlight the paused instance in the tray; show a preview only when its owning window is hidden. |
+| **Never raise** *(default)* | No window focus or context change. Highlight the paused IDE window in the tray until the user selects it. |
 
 The default is **Never raise** because several debuggers can pause at
 once. A background breakpoint must not pull the user through multiple
@@ -386,6 +375,9 @@ an adapter emits a real `craidd:debug-paused` event. Breakpoint persistence,
 shared gutter markers, save-before-launch checks, paused previews, and
 remote step controls remain to be implemented with the debugger adapter.
 White debugger pause/continue controls likewise depend on that adapter.
+Full context selection also requires a shared writable document model,
+window-scoped command routing, and synchronized project/editor panels;
+the current implementation does not provide that window manager yet.
 
 Acceptance checks:
 

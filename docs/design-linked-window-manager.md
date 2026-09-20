@@ -21,7 +21,7 @@ unsaved editor buffers, breakpoints, and linked membership remain
 intact. Program state appears as a secondary status on the window row.
 
 ```
-                           [Debug: Client · 1 ▾] [3 IDE windows · 1 hidden ▾]
+                           [Viewing: Client · 1 ▾] [3 IDE windows · 1 hidden ▾]
                                                    ┌────────────────────────────────────┐
                                                    │ ● Client · 1 Visible Running Hide Close│
                                                    │   Client · 2 Hidden  Paused  Show Close│
@@ -45,45 +45,53 @@ or library window is still discoverable here. Hover may reveal the
 tray, but click and keyboard focus must also open it so the controls
 work on touchscreens and with assistive technology.
 
-## Debug control target
+## Selecting a window context
 
-Each window starts with its own debugger selected. Its white debug
-controls (Pause, Continue, Step Into, Step Over, Step Out, and debug
-Stop) address that instance. Selecting another row in the tray makes
-that instance the **debug control target for this window**. The compact
-control always displays its target, for example `Debug: API · 1`, and
-the selected row has a persistent marker. White Build and ordinary Run
-remain local to the window's selected project; Gold actions still
-address the linked group. A remote target never changes the window's
-default project or its own debugger state.
+Each visible IDE window initially views and controls itself. Hiding
+Window B leaves its project, editor, runner, and debugger alive and
+accessible from the other visible windows. Hide alone does not switch
+Window A away from its own context. If B pauses, the upper-right window
+control pulses amber and its tray row remains marked **Paused**, with
+text as well as color. The signal works whether B is visible or hidden.
 
-Starting a new white Debug session still uses this window's selected
-project and configuration. The target selector routes controls for a
-session that already exists; it does not launch a duplicate process
-in the remote window.
+Selecting B's row makes B the **viewed window context** inside A. A's
+physical IDE window remains A, but its toolbar clearly reads
+`Viewing: B`. Every project and session scoped part of A now behaves
+as B: **B's default project moves to the top of Solution Explorer**;
+the toolbar shows B's project, configuration, and profile; the editor
+shows B's tabs and current source location; the gutter shows B's
+active breakpoints; Problems and output show B's session; and white
+Build, Run, Debug, and Stop commands route to B. Project Tools and
+project scoped commands use B too. Gold controls still address the
+linked solution group.
 
-A pause in another instance highlights and briefly pulses that tray
-row and the compact control. It does **not** silently retarget the white
-controls or steal OS focus. The badge says which instance paused and
-remains discoverable after the pulse. The user can click that row to
-control it from the current window, or use its own visible window.
-This selection works whether the owning window is visible or hidden.
-If it is visible, the current window opens a labelled, read-only
-preview of its paused source; both windows show subsequent steps.
-Paused rows use an amber/yellow indicator plus the word **Paused**, so
-they remain clear after the animation and without relying on color.
-If the selected target closes, the control returns to this window's
-own debugger; it never silently selects a different remote session.
+This is the *effective* default project while B is selected. A's own
+default project, tab layout, unsaved edits, and runner remain stored
+under A. Selecting A restores them. If the user changes the default
+project while viewing B, that change belongs to B and appears in B's
+own IDE window too. Global preferences remain global.
 
-For three visible windows across two monitors, each window's local
-controls therefore continue to work independently by default. The
-tray signals where the next paused step is available, while an
-explicit selection provides remote control when the user wants it.
-Selecting a remote debugger does not lock its owning window out: a
-step from either window acts on the same session, and both views then
-receive the resulting state. Debug commands must be serialized per
-session and controls should be busy while a step is in flight, so two
-quick clicks from different monitors cannot apply out of order.
+Selecting B does not reveal B's OS window. **Show** does that as a
+separate action. If B is already visible on another monitor, both A
+and B may display B's source and stopped line. Stepping from either
+view commands B's one debugger session and updates both views. B can
+still be edited and controlled in its own IDE window; selection is
+remote access, not exclusive ownership. Debug commands must be
+serialized per session so two near-simultaneous clicks cannot apply
+out of order.
+
+The two editor views must use **one authoritative B document state**.
+Changes, cursor position, dirty status, undo history, and breakpoint
+movement cannot diverge into two independent B buffers. A full
+writable view requires that shared document model. A read-only paused
+source preview is the safe intermediate step until it exists; the UI
+must not imply that A has become a full B editor while it can only
+preview source.
+
+Selecting another row switches the effective context without
+resuming or stopping any debugger. If selected B closes, A returns to
+its own context. A newly selected or paused window never takes over A
+automatically; the user chooses when to follow the amber signal.
 
 ## What the actions mean
 
@@ -121,29 +129,26 @@ action already running.
 
 If `Client · 2` is hidden and its debugger pauses, the hidden window
 stays hidden. The most recently focused visible window of the same
-solution receives the paused-session notification and a read-only
-source preview in the background, as described in the linked window
-design. The preview's labelled controls target `Client · 2`'s debugger.
-Selecting `Client · 2` in the tray activates its preview and targets
-the active window's white debug controls at that debugger. Selecting
-the row from another visible sibling creates the preview there. The
-tray row shows **Paused** and offers **Show** for anyone who wants the
-owning window.
-Continuing or stepping from the preview does not reveal it.
+solution receives the paused-session notification, and `Client · 2`'s
+tray row stays amber and marked **Paused**. The visible window keeps
+its current project and editor until the user selects that row.
 
-Opening the hidden instance's preview does not itself retarget the
-white controls. This keeps Pause, Step, and Stop predictable if the
-active window also has a live debugger. With several hidden paused
-instances, each preview and tray row retains its own instance label;
-the selected target is always visible in the compact control. The
-white debug transport's icon, enabled state, and tooltip follow that
-selected target, including when the target belongs to another window.
+Selecting `Client · 2` switches the visible window to B's effective
+project and editor context. The stopped file and breakpoint appear
+there; white debug controls address B. When the user selects their
+own window again, their earlier tabs and project return. **Show**
+reveals B's original IDE window if they prefer to debug there.
 
-Closing a preview does not close or resume the hidden debugger. If
-several hidden clients pause, the tray and paused-session list show
-each one separately. A hidden window is never raised by a pause, even
-if the global focus preference allows visible windows to raise; the
-user's Hide action takes precedence.
+During the read-only intermediate phase, selecting B opens its
+labelled paused source preview and routes only debug transport
+controls to B. The full context switch, including writable editor
+state and Build/Run controls, is available only after the shared
+document model and command routing are complete.
+
+If several hidden clients pause, each tray row remains individually
+marked. Switching to B never resumes C. A hidden window is never
+raised by a pause, even if the global focus preference allows visible
+windows to raise; the user's Hide action takes precedence.
 
 ## Five-window walkthrough
 
@@ -160,9 +165,9 @@ still reads `5 IDE windows · 3 hidden` and adds a `2 paused` badge.
 B and C briefly pulse amber and remain marked **Paused** in their IDE
 window rows. A, D, and the server continue running.
 The user can **Show** B and C to inspect each in its own window, or
-select B's row to bring B's paused source preview into the main
-window and route that window's white debug controls to B. C stays
-paused and amber. Selecting C switches the preview and controls to C;
+select B's row to view B's effective project, paused editor, and
+controls in the main window. C stays paused and amber. Selecting C
+switches the viewed context to C;
 it does not continue B or interrupt the other three sessions.
 
 If the user finds a bug, Gold Stop ends all five sessions before they
@@ -181,6 +186,14 @@ with bounded output and event history that a shown window can reload.
 Hidden-window launch, stop, and debugger commands must be reliable
 without depending on a foreground renderer. This must be verified on
 ChromeOS/Linux before Hide is shipped.
+
+Full window-context selection also needs an authoritative document
+model and per-window project/configuration state outside any single
+renderer. All command routing must carry the selected window identity.
+Editing B through A must write to B's buffer, preserve B's undo state,
+and broadcast changes to any visible B view. Until this is reliable,
+the intermediate UI must label the source as a read-only B preview
+and keep A's Build/Run commands local.
 
 The current linked snapshot lists only windows eligible for gold actions.
 The tray needs a separate snapshot of every window in the same `.cln`,
@@ -203,12 +216,13 @@ window invisible.
 2. Hide one client. It remains in the tray, retains its unsaved tabs,
    and still participates in gold Run and Stop.
 3. A hidden client's breakpoint fires. The focused visible window
-   shows that client's paused source and targeted controls without
-   switching OS windows.
+   retains its current project and editor while the hidden client's
+   row signals **Paused**. Selecting that row shows the client's
+   effective project and stopped source without switching OS windows.
 4. A visible API debugger pauses while a client window is focused.
-   The API row pulses, but both windows' white debug controls retain
-   their current targets. Selecting API in the client tray routes only
-   that client's white debug controls to API.
+   The API row pulses, but both windows retain their current contexts.
+   Selecting API in the client tray shows API's effective project and
+   paused source in that client IDE window; stepping updates both views.
 5. Show the hidden client. Its editor and paused debugger are where
    they were before Hide.
 6. Close a running hidden client. Its process ends, dirty work is
@@ -224,13 +238,20 @@ window invisible.
     A's tray. Step from A, then from C. Both windows show the same
     stopped location without changing OS focus or creating a second
     debugger session.
+11. Select hidden Window B from A, then return to A. B's project and
+    editor context appear while selected; B's default project moves to
+    the top of Solution Explorer, and B's white actions, Problems, and
+    output are shown. A's original project order, tabs, and unsaved
+    edits return intact afterward.
 
 ## Assessment
 
-This is a strong organization layer for linked windows, especially
-when a solution needs several copies of one client. The main risk is
-presenting Hide as a harmless visual action while the implementation
-quietly loses runner events or debugger control. Backend-owned state
-and a clear distinction between **Hide** and **Close** are the gates
-for implementation. The tray should be tested with three or more
-instances before it is treated as a general window manager.
+This is a strong organization model for linked windows, especially
+when a solution needs several copies of one client. Full context
+selection is also a substantial state-routing feature: the visible
+shell must render another window's project, editor, and session
+without duplicating its underlying state. Backend-owned process and
+debug state, authoritative document buffers, and clear **Hide** versus
+**Close** behavior are the implementation gates. Test the tray with
+three or more IDE windows before treating it as a general window
+manager.
