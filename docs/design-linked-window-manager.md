@@ -1,4 +1,4 @@
-# Proposal: Linked-window process toolbar
+# Proposal: Linked solution window manager
 
 **Status:** Proposal for review. No UI or runner change is made by this document.
 **Companion:** [Linked solution windows](design-linked-solution-windows.md),
@@ -7,31 +7,34 @@
 ## The idea
 
 When two or more windows have the same `.cln` open, place a compact
-window-and-process control at the upper right of each participating
+IDE-window control at the upper right of each participating
 window, inside the app and below the operating system's close and
-maximize controls. Hovering or clicking it opens a tray for that
-solution's window instances.
+maximize controls. Hovering or clicking it opens a tray listing that
+solution's **Craidd Studio windows**. Each row is one IDE window, even
+when it has no running program. A launched app creating its own OS
+windows does not add rows to this tray.
 
-The tray makes several client or server instances manageable without
-keeping every editor window on screen. Hiding an instance changes only
-its visibility. Its project selection, process, debugger, unsaved
-editor buffers, breakpoints, and linked membership remain intact.
+The tray lets a user create four client IDE windows, then hide three
+while keeping all four available. Hiding an IDE window changes only
+its visibility. Its project selection, running program, debugger,
+unsaved editor buffers, breakpoints, and linked membership remain
+intact. Program state appears as a secondary status on the window row.
 
 ```
-                                    [Debug: Client · 1 ▾] [3 windows · 2 running]
-                                     ┌──────────────────────────────┐
-                                     │ ● Client · 1 Running Hide Close│
-                                     │   Client · 2 Paused  Show Close│
-                                     │   API · 1     Idle   Hide Close│
-                                     └──────────────────────────────┘
+                           [Debug: Client · 1 ▾] [3 IDE windows · 1 hidden ▾]
+                                                   ┌────────────────────────────────────┐
+                                                   │ ● Client · 1 Visible Running Hide Close│
+                                                   │   Client · 2 Hidden  Paused  Show Close│
+                                                   │   API · 1    Visible Idle    Hide Close│
+                                                   └────────────────────────────────────┘
 ```
 
-Use **windows** or **instances** for the total. A window can be idle,
-building, running, paused, failed, or stopping; calling every entry an
-open process would misreport idle windows. Show useful counts, for
-example `3 windows · 2 running` or `5 active · 2 paused`. Here,
-**active** includes both running and paused sessions; a paused process
-is still alive but is not executing. An instance number stays stable
+The primary count is always IDE windows and their visibility: for
+example `4 IDE windows · 3 hidden` or `5 IDE windows · 3 hidden`.
+When debuggers pause, add a distinct `2 paused` badge; do not replace
+the window count with a process count. A window may also show Idle,
+Building, Running, Paused, Failed, or Stopping beside its visibility.
+An instance number stays stable
 for that window's lifetime, so two windows on the same project remain
 distinguishable as `Client · 1` and `Client · 2`.
 
@@ -83,6 +86,9 @@ session and controls should be busy while a step is in flight, so two
 quick clicks from different monitors cannot apply out of order.
 
 ## What the actions mean
+
+These actions apply to the **Craidd Studio IDE window** named in the
+row. They do not hide or close a launched application's GUI window.
 
 | Action | Result |
 | --- | --- |
@@ -139,17 +145,20 @@ each one separately. A hidden window is never raised by a pause, even
 if the global focus preference allows visible windows to raise; the
 user's Hide action takes precedence.
 
-## Five-instance walkthrough
+## Five-window walkthrough
 
 Suppose Client A, B, C, and D run the same project and a fifth window
 runs the server. Three breakpoints in one client source file are
 scoped to A, B, and C respectively; D and the server have none. The
-user arranges the windows, then hides B and C while leaving a main
-solution window visible. A linked Debug action starts all five.
+user arranges the five IDE windows, then hides B, C, and D while
+leaving Client A and the server visible. The window control reads
+`5 IDE windows · 3 hidden`. A linked Debug action starts all five
+program sessions, including those owned by hidden IDE windows.
 
 An interaction reaches B's and C's breakpoints. The compact control
-reads `5 active · 2 paused`. B and C briefly pulse amber and remain
-marked **Paused** in the tray. A, D, and the server continue running.
+still reads `5 IDE windows · 3 hidden` and adds a `2 paused` badge.
+B and C briefly pulse amber and remain marked **Paused** in their IDE
+window rows. A, D, and the server continue running.
 The user can **Show** B and C to inspect each in its own window, or
 select B's row to bring B's paused source preview into the main
 window and route that window's white debug controls to B. C stays
@@ -207,9 +216,10 @@ window invisible.
 7. Attempt to hide the last visible window. Craidd keeps an accessible
    window visible.
 8. Restore the last session. Previously hidden windows are visible.
-9. Run the five-instance walkthrough above. B and C pause independently,
+9. Run the five-window walkthrough above. B and C pause independently,
    selecting one does not resume the other, and Gold Stop reaches all
-   five sessions.
+   five sessions. The tray still counts five IDE windows and three hidden
+   windows after the sessions stop.
 10. Keep Client C visible on another monitor and select it from Window
     A's tray. Step from A, then from C. Both windows show the same
     stopped location without changing OS focus or creating a second

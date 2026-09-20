@@ -6,7 +6,7 @@ coordination waits for real debugger adapters.
 **Companion:** [Window model](design-window-model.md),
 [solution orchestration](design-solution-orchestration.md),
 [configuration megamenu](design-configuration-megamenu.md),
-[linked-window process toolbar](design-linked-window-process-toolbar.md).
+[linked solution window manager](design-linked-window-manager.md).
 
 ---
 
@@ -145,7 +145,7 @@ own configurations. White debug transport controls default to this
 window's debugger. The linked-window tray can explicitly select a
 different instance as this window's debug control target; its name
 remains visible beside the controls. See
-[linked-window process toolbar](design-linked-window-process-toolbar.md).
+[linked solution window manager](design-linked-window-manager.md).
 
 **Idle.** White Build, Run, and Debug are enabled iff this window's
 selected project has a configuration of that kind.
