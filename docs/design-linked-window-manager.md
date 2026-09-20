@@ -14,6 +14,11 @@ solution's **Craidd Studio windows**. Each row is one IDE window, even
 when it has no running program. A launched app creating its own OS
 windows does not add rows to this tray.
 
+The tray is the switcher from the
+[linked solution windows](design-linked-solution-windows.md) thesis:
+the window is a viewport, the session is a process, the tray selects
+which session this window is showing, and Hide turns a viewport off.
+
 The tray lets a user create four client IDE windows, then hide three
 while keeping all four available. Hiding an IDE window changes only
 its visibility. Its project selection, running program, debugger,
@@ -93,6 +98,15 @@ resuming or stopping any debugger. If selected B closes, A returns to
 its own context. A newly selected or paused window never takes over A
 automatically; the user chooses when to follow the amber signal.
 
+> **Debugger dependency.** Pause events, paused-row highlighting, and
+> remote debug transport controls become active when Craidd's first
+> Debug Adapter Protocol client ships. Until then, the linked-window
+> design describes the target behavior; the current implementation
+> keeps Gold Debug visible but disabled because no adapter exists to
+> emit a real `craidd:debug-paused` event.
+
+---
+
 ## What the actions mean
 
 These actions apply to the **Craidd Studio IDE window** named in the
@@ -103,6 +117,16 @@ row. They do not hide or close a launched application's GUI window.
 | **Show** | Reveal and focus that instance's window. Keep its current editor and debugger state. |
 | **Hide** | Hide that OS window without stopping its process or debugger, discarding edits, or unlinking it. The tray changes to **Show**. |
 | **Close** | Close the instance, stop its owned process/debugger, and remove it from the linked group. Resolve dirty tabs and warn about an active process before closing. |
+
+**Hide and Close share one save flow.** Both run the same
+save-before-close prompt for dirty tabs. The only difference is what
+happens after the user resolves it: Hide hides the window, Close
+closes it. Save writes edits and proceeds; Discard drops edits and
+proceeds; Cancel aborts the action. If Save finds a disk conflict, the
+flow stops, names the conflicting file, and abandons the Hide or Close
+until the conflict is resolved through the editor. There is no separate
+Hide dialog and no inline conflict resolution. See the design doc's
+"Hide and Close share one save flow" section for the full rule.
 
 The active window can hide itself if another linked window is visible;
 focus then moves to that visible sibling. Do not allow the **last
@@ -243,6 +267,29 @@ window invisible.
     the top of Solution Explorer, and B's white actions, Problems, and
     output are shown. A's original project order, tabs, and unsaved
     edits return intact afterward.
+11. Select hidden Window B from A, then return to A. B's project and
+    editor context appear while selected; B's default project moves to
+    the top of Solution Explorer, and B's white actions, Problems, and
+    output are shown. A's original project order, tabs, and unsaved
+    edits return intact afterward.
+12. Place Window A on the left monitor and Window C on the right.
+    Select different sessions in each. Step in A; A's editor shows the
+    stopped location. Step in C; C's editor shows the stopped location.
+    Neither view mirrors the other by default.
+13. Hide Window C while it has unsaved edits, with no conflicts. The
+    save-before-close prompt appears with Save / Discard / Cancel.
+    Save writes the edits and Hide proceeds; Discard drops the edits
+    and Hide proceeds; Cancel aborts the Hide and nothing changes.
+14. Hide Window C with a dirty buffer that conflicts with disk. The
+    save-before-close flow stops and names the conflicting file. The
+    Hide is abandoned. Resolving the conflict through the editor and
+    clicking Hide again succeeds.
+15. Attempt to hide the last visible window of a solution. The Hide
+    action is disabled with a tooltip. No dialog, no override.
+16. Close the last visible window while three hidden windows are
+    running, one of them paused at a breakpoint. The debuggers detach,
+    every runner receives SIGTERM, the window closes, and Craidd exits.
+    No process survives; no port is held.
 
 ## Assessment
 

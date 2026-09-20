@@ -31,6 +31,55 @@ This design is about that coordination.
 
 ---
 
+## The thesis
+
+Four clauses. Everything else is a consequence.
+
+**The window is a viewport. The session is a process. The tray is the
+switcher. Hiding is turning a viewport off.**
+
+A window does not own a session. A window *shows* a session. The session
+is a running process, with its runner, its debugger, its unsaved
+buffers, its breakpoints. Any window on the same solution can show any
+session. The tray is how the user chooses which session the current
+window is showing, and Hide is how they say "I don't need to see this
+one right now."
+
+Everything below is an elaboration of these four sentences.
+
+---
+
+## Why this is not "too many windows"
+
+The first objection to this design is honest and worth answering
+directly: *if a solution has eight processes, does the user need eight
+windows?* No. That is the problem the design exists to remove.
+
+Three moves answer it:
+
+**1. Hidden windows are not on screen.** The user runs eight sessions
+and keeps three visible. The other five are alive, controllable, and
+invisible. The visual load is three windows, not eight.
+
+**2. Alt-tab is not the interaction.** The tray lives in every visible
+window and lists every session. Switching which process this window is
+driving is a click on a tray row, not an OS-level window switch. The
+window the user is already looking at *becomes* the process they want
+to see, in place.
+
+**3. Nothing has to be remembered.** The switch is total. The window's
+title, toolbar chip, editor tabs, output, and controls all change to
+the selected session. The user does not hold "window 3 is the API" in
+their head, because window 3's content says so.
+
+The result: three windows, one tray, no alt-tab, no memory. That is
+*less* than what VS Code asks for the same problem — and VS Code does
+not solve the problem, it just lacks the features, so the user does the
+coordination by hand and it feels smaller only because the IDE is not
+admitting it needs help.
+
+---
+
 ## What this is not
 
 Four things it does not attempt, recorded here so the boundary doesn't
@@ -87,6 +136,14 @@ When any condition fails, gold buttons do not appear. There is no
 partial state and no "link this manually" override in this design —
 if the conditions don't hold, the user has two independent windows,
 which is a valid and useful arrangement.
+
+**The tray and the gold group are different sets.** The tray lists
+*every* window on the same `.cln` — including idle windows and
+windows whose selected project is a library. The gold group is the
+*application-kind subset* of those windows, the ones that can
+participate in linked Build, Run, and Debug. A library window appears
+in the tray; it does not contribute a gold participant. See
+[linked solution window manager](design-linked-window-manager.md).
 
 ---
 
@@ -305,6 +362,205 @@ focus-stealing hates it everywhere.
 
 ---
 
+## Multiple monitors
+
+Two monitors, one solution, two viewports. The user places Window A on
+the left monitor and Window C on the right. Each shows a different
+session. Neither is "the main one." Stepping through either updates
+both views: if the user steps Window A's session, the stopped location
+appears in A's editor; if they step Window C's session, the stopped
+location appears in C's editor. Nothing is mirrored by default — each
+viewport shows the session it has selected.
+
+This is the case that makes Duplicate Window worth having. A user with
+two monitors and three processes worth watching does not want to
+alt-tab. They want each monitor to show a session, and to switch a
+monitor's session from the tray when they need to look at something
+else. The tray in each viewport lists every session, so either monitor
+can drive any of them.
+
+Multi-monitor is not a special mode. It is the same model — window is
+viewport, session is process — arranged across two physical screens.
+The design falls out of the thesis; nothing here is a separate feature.
+
+---
+
+## Window identity
+
+Each window in a linked group has a stable identity that survives
+Hide, Show, and context switches. It is used in the title bar, the
+tray, and any diagnostics.
+
+**Window title format:**
+
++++
+{Project Configuration}: {WindowId} - Craidd Studio - {Solution Name}
++++
+
+Examples:
+
++++
+Tauri V2: CS1 - Craidd Studio - Polyglot Lab
+Tauri V2: CS2 - Craidd Studio - Polyglot Lab
+Tauri V2: CS3 - Craidd Studio - Polyglot Lab
+Server:   CS1 - Craidd Studio - Polyglot Lab
++++
+
+The project configuration comes first because it is what the user scans
+for. The window ID (`CS1`, `CS2`, `CS3`) is a per-solution counter that
+stays stable for that window's lifetime, so two windows showing the
+same project remain distinguishable. The solution name is last because
+it changes least often and is confirmation rather than identification.
+The solution name is shown even when only one solution is loaded, for
+consistency.
+
+**Tray row format:**
+
++++
+{Project Default Name}: {WindowId}
++++
+
+Examples: `Tauri V2: CS1`, `Tauri V2: CS2`, `Server: CS1`.
+
+Each row also shows visibility (`Visible` / `Hidden`) and process state
+(`Idle`, `Building`, `Running`, `Paused`, `Failed`, `Stopping`), and
+offers Hide/Show and Close actions.
+
+---
+
+## Hide is GUI teardown
+
+Hiding a window does not merely make it invisible. It tears down the
+IDE window's GUI: the OS window is destroyed, the webview is freed,
+the compositor surface is released. What survives is the *background
+process* that owns the project's runner, the debugger attachment, the
+unsaved editor state, the breakpoints, and the window's identity.
+
+Showing a hidden window creates a fresh OS window and hands it the
+state of the hidden window it replaces. This is the same operation as
+a context switch — a window adopting another window's state — and the
+two share their mechanism.
+
+The state that survives Hide is explicitly enumerated, and every piece
+of it must be held outside the GUI:
+
+- Project selection, effective default project.
+- Running process and its runner slot.
+- Debugger attachment and current session state.
+- Unsaved editor buffers, dirty flags, cursor positions.
+- Breakpoint definitions and per-instance activation.
+- Window identity (`CS1`, `CS2`, …) and solution membership.
+
+Any state added later that is not on this list will be lost by Hide.
+The rule is: *if Hide must preserve it, it cannot live in the webview.*
+
+Because Hide is a real teardown and Show is a real build, both are
+deliberate operations rather than instant toggles. That is acceptable —
+both are user-initiated, neither is on a hot path.
+
+---
+
+## One visible window per solution
+
+Any window can be hidden, with one exception: **a solution must always
+have at least one visible window.**
+
+The tray lives inside visible windows. If every window for a solution
+were hidden, there would be no tray left to Show anything from. The
+rule prevents the IDE from reaching a state with no route back.
+
+Enforcement is local to the action: when the user attempts to hide the
+last visible window for a solution, the Hide action is disabled, with
+a tooltip explaining why. No confirmation dialog, no override. The
+rule is simple, the enforcement is simple.
+
+The rule is scoped to the `.cln`, not globally. Two solutions open in
+two windows means each solution must keep one visible window of its
+own; hiding one solution's last window does not affect the other.
+
+---
+
+## Closing the last visible window
+
+Closing the last visible window is a **full shutdown**, not a partial
+one. The user's intent when closing the last window is "I am done with
+this solution," and Craidd honors that intent literally.
+
+Order of operations:
+
+1. **Run the save-before-close flow.** This is the existing flow —
+   the same one Close uses today. Every dirty tab in the visible
+   window, and every dirty tab in every hidden window of the same
+   solution, gets the standard prompt. Save, Discard, or Cancel. If
+   any save conflicts, the close is abandoned until the conflict is
+   resolved through the editor.
+2. **Detach every debugger.** For each hidden window's session and
+   the visible window's session, send the DAP `disconnect` and wait
+   briefly for the adapter to confirm. If unresponsive, SIGTERM the
+   adapter. A paused session is killed, not resumed — the user has
+   decided the session is over.
+3. **Stop every runner.** SIGTERM the process group for every
+   window's running process, wait 500 ms, SIGKILL if needed. This is
+   the same discipline the existing containment rules apply on IDE
+   close; it extends to hidden windows. A build that is mid-flight is
+   killed, not awaited.
+4. **Tear down every hidden window's state.**
+5. **Close the visible window.**
+6. **Exit Craidd for that solution.**
+
+Nothing survives. No process is left running. No port is left held. No
+orphan waits to be discovered on next launch.
+
+This is the difference between "the IDE leaves nothing behind" and "the
+IDE leaves whatever it forgot to clean up." VS Code leaves orphans in
+the same situation. Craidd does not.
+
+---
+
+## Hide and Close share one save flow
+
+Hide and Close are the same action with different endings. Both run the
+same save-before-close flow for dirty tabs; the only difference is what
+happens after the user resolves the prompt.
+
+| User choice | Close does… | Hide does… |
+| --- | --- | --- |
+| Save | Save every dirty tab, then close | Save every dirty tab, then hide |
+| Discard | Drop edits, then close | Drop edits, then hide |
+| Cancel | Nothing. Window stays visible. | Nothing. Window stays visible. |
+
+There is no separate Hide dialog. The prompt that appears on Close
+appears on Hide, with the same three options and the same handling.
+The shared flow takes one parameter — what to do after the user
+resolves the prompt — and that is the only difference.
+
+**Conflicts abort the flow.** If Save all finds that a file changed on
+disk, the flow stops, names the offending file, and offers to open it.
+The user resolves the conflict through the editor's existing Save
+Conflict dialog, then tries again. Neither Close nor Hide resolves
+conflicts inline, because there is exactly one place in the IDE where
+disk conflicts are resolved, and it is not inside a window-management
+action.
+
+Today, the save-before-close flow is single-tab: it prompts once per
+dirty tab, in sequence. When it is unified into a single multi-file
+prompt, both Hide and Close will use the unified version. Until then,
+both flows inherit the current chained behavior, which is consistent
+and correct.
+
+---
+
+## The library case
+
+> **Debugger dependency.** Pause events, paused-row highlighting, and
+> remote debug transport controls become active when Craidd's first
+> Debug Adapter Protocol client ships. Until then, the linked-window
+> design describes the target behavior; the current implementation
+> keeps Gold Debug visible but disabled because no adapter exists to
+> emit a real `craidd:debug-paused` event.
+
+---
+
 ## The isolation workflow, named
 
 The reason this design exists, in one paragraph:
@@ -323,7 +579,6 @@ control is the point; global control is the convenience.
 
 ---
 
-## The library case
 
 A C++ library consumed by a C# application is **one process**, not two.
 The library's code runs inside the C# process's address space. There is
