@@ -7,6 +7,9 @@ export interface WorkspaceEntry {
   y?: number;
   width?: number;
   height?: number;
+  selectedConfigName?: string;
+  selectedProfileName?: string;
+  selectionName?: string;
 }
 
 export interface StartupState {

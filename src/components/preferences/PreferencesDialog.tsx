@@ -36,8 +36,10 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
     toggleWordWrap: state.toggleWordWrap,
     theme: state.theme,
     setTheme: state.setTheme,
+    breakpointFocusMode: state.breakpointFocusMode,
+    setBreakpointFocusMode: state.setBreakpointFocusMode,
   })));
-  const [area, setArea] = useState<"editor" | "toolchains">(initialArea);
+  const [area, setArea] = useState<"editor" | "toolchains" | "debugging">(initialArea);
   const [language, setLanguage] = useState<string>(initialLanguage);
   const [snapshot, setSnapshot] = useState<ToolchainSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -107,13 +109,13 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
         </div>
         <div className="flex-1 min-h-0 flex">
           <nav aria-label="Preference sections" className="w-44 shrink-0 border-r border-zinc-800 py-3">
-            {(["editor", "toolchains"] as const).map((item) => (
+            {(["editor", "toolchains", "debugging"] as const).map((item) => (
               <button key={item} onClick={() => setArea(item)} aria-current={area === item ? "page" : undefined}
                 className={"w-full text-left px-4 py-2 text-[12.5px] transition-colors border-l-2 " +
                   (area === item
                     ? "bg-zinc-800 text-zinc-100 border-l-blue-500"
                     : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200 border-l-transparent")}
-              >{item === "editor" ? "Text Editor" : "Toolchain"}</button>
+              >{item === "editor" ? "Text Editor" : item === "toolchains" ? "Toolchain" : "Debugging"}</button>
             ))}
           </nav>
 
@@ -161,6 +163,27 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                     </label>
                   </div>
                 </div>
+              </div>
+            </> : area === "debugging" ? <>
+              <div className="px-6 py-4 border-b border-zinc-800 shrink-0">
+                <h2 className="text-[13px] text-zinc-100 font-medium">Debugging</h2>
+                <p className="text-[11px] text-zinc-500 mt-1">How Craidd responds when a debugger pauses in a linked window.</p>
+              </div>
+              <div className="px-6 py-5">
+                <label htmlFor="breakpoint-focus" className="block text-xs text-zinc-300 mb-2">Focus follows breakpoint</label>
+                <select id="breakpoint-focus" value={prefs.breakpointFocusMode}
+                  onChange={(event) => prefs.setBreakpointFocusMode(event.target.value as "always" | "idle" | "never")}
+                  className="w-56 bg-zinc-950 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-500">
+                  <option value="always">Always raise</option>
+                  <option value="idle">Raise when idle</option>
+                  <option value="never">Never raise (default)</option>
+                </select>
+                <p className="text-[11px] text-zinc-500 mt-3 max-w-md">
+                  When idle waits about two seconds after typing in any Craidd window. Never raise marks the paused window in its title instead.
+                </p>
+                <p className="text-[11px] text-zinc-600 mt-3 max-w-md">
+                  This takes effect when a debugger adapter reports a pause. Debugger integration is still in development.
+                </p>
               </div>
             </> : <>
               <div className="px-6 py-4 border-b border-zinc-800 shrink-0">

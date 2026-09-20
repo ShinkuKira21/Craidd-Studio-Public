@@ -14,6 +14,9 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
   const activeFileId = useSolution((s) => s.activeFileId);
+  const clnPath = useSolution((s) => s.clnPath);
+  const selectedConfigName = useBuild((s) => s.selectedConfigName);
+  const selectedProfileName = useBuild((s) => s.selectedProfileName);
   const buildStatus = useBuild((s) => s.status);
   const mainChoices = useBuild((s) => s.mainChoices);
   const startBuild = useBuild((s) => s.start);
@@ -25,6 +28,16 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     void import("@tauri-apps/api/core")
       .then(({ invoke }) => invoke("open_welcome_window"))
       .catch((error) => alert(`Could not open Get Started: ${String(error)}`));
+  };
+  const duplicateWindow = async () => {
+    if (!clnPath) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_workspace_window", { entry: {
+        path: clnPath, kind: "solution", name: clnPath.split("/").filter(Boolean).pop() ?? clnPath,
+        windowLabel: "", selectedConfigName, selectedProfileName,
+      } });
+    } catch (error) { alert(`Could not duplicate window: ${String(error)}`); }
   };
 
   useEffect(() => {
@@ -77,6 +90,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         { label: "Open Solution…", shortcut: "Ctrl+Shift+O", action: doOpenSolution },
         { label: "Open Recent…", action: openWelcome },
         { label: "Get Started…", action: openWelcome },
+        { label: "Duplicate Window", disabled: !clnPath, action: () => void duplicateWindow() },
         { separator: true },
         { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId, action: () => runSave(saveActiveFile) },
         { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId, action: () => runSave(saveActiveFileAs) },

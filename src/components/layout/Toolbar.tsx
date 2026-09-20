@@ -3,6 +3,7 @@ import { useSolution } from "../../store/solutionStore";
 import { useBuild, syncMainChoices, selectConfiguration } from "../../store/buildStore";
 import type { ConfigEntry, CraiddProject } from "../../types/project";
 import ConfigurationsDialog from "../dialogs/configurations/ConfigurationsDialog";
+import { useLinkedWindows, startLinkedAction, stopLinkedAction, type LinkedSnapshot } from "../../store/linkedWindowsStore";
 
 type Kind = "build" | "run" | "debug";
 
@@ -18,6 +19,7 @@ function Toolbar() {
   const activeConfigName = useBuild((s) => s.activeConfigName);
   const start = useBuild((s) => s.start);
   const stop = useBuild((s) => s.stop);
+  const linked = useLinkedWindows();
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const configs: ConfigEntry[] = [
@@ -40,6 +42,7 @@ function Toolbar() {
     <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-1.5 shrink-0 text-xs">
       <KindButton kind="build" configs={configs} running={running}
                   onFire={(name) => void start("build", name)} />
+      {(linked.linked || linked.activeAction) && <GoldButton kind="build" linked={linked} />}
 
       <ConfigChip
         hasSolution={!!solution}
@@ -61,6 +64,7 @@ function Toolbar() {
 
       <KindButton kind="run" configs={configs} running={running}
                   onFire={(name) => void start("run", name)} />
+      {(linked.linked || linked.activeAction) && <GoldButton kind="run" linked={linked} />}
 
       <button
         title={running ? "Stop (Shift+F5)" : "Nothing is running"}
@@ -75,6 +79,7 @@ function Toolbar() {
 
       <KindButton kind="debug" configs={configs} running={running}
                   onFire={(name) => void start("debug", name)} />
+      {(linked.linked || linked.activeAction) && <GoldButton kind="debug" linked={linked} />}
 
       <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[280px]">
         {running && activeConfigName ? (
@@ -92,6 +97,45 @@ function Toolbar() {
         <ConfigurationsDialog onClose={() => setDialogOpen(false)} />
       )}
     </div>
+  );
+}
+
+function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
+  const isStop = linked.activeAction === kind && (kind === "run" || kind === "debug");
+  const available = kind === "build" ? linked.canBuild : kind === "run" ? linked.canRun : linked.canDebug;
+  const disabled = !isStop && (!linked.linked || linked.busy || !available);
+  const projects = linked.members.map((member) => member.projectName).join(" + ");
+  const count = linked.members.length;
+  const title = isStop ? `Stop ${count} linked ${count === 1 ? "instance" : "instances"}`
+    : kind === "debug" && !linked.canDebug ? `Debug ${count} instances requires a real debugger adapter in every window`
+    : !available ? `Cannot ${kind} all ${count} linked instances: a configuration is missing`
+    : linked.busy ? "A linked action is active"
+    : `${KIND_TITLE[kind]} ${count} linked instances: ${projects}`;
+  return (
+    <button type="button" title={title} aria-label={isStop ? `Stop ${count} linked instances` : `${KIND_TITLE[kind]} ${count} linked instances`}
+      disabled={disabled}
+      onClick={() => void (isStop ? stopLinkedAction() : startLinkedAction(kind)).catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
+      className={"relative w-8 h-8 flex items-center justify-center rounded text-[14px] transition-colors " +
+        (disabled ? "text-amber-700/70 cursor-default" : "text-amber-400 hover:bg-amber-900/30 hover:text-amber-300")}
+    >
+      <GoldActionIcon kind={kind} stop={isStop} />
+      <sup aria-hidden="true" className="absolute top-0 right-0 text-[9px] leading-none font-semibold tabular-nums">{count}</sup>
+    </button>
+  );
+}
+
+function GoldActionIcon({ kind, stop }: { kind: Kind; stop: boolean }) {
+  if (stop) return <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4 fill-current"><rect x="5" y="5" width="14" height="14" rx="1.5" /></svg>;
+  if (kind === "run") return <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4 fill-current"><path d="M6 3.5a1 1 0 0 1 1.5-.86l13 8.5a1 1 0 0 1 0 1.72l-13 8.5A1 1 0 0 1 6 20.5z" /></svg>;
+  if (kind === "debug") return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 8a4 4 0 0 1 8 0v9a4 4 0 0 1-8 0V8Z" /><path d="M8 12h8M9 5 7 3m8 2 2-2M5 9l3 2M5 17l3-2m11-6-3 2m3 6-3-2" />
+    </svg>
+  );
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m15 2 7 7-3.5 3.5-7-7L15 2Z" /><path d="m13.5 9.5-10 10a2.1 2.1 0 0 0 3 3l10-10" />
+    </svg>
   );
 }
 

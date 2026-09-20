@@ -21,6 +21,7 @@ use commands::manifests::read_manifests;
 use commands::infer::infer_configs;
 use commands::window::{WindowRequests, get_startup_state, record_workspace_open, take_window_open_request, open_workspace_window, open_welcome_window, apply_window_geometry, capture_window_geometry};
 use commands::runner::{RunnerManager, start_config, stop_config, cancel_window_run};
+use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, start_linked_action, acknowledge_linked_action, stop_linked_action, reveal_linked_problem, remove_linked_window};
 
 #[tauri::command]
 fn show_main_window(w: tauri::WebviewWindow) -> Result<(), String> {
@@ -41,11 +42,13 @@ pub fn run() {
         .manage(BuildManager::default())
         .manage(WindowRequests::default())
         .manage(RunnerManager::default())
+        .manage(LinkedWindowRegistry::default())
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 capture_window_geometry(window);
                 cancel_window_build(window);
                 cancel_window_run(window);
+                remove_linked_window(window);
             }
         })
         .plugin(tauri_plugin_opener::init())
@@ -99,6 +102,11 @@ pub fn run() {
             open_workspace_window,
             open_welcome_window,
             apply_window_geometry,
+            update_linked_window,
+            start_linked_action,
+            acknowledge_linked_action,
+            stop_linked_action,
+            reveal_linked_problem,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -20,6 +20,9 @@ import { usePreferences } from "../../store/preferencesStore";
 import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useSolution } from "../../store/solutionStore";
+import { useBuild } from "../../store/buildStore";
+import { listenToLinkedWindows, publishLinkedWindow } from "../../store/linkedWindowsStore";
+import { listenForBreakpointFocus } from "../../lib/breakpointFocus";
 
 interface ProjectToolchainCheck {
   language: string;
@@ -50,11 +53,20 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   const clnPath = useSolution((s) => s.clnPath);
   const hasSolution = useSolution((s) => !!s.solution);
   const solution = useSolution((s) => s.solution);
+  const selectedConfigName = useBuild((s) => s.selectedConfigName);
+  const selectedProfileName = useBuild((s) => s.selectedProfileName);
+  const mainChoices = useBuild((s) => s.mainChoices);
+  const buildStatus = useBuild((s) => s.status);
+  const buildProblems = useBuild((s) => s.problems);
   const bannerState = useSolution((s) => s.bannerState);
   const isSolutionLoading = useSolution((s) => s.isSolutionLoading);
   const projectLanguages = [...new Set((solution?.projects ?? [])
     .filter((project) => !project.missing && project.language && project.language !== "config")
     .map((project) => project.language!))].sort().join(",");
+  const savedConfig = [...(solution?.inferredConfigs ?? []), ...(solution?.configs ?? [])]
+    .find((config) => config.name === selectedConfigName);
+  const savedProject = solution?.projects.find((project) => project.path === savedConfig?.target);
+  const selectionName = savedConfig?.bestFit ? savedConfig.name : savedProject?.name ?? savedConfig?.name ?? null;
   const missingChecks = toolchainChecks.filter((check) => check.missing.length > 0);
   const rustDebugConfigured = Boolean(solution && [...(solution.configs ?? []), ...(solution.inferredConfigs ?? [])]
     .some((config) => config.kind === "debug" && config.method === "cargo"
@@ -65,6 +77,37 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
     setPrefsLanguage(language);
     setPrefsOpen(true);
   };
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenToLinkedWindows().then((cleanup) => {
+      if (disposed) cleanup(); else unlisten = cleanup;
+    }).catch((error) => console.error("[craidd] Linked window listener failed:", error));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForBreakpointFocus().then((cleanup) => {
+      if (disposed) cleanup(); else unlisten = cleanup;
+    }).catch((error) => console.error("[craidd] Breakpoint focus listener failed:", error));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    void publishLinkedWindow(solution, clnPath)
+      .catch((error) => console.error("[craidd] Could not update linked window:", error));
+  }, [solution, clnPath, selectedConfigName, mainChoices, buildStatus]);
+
+  useEffect(() => {
+    if (!clnPath) return;
+    const timer = window.setTimeout(() => {
+      void publishLinkedWindow(solution, clnPath)
+        .catch((error) => console.error("[craidd] Could not share build problems:", error));
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [buildProblems]);
   useKeyboardShortcuts(
     () => setPaletteOpen(true),
     () => openPreferences(),
@@ -110,10 +153,15 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
       !hasSolution && (bannerState === "no-solution" || bannerState === "inside-parent") ? "folder" : null;
     if (!kind) return;
     const path = kind === "solution" ? clnPath! : rootPath;
-    void import("@tauri-apps/api/core").then(({ invoke }) =>
-      invoke("record_workspace_open", { path, kind })
-    ).catch((error) => console.error("[craidd] Could not record recent workspace:", error));
-  }, [rootPath, clnPath, hasSolution, bannerState, isSolutionLoading]);
+    const timer = window.setTimeout(() => {
+      void import("@tauri-apps/api/core").then(({ invoke }) =>
+        invoke("record_workspace_open", {
+          path, kind, selectedConfigName, selectedProfileName, selectionName,
+        })
+      ).catch((error) => console.error("[craidd] Could not record recent workspace:", error));
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [rootPath, clnPath, hasSolution, bannerState, isSolutionLoading, selectedConfigName, selectedProfileName, selectionName]);
 
   // Refresh disk state for all open tabs whenever the window regains focus.
   useEffect(() => {

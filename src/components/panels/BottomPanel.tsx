@@ -2,6 +2,7 @@ import { useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useBuild } from "../../store/buildStore";
 import { useSolution } from "../../store/solutionStore";
+import { useLinkedWindows, revealLinkedProblem } from "../../store/linkedWindowsStore";
 
 const tabs = [
   { id: "output", label: "Output" },
@@ -16,8 +17,11 @@ export default function BottomPanel() {
   const output = useBuild((state) => state.output);
   const artifact = useBuild((state) => state.artifact);
   const problems = useBuild((state) => state.problems);
+  const linked = useLinkedWindows();
+  const shownProblems = linked.linked ? linked.problems
+    : problems.map((problem) => ({ ...problem, windowLabel: "", projectName: "" }));
   const revealFile = useSolution((state) => state.revealFile);
-  const errors = problems.filter((problem) => problem.severity === "error").length;
+  const errors = shownProblems.filter((problem) => problem.severity === "error").length;
   return (
     <div className="bg-zinc-900 border-t border-zinc-800 flex flex-col shrink-0 h-full">
       <div className="h-8 flex items-center px-3 gap-4 border-b border-zinc-800 text-xs shrink-0">
@@ -32,7 +36,7 @@ export default function BottomPanel() {
                 : "text-zinc-500 hover:text-zinc-300 border-transparent")
             }
           >
-            {t.label}{t.id === "problems" && problems.length > 0 ? ` (${errors || problems.length})` : ""}
+            {t.label}{t.id === "problems" && shownProblems.length > 0 ? ` (${errors || shownProblems.length})` : ""}
           </button>
         ))}
       </div>
@@ -43,15 +47,19 @@ export default function BottomPanel() {
             {artifact && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
           </pre>
         )}
-        {tab === "problems" && (problems.length === 0 ? (
+        {tab === "problems" && (shownProblems.length === 0 ? (
           <div className="text-zinc-500">No build problems for this run.</div>
         ) : (
           <div className="space-y-0.5">
-            {problems.map((problem, index) => (
+            {linked.linked && <div className="text-[10px] uppercase tracking-wider text-amber-500/80 px-2 pb-1">Linked solution · {linked.members.length} windows</div>}
+            {shownProblems.map((problem, index) => (
               <button
-                key={`${problem.file}:${problem.line}:${problem.column}:${index}`}
+                key={`${problem.windowLabel}:${problem.file}:${problem.line}:${problem.column}:${index}`}
                 type="button"
-                onClick={() => void revealFile(problem.file, problem.line, problem.column)}
+                onClick={() => void (linked.linked
+                  ? revealLinkedProblem(problem.windowLabel, problem)
+                  : revealFile(problem.file, problem.line, problem.column))
+                  .catch((error) => console.error("[craidd] Could not reveal problem:", error))}
                 className="w-full flex items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-zinc-800 focus-visible:outline focus-visible:outline-blue-500"
                 title={`${problem.file}:${problem.line}:${problem.column}`}
               >
@@ -59,6 +67,7 @@ export default function BottomPanel() {
                 <span className="min-w-0 flex-1">
                   <span className="block text-zinc-200 break-words">{problem.message}</span>
                   <span className="block text-[10px] text-zinc-500 truncate">
+                    {linked.linked && <span className="text-amber-500/80">{problem.projectName} · </span>}
                     {problem.file.split("/").pop()}:{problem.line}:{problem.column}
                     {problem.code ? ` · ${problem.code}` : ""}
                   </span>

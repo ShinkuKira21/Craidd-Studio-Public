@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useSolution } from "./store/solutionStore";
 import { emptyStartupState, type StartupState, type WorkspaceEntry } from "./types/startup";
+import { selectConfiguration, useBuild } from "./store/buildStore";
 
 const AppShell = lazy(() => import("./components/layout/AppShell"));
 const GetStarted = lazy(() => import("./components/startup/GetStarted"));
@@ -11,6 +12,11 @@ async function openEntry(entry: WorkspaceEntry): Promise<void> {
     : await useSolution.getState().openFolder(entry.path);
   if (result.status === "error") throw new Error(result.message);
   if (result.status === "loaded") {
+    const solution = useSolution.getState().solution;
+    if (solution && entry.selectedConfigName) {
+      selectConfiguration(solution, entry.selectedConfigName);
+      if (entry.selectedProfileName) useBuild.getState().setSelectedProfile(entry.selectedProfileName);
+    }
     try { await useSolution.getState().heal(); }
     catch (error) { console.error("[craidd] Could not recover orphan projects:", error); }
   }
