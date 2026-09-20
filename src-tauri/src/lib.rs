@@ -21,7 +21,9 @@ use commands::manifests::read_manifests;
 use commands::infer::infer_configs;
 use commands::window::{WindowRequests, get_startup_state, record_workspace_open, take_window_open_request, open_workspace_window, open_welcome_window, apply_window_geometry, capture_window_geometry};
 use commands::runner::{RunnerManager, start_config, stop_config, cancel_window_run};
-use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, start_linked_action, acknowledge_linked_action, stop_linked_action, reveal_linked_problem, remove_linked_window};
+use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, set_linked_window_visible, close_linked_window, view_linked_window, dispatch_linked_window_command, start_linked_action, acknowledge_linked_action, stop_linked_action, reveal_linked_problem, remove_linked_window, prepare_native_close};
+use commands::breakpoints::{load_breakpoints, save_breakpoints};
+use commands::debug::{DebugManager, start_rust_debug, update_debug_breakpoints, debug_control, cancel_window_debug};
 
 #[tauri::command]
 fn show_main_window(w: tauri::WebviewWindow) -> Result<(), String> {
@@ -42,12 +44,18 @@ pub fn run() {
         .manage(BuildManager::default())
         .manage(WindowRequests::default())
         .manage(RunnerManager::default())
+        .manage(DebugManager::default())
         .manage(LinkedWindowRegistry::default())
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if !prepare_native_close(window) {
+                    api.prevent_close();
+                    return;
+                }
                 capture_window_geometry(window);
                 cancel_window_build(window);
                 cancel_window_run(window);
+                cancel_window_debug(window);
                 remove_linked_window(window);
             }
         })
@@ -103,6 +111,15 @@ pub fn run() {
             open_welcome_window,
             apply_window_geometry,
             update_linked_window,
+            set_linked_window_visible,
+            close_linked_window,
+            view_linked_window,
+            dispatch_linked_window_command,
+            load_breakpoints,
+            save_breakpoints,
+            start_rust_debug,
+            update_debug_breakpoints,
+            debug_control,
             start_linked_action,
             acknowledge_linked_action,
             stop_linked_action,

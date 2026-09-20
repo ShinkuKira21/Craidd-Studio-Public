@@ -20,6 +20,8 @@ pub struct WorkspaceEntry {
     pub name: String,
     #[serde(default)]
     pub window_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
     #[serde(default)]
     pub x: Option<i32>,
     #[serde(default)]
@@ -103,6 +105,7 @@ pub fn record_workspace_open(
     selected_config_name: Option<String>,
     selected_profile_name: Option<String>,
     selection_name: Option<String>,
+    instance_id: Option<String>,
 ) -> Result<(), String> {
     if kind != "solution" && kind != "folder" { return Err("Unsupported workspace kind".into()); }
     let disk = Path::new(&path);
@@ -114,7 +117,7 @@ pub fn record_workspace_open(
     let scale = window.scale_factor().unwrap_or(1.0);
     let entry = WorkspaceEntry {
         name: disk.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone()),
-        path, kind, window_label: window.label().into(),
+        path, kind, window_label: window.label().into(), instance_id,
         x: position.map(|p| (p.x as f64 / scale).round() as i32),
         y: position.map(|p| (p.y as f64 / scale).round() as i32),
         width: size.map(|s| (s.width as f64 / scale).round() as u32),
@@ -224,7 +227,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("craidd-session-{}.toml", std::process::id()));
         let entry = WorkspaceEntry {
             path: "/tmp/example.cln".into(), kind: "solution".into(), name: "example".into(),
-            window_label: "workspace-1".into(), x: None, y: None, width: None, height: None,
+            window_label: "workspace-1".into(), instance_id: Some("instance-a".into()), x: None, y: None, width: None, height: None,
             selected_config_name: Some("API: Local".into()), selected_profile_name: None,
             selection_name: Some("API".into()),
         };

@@ -307,9 +307,33 @@ export const useBuild = create<BuildState>((set, get) => ({
 
     if (state.activeId !== null || state.status === "starting") return;
 
+    // The launched program must match the source currently visible in the
+    // editor. A conflict blocks launch instead of overwriting another view.
+    for (const tab of useSolution.getState().tabs.filter((tab) => tab.dirty)) {
+      const result = await useSolution.getState().saveFile(tab.fileId);
+      if (result !== "saved") {
+        set({ status: "failed", output: `${result === "conflict" ? "Disk conflict" : "Could not save"}: ${tab.name}. Resolve it before ${action}.\n` });
+        if (result === "conflict") useSolution.getState().setPendingSave({ fileId: tab.fileId, kind: "newer" });
+        return;
+      }
+    }
+
     const spec = resolveSpec(chosen, rootPath, solution, state.selectedProfileName);
     if (!spec) {
       set({ status: "failed", output: `Could not resolve a command for "${chosen.name}".\n` });
+      return;
+    }
+
+    if (action === "debug") {
+      if (chosen.method !== "cargo") {
+        set({ status: "failed", output: `A real debugger adapter is currently available only for Rust Cargo configurations.\n` });
+        return;
+      }
+      const { useDebug } = await import("./debugStore");
+      const { useLinkedWindows } = await import("./linkedWindowsStore");
+      set({ action: "debug", activeConfigName: chosen.name, output: "Rust debug session starting…\n" });
+      await useDebug.getState().start(spec.cwd, state.selectedProfileName === "release",
+        useLinkedWindows.getState().ownInstanceId ?? crypto.randomUUID());
       return;
     }
 

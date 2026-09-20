@@ -2,11 +2,13 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useSolution } from "./store/solutionStore";
 import { emptyStartupState, type StartupState, type WorkspaceEntry } from "./types/startup";
 import { selectConfiguration, useBuild } from "./store/buildStore";
+import { setWindowInstanceId } from "./store/linkedWindowsStore";
 
 const AppShell = lazy(() => import("./components/layout/AppShell"));
 const GetStarted = lazy(() => import("./components/startup/GetStarted"));
 
 async function openEntry(entry: WorkspaceEntry): Promise<void> {
+  setWindowInstanceId(entry.instanceId ?? crypto.randomUUID());
   const result = entry.kind === "solution"
     ? await useSolution.getState().openSolution(entry.path)
     : await useSolution.getState().openFolder(entry.path);

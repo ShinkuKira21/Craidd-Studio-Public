@@ -1461,6 +1461,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
   renamePath: async (oldPath, newPath) => {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("rename_path", { from: oldPath, to: newPath });
+    const { useBreakpoints } = await import("./breakpointStore");
+    try { await useBreakpoints.getState().movePath(oldPath, newPath); }
+    catch (error) { logErr("Could not update breakpoint paths after rename:", error); }
 
     // Update any open tab that pointed at the old path.
     set((s) => ({
@@ -1587,6 +1590,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
             : t
         ),
       }));
+      window.dispatchEvent(new CustomEvent("craidd:file-saved", { detail: fileId }));
       return "saved";
     } catch (err) {
       logErr("saveFile failed:", err);

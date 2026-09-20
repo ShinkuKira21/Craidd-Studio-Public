@@ -9,3 +9,5 @@ pub mod window;
 pub mod runner;
 pub mod containment;
 pub mod linked_windows;
+pub mod breakpoints;
+pub mod debug;

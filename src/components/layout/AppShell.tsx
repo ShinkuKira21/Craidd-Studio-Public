@@ -21,8 +21,11 @@ import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useSolution } from "../../store/solutionStore";
 import { useBuild } from "../../store/buildStore";
-import { listenToLinkedWindows, publishLinkedWindow } from "../../store/linkedWindowsStore";
+import { listenToLinkedWindows, publishLinkedWindow, useLinkedWindows } from "../../store/linkedWindowsStore";
 import { listenForBreakpointFocus } from "../../lib/breakpointFocus";
+import { RemoteEditorPane, RemoteOutputPanel } from "./RemoteContext";
+import { listenForBreakpointChanges, useBreakpoints } from "../../store/breakpointStore";
+import { listenToDebug, useDebug } from "../../store/debugStore";
 
 interface ProjectToolchainCheck {
   language: string;
@@ -57,7 +60,10 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   const selectedProfileName = useBuild((s) => s.selectedProfileName);
   const mainChoices = useBuild((s) => s.mainChoices);
   const buildStatus = useBuild((s) => s.status);
+  const debugStatus = useDebug((s) => s.status);
+  const ownInstanceId = useLinkedWindows((s) => s.ownInstanceId);
   const buildProblems = useBuild((s) => s.problems);
+  const remoteContext = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.viewedWindowLabel && item.windowLabel !== state.ownWindowLabel));
   const bannerState = useSolution((s) => s.bannerState);
   const isSolutionLoading = useSolution((s) => s.isSolutionLoading);
   const projectLanguages = [...new Set((solution?.projects ?? [])
@@ -89,6 +95,28 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    void listenToDebug().then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; })
+      .catch((error) => console.error("[craidd] Debug listener failed:", error));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForBreakpointChanges().then((cleanup) => {
+      if (disposed) cleanup(); else unlisten = cleanup;
+    }).catch((error) => console.error("[craidd] Breakpoint listener failed:", error));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    void useBreakpoints.getState().load(clnPath)
+      .catch((error) => console.error("[craidd] Could not load breakpoints:", error));
+  }, [clnPath]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
     void listenForBreakpointFocus().then((cleanup) => {
       if (disposed) cleanup(); else unlisten = cleanup;
     }).catch((error) => console.error("[craidd] Breakpoint focus listener failed:", error));
@@ -98,7 +126,7 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   useEffect(() => {
     void publishLinkedWindow(solution, clnPath)
       .catch((error) => console.error("[craidd] Could not update linked window:", error));
-  }, [solution, clnPath, selectedConfigName, mainChoices, buildStatus]);
+  }, [solution, clnPath, selectedConfigName, mainChoices, buildStatus, debugStatus]);
 
   useEffect(() => {
     if (!clnPath) return;
@@ -108,6 +136,34 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
     }, 180);
     return () => window.clearTimeout(timer);
   }, [buildProblems]);
+  useEffect(() => {
+    let timer: number | undefined;
+    const publish = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const state = useSolution.getState();
+        void publishLinkedWindow(state.solution, state.clnPath)
+          .catch((error) => console.error("[craidd] Could not share window context:", error));
+      }, 180);
+    };
+    let previousFile = "";
+    const unlistenSolution = useSolution.subscribe((state) => {
+      const tab = state.tabs.find((item) => item.fileId === state.activeFileId);
+      const key = `${state.activeFileId ?? ""}\0${tab?.content ?? ""}\0${state.tabs.map((item) => `${item.fileId}:${item.dirty}`).join("|")}`;
+      if (key !== previousFile) { previousFile = key; publish(); }
+    });
+    let previousOutput = "";
+    const unlistenBuild = useBuild.subscribe((state) => {
+      const key = `${state.selectedProfileName ?? ""}\0${state.output}`;
+      if (key !== previousOutput) { previousOutput = key; publish(); }
+    });
+    const unlistenDebug = useDebug.subscribe((state, previous) => {
+      if (state.output !== previous.output || state.status !== previous.status ||
+        state.file !== previous.file || state.line !== previous.line ||
+        state.frames !== previous.frames || state.variables !== previous.variables) publish();
+    });
+    return () => { window.clearTimeout(timer); unlistenSolution(); unlistenBuild(); unlistenDebug(); };
+  }, []);
   useKeyboardShortcuts(
     () => setPaletteOpen(true),
     () => openPreferences(),
@@ -156,12 +212,12 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
     const timer = window.setTimeout(() => {
       void import("@tauri-apps/api/core").then(({ invoke }) =>
         invoke("record_workspace_open", {
-          path, kind, selectedConfigName, selectedProfileName, selectionName,
+          path, kind, selectedConfigName, selectedProfileName, selectionName, instanceId: ownInstanceId,
         })
       ).catch((error) => console.error("[craidd] Could not record recent workspace:", error));
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [rootPath, clnPath, hasSolution, bannerState, isSolutionLoading, selectedConfigName, selectedProfileName, selectionName]);
+  }, [rootPath, clnPath, hasSolution, bannerState, isSolutionLoading, selectedConfigName, selectedProfileName, selectionName, ownInstanceId]);
 
   // Refresh disk state for all open tabs whenever the window regains focus.
   useEffect(() => {
@@ -207,7 +263,7 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
         <EnvironmentNotice tone="warning" title="Rust debugger not detected" action="Learn more"
           onAction={() => setDebugDetailsOpen((open) => !open)} onDismiss={() => setDebugDismissed(true)}>
           lldb-dap is missing for this Rust debug configuration.
-          {debugDetailsOpen && <span className="block mt-1">Craidd’s debugger integration is still in development. Installing lldb-dap prepares the toolchain, but does not yet enable stepping or variable inspection.</span>}
+          {debugDetailsOpen && <span className="block mt-1">Install lldb-dap, then rescan Rust tools in File → Preferences → Toolchain. Craidd uses it for breakpoints, stepping, stack frames, and variables.</span>}
         </EnvironmentNotice>
       )}
 
@@ -221,11 +277,11 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
         )}
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          <EditorPane />
+          {remoteContext ? <RemoteEditorPane context={remoteContext} /> : <EditorPane />}
           {bottomPanelVisible && (
             <>
               <ResizeHandle orientation="horizontal" onDrag={(delta) => setBottomPanelHeight(bottomPanelHeight - delta)} />
-              <div style={{ height: bottomPanelHeight }} className="shrink-0"><BottomPanel /></div>
+              <div style={{ height: bottomPanelHeight }} className="shrink-0">{remoteContext ? <RemoteOutputPanel context={remoteContext} /> : <BottomPanel />}</div>
             </>
           )}
         </div>

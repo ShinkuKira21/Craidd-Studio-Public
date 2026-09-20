@@ -79,6 +79,11 @@ pub fn infer_configs(solution: CraiddSolution) -> Result<Vec<ConfigEntry>, Strin
                 run.kind = "run".into();
                 run.command = Some("cargo run".into());
                 out.push(run);
+                let mut debug = entry.clone();
+                debug.name = format!("{}: cargo debug", project.name);
+                debug.kind = "debug".into();
+                debug.command = Some("cargo build".into());
+                out.push(debug);
             }
             if entry.method.as_deref() == Some("dotnet") && entry.kind == "run" {
                 let mut build = entry.clone();
@@ -426,9 +431,10 @@ mod tests {
             inferred_configs: vec![],
         };
         let inferred = infer_configs(solution).unwrap();
-        assert_eq!(inferred.len(), 2);
+        assert_eq!(inferred.len(), 3);
         assert!(inferred.iter().any(|entry| entry.kind == "build" && entry.command.as_deref() == Some("cargo build")));
         assert!(inferred.iter().any(|entry| entry.kind == "run" && entry.command.as_deref() == Some("cargo run")));
+        assert!(inferred.iter().any(|entry| entry.kind == "debug" && entry.command.as_deref() == Some("cargo build")));
     }
 
     #[test]

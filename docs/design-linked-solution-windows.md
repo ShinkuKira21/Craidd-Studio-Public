@@ -1,8 +1,9 @@
 # Design: Linked solution windows
 
 **Status:** Design, 19 September 2026. Linked Build/Run, duplicate windows,
-combined Problems, and breakpoint-focus preference implemented. Debugger
-coordination waits for real debugger adapters.
+combined Problems, an IDE-window tray, and Rust Cargo DAP debugging are
+implemented. Other debugger adapters and shared writable remote documents
+remain open.
 **Companion:** [Window model](design-window-model.md),
 [solution orchestration](design-solution-orchestration.md),
 [configuration megamenu](design-configuration-megamenu.md),
@@ -552,12 +553,11 @@ and correct.
 
 ## The library case
 
-> **Debugger dependency.** Pause events, paused-row highlighting, and
-> remote debug transport controls become active when Craidd's first
-> Debug Adapter Protocol client ships. Until then, the linked-window
-> design describes the target behavior; the current implementation
-> keeps Gold Debug visible but disabled because no adapter exists to
-> emit a real `craidd:debug-paused` event.
+> **Debugger dependency.** The Rust Cargo path uses an installed
+> `lldb-dap` adapter and emits real pause state. Gold Debug is available
+> only when every participating instance has a supported Cargo debug
+> configuration and the adapter is present. C#, C++, and other adapters
+> remain to be implemented.
 
 ---
 
@@ -623,16 +623,13 @@ is not designed here; it is named so the fallback is on the record.
    real debugger adapter.** Running a command under a `debug` label
    does not qualify.
 
-The current implementation keeps Gold Debug visible but disabled because
-Craidd does not yet have a debugger adapter or pause events. The focus
-preference and pause-event listener are in place; they become active when
-an adapter emits a real `craidd:debug-paused` event. Breakpoint persistence,
-shared gutter markers, save-before-launch checks, paused previews, and
-remote step controls remain to be implemented with the debugger adapter.
-White debugger pause/continue controls likewise depend on that adapter.
-Full context selection also requires a shared writable document model,
-window-scoped command routing, and synchronized project/editor panels;
-the current implementation does not provide that window manager yet.
+Rust breakpoint persistence, shared gutter markers, paused previews, and
+remote step controls are implemented. Gold launch currently requires
+all participating windows to save dirty tabs first; an atomic, group-wide
+save and conflict flow remains open. Remote source and tabs can be viewed
+and selected, but remote text remains read-only until a shared document
+and undo model exists. Adapter breakpoint verification and debuggers for
+the other languages remain open.
 
 Acceptance checks:
 

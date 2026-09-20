@@ -98,12 +98,13 @@ resuming or stopping any debugger. If selected B closes, A returns to
 its own context. A newly selected or paused window never takes over A
 automatically; the user chooses when to follow the amber signal.
 
-> **Debugger dependency.** Pause events, paused-row highlighting, and
-> remote debug transport controls become active when Craidd's first
-> Debug Adapter Protocol client ships. Until then, the linked-window
-> design describes the target behavior; the current implementation
-> keeps Gold Debug visible but disabled because no adapter exists to
-> emit a real `craidd:debug-paused` event.
+> **Implementation status.** A Rust Cargo debugger now speaks DAP to an
+> installed `lldb-dap`. Breakpoint pauses highlight the tray, and the
+> focused window can view a paused instance's tabs, source, stack,
+> variables, and debug controls. The remote source is deliberately
+> read-only: a shared authoritative document and undo model is still
+> required before two IDE windows can edit one instance's buffer.
+> Debuggers for C#, C++, and other languages remain separate work.
 
 ---
 

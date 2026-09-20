@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
-import { useBuild } from "../store/buildStore";
+import { startViewedAction, stopViewedAction, useLinkedWindows } from "../store/linkedWindowsStore";
 
 export function useKeyboardShortcuts(
   openCommandPalette: () => void,
@@ -14,23 +14,30 @@ export function useKeyboardShortcuts(
 
       if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        await useBuild.getState().start("build");
+        await startViewedAction("build");
         return;
       }
       if (mod && e.key === "F5") {
         e.preventDefault();
-        await useBuild.getState().start("run");
+        await startViewedAction("run");
+        return;
+      }
+      if (!mod && !e.shiftKey && e.key === "F5") {
+        e.preventDefault();
+        await startViewedAction("debug");
         return;
       }
       if (e.shiftKey && e.key === "F5") {
         e.preventDefault();
-        await useBuild.getState().stop();
+        await stopViewedAction();
         return;
       }
 
       // ── Save ─────────────────────────────────────────────
       if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
+        const linked = useLinkedWindows.getState();
+        if (linked.viewedWindowLabel !== linked.ownWindowLabel) return;
         try { await saveActiveFile(); }
         catch (err) { alert(`Save failed: ${String(err)}`); }
         return;
@@ -39,6 +46,8 @@ export function useKeyboardShortcuts(
       // ── Save As ──────────────────────────────────────────
       if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
+        const linked = useLinkedWindows.getState();
+        if (linked.viewedWindowLabel !== linked.ownWindowLabel) return;
         try {
           await saveActiveFileAs();
         } catch (err) {

@@ -1,0 +1,4 @@
+[project]
+name = "Rust Debug Smoke"
+language = "rust"
+root = "."

@@ -37,7 +37,9 @@ pub struct ProjectToolchainCheck {
 
 fn catalog(language: &str) -> Result<&'static [(&'static str, &'static str)], String> {
     match language {
-        "rust" => Ok(&[("build", "cargo"), ("compiler", "rustc"), ("manager", "rustup"), ("debugger", "lldb-dap")]),
+        "rust" => Ok(&[("build", "cargo"), ("compiler", "rustc"), ("manager", "rustup"),
+            ("debugger", "lldb-dap"), ("debugger", "lldb-dap-19"), ("debugger", "lldb-dap-18"),
+            ("debugger", "lldb-dap-17"), ("debugger", "lldb-vscode")]),
         "typescript" | "javascript" => Ok(&[("runtime", "node"), ("package_manager", "pnpm"), ("package_manager", "yarn"), ("package_manager", "npm"), ("package_manager", "bun")]),
         "cpp" => Ok(&[("compiler", "g++"), ("compiler", "clang++"), ("build_system", "cmake"), ("build_system", "ninja"), ("build_system", "make")]),
         "csharp" => Ok(&[("sdk", "dotnet")]),
@@ -183,10 +185,7 @@ pub async fn ensure_project_toolchain(language: String) -> Result<ProjectToolcha
             };
             (!available).then(|| (*name).to_string())
         }).collect();
-        let debugger_missing = language == "rust"
-            && !snapshot.defaults.get("debugger")
-                .is_some_and(|path| Path::new(path).is_file())
-            && !snapshot.tools.iter().any(|tool| tool.role == "debugger" && Path::new(&tool.path).is_file());
+        let debugger_missing = language == "rust" && !super::debug::adapter_available();
         Ok(ProjectToolchainCheck {
             language,
             newly_found: newly_scanned && missing.is_empty() && !snapshot.tools.is_empty(),

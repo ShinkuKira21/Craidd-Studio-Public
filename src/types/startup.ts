@@ -3,6 +3,7 @@ export interface WorkspaceEntry {
   kind: "solution" | "folder";
   name: string;
   windowLabel: string;
+  instanceId?: string;
   x?: number;
   y?: number;
   width?: number;

@@ -27,3 +27,5 @@ setup-v*.sh
 
 workspaces/*
 !workspaces/polyglot-lab/
+!workspaces/rust-debug-smoke/
+workspaces/rust-debug-smoke/target/

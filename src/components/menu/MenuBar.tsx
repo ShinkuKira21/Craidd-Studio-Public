@@ -3,6 +3,8 @@ import { usePreferences } from "../../store/preferencesStore";
 import { useSolution } from "../../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../../lib/fileActions";
 import { useBuild } from "../../store/buildStore";
+import { useDebug } from "../../store/debugStore";
+import { useLinkedWindows, startViewedAction, stopViewedAction } from "../../store/linkedWindowsStore";
 
 interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; }
 interface MenuSeparator { separator: true; }
@@ -14,13 +16,22 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
   const activeFileId = useSolution((s) => s.activeFileId);
+  const solution = useSolution((s) => s.solution);
   const clnPath = useSolution((s) => s.clnPath);
   const selectedConfigName = useBuild((s) => s.selectedConfigName);
   const selectedProfileName = useBuild((s) => s.selectedProfileName);
   const buildStatus = useBuild((s) => s.status);
   const mainChoices = useBuild((s) => s.mainChoices);
-  const startBuild = useBuild((s) => s.start);
-  const stopBuild = useBuild((s) => s.stop);
+  const debugStatus = useDebug((s) => s.status);
+  const viewed = useLinkedWindows((s) => s.windows.find((item) => item.windowLabel === s.viewedWindowLabel && item.windowLabel !== s.ownWindowLabel));
+  const busy = viewed ? ["starting", "building", "running", "paused"].includes(viewed.status)
+    : ["starting", "building", "running", "paused"].includes(buildStatus) || ["building", "running", "paused"].includes(debugStatus);
+  const canRun = (kind: "build" | "run" | "debug") => {
+    if (!viewed) return Boolean(mainChoices[kind]);
+    const configs = [...(solution?.inferredConfigs ?? []), ...(solution?.configs ?? [])];
+    const selected = configs.find((item) => item.name === viewed.selectedConfigName);
+    return configs.some((item) => item.kind === kind && item.target === selected?.target && (kind !== "debug" || item.method === "cargo"));
+  };
   const runSave = (action: () => Promise<void>) => {
     void action().catch((err) => alert(`Save failed: ${String(err)}`));
   };
@@ -35,7 +46,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("open_workspace_window", { entry: {
         path: clnPath, kind: "solution", name: clnPath.split("/").filter(Boolean).pop() ?? clnPath,
-        windowLabel: "", selectedConfigName, selectedProfileName,
+        windowLabel: "", selectedConfigName: viewed?.selectedConfigName ?? selectedConfigName,
+        selectedProfileName: viewed?.selectedProfileName ?? selectedProfileName,
       } });
     } catch (error) { alert(`Could not duplicate window: ${String(error)}`); }
   };
@@ -92,8 +104,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         { label: "Get Started…", action: openWelcome },
         { label: "Duplicate Window", disabled: !clnPath, action: () => void duplicateWindow() },
         { separator: true },
-        { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId, action: () => runSave(saveActiveFile) },
-        { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId, action: () => runSave(saveActiveFileAs) },
+        { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId || !!viewed, action: () => runSave(saveActiveFile) },
+        { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId || !!viewed, action: () => runSave(saveActiveFileAs) },
         { separator: true },
         { label: "Preferences…", shortcut: "Ctrl+,", action: openPreferences },
         { separator: true },
@@ -133,10 +145,10 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     {
       label: "Run",
       items: [
-        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => void startBuild("build"), disabled: !mainChoices.build || buildStatus === "running" || buildStatus === "starting" },
-        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => void startBuild("run"), disabled: !mainChoices.run || buildStatus === "running" || buildStatus === "starting" },
-        { label: "Start Debugging", shortcut: "F5", disabled: true },
-        { label: "Stop", shortcut: "Shift+F5", action: () => void stopBuild(), disabled: buildStatus !== "running" && buildStatus !== "starting" },
+        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => void startViewedAction("build"), disabled: !canRun("build") || busy },
+        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => void startViewedAction("run"), disabled: !canRun("run") || busy },
+        { label: "Start Debugging", shortcut: "F5", action: () => void startViewedAction("debug"), disabled: !canRun("debug") || busy },
+        { label: "Stop", shortcut: "Shift+F5", action: () => void stopViewedAction(), disabled: !busy },
       ],
     },
     {

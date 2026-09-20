@@ -13,11 +13,13 @@ import NewFolderDialog from "../../dialogs/NewFolderDialog";
 import FineTuneDialog from "../../dialogs/FineTuneDialog";
 import ToolchainConfigurationDialog from "../../dialogs/ToolchainConfigurationDialog";
 import { useBuild } from "../../../store/buildStore";
+import { useLinkedWindows } from "../../../store/linkedWindowsStore";
 
 export default function SolutionExplorer() {
   const rootPath = useSolution((s) => s.rootPath);
   const solution = useSolution((s) => s.solution);
   const selectedConfigName = useBuild((s) => s.selectedConfigName);
+  const remoteConfigName = useLinkedWindows((s) => s.windows.find((item) => item.windowLabel === s.viewedWindowLabel && item.windowLabel !== s.ownWindowLabel)?.selectedConfigName);
   const refreshProject = useSolution((s) => s.refreshProject);
   const addConfigHere = useSolution((s) => s.addConfigHere);
   const setConfigDirectory = useSolution((s) => s.setConfigDirectory);
@@ -163,7 +165,7 @@ export default function SolutionExplorer() {
   // The toolbar selection belongs to this window. Keep the .cln's project order
   // intact and only move the selected project in the rendered explorer.
   const selectedConfig = [...(solution?.inferredConfigs ?? []), ...(solution?.configs ?? [])]
-    .find((config) => config.name === selectedConfigName);
+    .find((config) => config.name === (remoteConfigName ?? selectedConfigName));
   const selectedProjectPath = selectedConfig?.target && selectedConfig.target !== "."
     ? selectedConfig.target : solution?.defaultProject;
   const selectedProject = solution?.projects.find((project) => project.path === selectedProjectPath);
