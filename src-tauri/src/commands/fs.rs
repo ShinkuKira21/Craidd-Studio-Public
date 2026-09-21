@@ -10,6 +10,17 @@ const IGNORE_DIRS: &[&str] = &[
 const MAX_TREE_NODES: usize = 12_000;
 const MAX_TREE_DEPTH: usize = 64;
 
+/// Tiny in-memory cache for read_dir_children. Keyed by (root, path).
+/// Entries expire after 2 seconds; explicit invalidation is not required
+/// because directory listings are naturally stale-tolerant and the
+/// frontend calls refreshDiscovery() when it wants fresh data.
+static DIR_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, FileNode)>>>
+    = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn cache_key(root: &str, path: &str) -> String {
+    format!("{}\u{1}{}", root, path)
+}
+
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("read_file({path}) failed: {e}"))
@@ -27,6 +38,26 @@ pub fn read_dir_tree(path: String) -> Result<FileNode, String> {
 /// expanded on demand instead of serializing the entire tree into the webview.
 #[tauri::command]
 pub fn read_dir_children(root: String, path: String) -> Result<FileNode, String> {
+    {
+        let key = cache_key(&root, &path);
+        if let Ok(cache) = DIR_CACHE.lock() {
+            if let Some((at, node)) = cache.get(&key) {
+                if at.elapsed() < std::time::Duration::from_secs(2) {
+                    return Ok(node.clone());
+                }
+            }
+        }
+    }
+    let result = read_dir_children_uncached(root.clone(), path.clone());
+    if let Ok(ref node) = result {
+        if let Ok(mut cache) = DIR_CACHE.lock() {
+            cache.insert(cache_key(&root, &path), (std::time::Instant::now(), node.clone()));
+        }
+    }
+    result
+}
+
+fn read_dir_children_uncached(root: String, path: String) -> Result<FileNode, String> {
     let root_path = Path::new(&root);
     let dir = Path::new(&path);
     let rel = dir.strip_prefix(root_path).map_err(|_| "Folder is outside the open workspace".to_string())?;

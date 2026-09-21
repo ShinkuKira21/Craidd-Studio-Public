@@ -12,6 +12,31 @@ use super::runner::RunSpec;
 const STATE_EVENT: &str = "craidd:linked-state";
 const COMMAND_EVENT: &str = "craidd:linked-command";
 
+const TITLE_EVENT: &str = "craidd:linked-title";
+
+/// Build the canonical window title for a participant.
+/// Format: {Project Configuration}: {WindowId} - Craidd Studio - {Solution Name}
+/// When no project/config is selected yet, the first segment is dropped
+/// and the title is: {WindowId} - Craidd Studio - {Solution Name}
+pub fn canonical_title(item: &Participant, solution_name: &str) -> String {
+    let config_seg = item.selected_config_name.clone()
+        .or_else(|| item.project_name.clone());
+    match config_seg {
+        Some(seg) if !seg.is_empty() => format!(
+            "{}: CS{} - Craidd Studio - {}",
+            seg, item.window_id, solution_name
+        ),
+        _ => format!("CS{} - Craidd Studio - {}", item.window_id, solution_name),
+    }
+}
+
+/// Emit the canonical title to one window.
+fn emit_window_title(app: &AppHandle, label: &str, item: &Participant, solution_name: &str) {
+    let title = canonical_title(item, solution_name);
+    let _ = app.emit_to(label, TITLE_EVENT, serde_json::json!({ "title": title }));
+}
+
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkedWindowUpdate {
@@ -56,7 +81,7 @@ pub struct Problem {
 }
 
 #[derive(Clone)]
-struct Participant {
+pub(crate) struct Participant {
     solution_path: String,
     window_id: u32,
     instance_id: String,
@@ -122,6 +147,8 @@ struct Registry {
     windows: HashMap<String, Participant>,
     parked_entries: HashMap<String, WorkspaceEntry>,
     allowed_closes: HashSet<String>,
+    close_in_flight: HashSet<String>,
+    last_titles: HashMap<String, String>,
     next_window_ids: HashMap<String, u32>,
     view_targets: HashMap<String, String>,
     actions: HashMap<String, GroupAction>,
@@ -214,6 +241,13 @@ struct LinkedCommand {
     kind: String,
     action: Option<String>,
     action_id: u64,
+}
+
+fn solution_name_of(solution_path: &str) -> String {
+    std::path::Path::new(solution_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Solution".into())
 }
 
 fn is_application(kind: Option<&str>) -> bool {
@@ -397,6 +431,10 @@ pub fn update_linked_window(
     reconcile(&mut registry);
     registry.sequence += 1;
     broadcast(&app, &registry);
+    if let Some(item) = registry.windows.get(window.label()) {
+        let name = solution_name_of(&item.solution_path);
+        emit_window_title(&app, window.label(), item, &name);
+    }
     Ok(snapshot(&registry, window.label()))
 }
 
@@ -815,7 +853,22 @@ pub fn view_linked_window(
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     let source = registry.windows.get(window.label()).ok_or("No solution is open")?;
     let target = registry.windows.get(&target_label).ok_or("Window is no longer open")?;
-    if source.solution_path != target.solution_path { return Err("Window belongs to another solution".into()); }
+
+    if source.solution_path != target.solution_path {
+        return Err("Window belongs to another solution".into());
+    }
+
+    // Viewport exclusivity:
+    //   - If the target session is HIDDEN, adopting it into this window is free.
+    //   - If the target session is VISIBLE in another window, refuse adoption;
+    //     the caller should focus that window instead.
+    if target.visible && !target.restoring && target_label != window.label() {
+        return Err(format!(
+            "visible-elsewhere:{}",
+            target_label
+        ));
+    }
+
     registry.view_targets.insert(window.label().into(), target_label);
     registry.sequence += 1;
     let selected = snapshot(&registry, window.label());
@@ -875,13 +928,12 @@ pub fn close_linked_window(
         return Ok(());
     }
     registry.allowed_closes.insert(target_label.clone());
+    registry.close_in_flight.remove(&target_label);
     drop(registry);
-    let result = app.get_webview_window(&target_label).ok_or("Window is no longer open".to_string())
-        .and_then(|target_window| target_window.close().map_err(|e| e.to_string()));
-    if result.is_err() {
-        if let Ok(mut registry) = state.0.lock() { registry.allowed_closes.remove(&target_label); }
-    }
-    result
+    let Some(window) = app.get_webview_window(&target_label) else { return Ok(()); };
+    // destroy() bypasses the CloseRequested handler entirely. That's what
+    // we want here: the user already consented through the flow dialog.
+    window.destroy().map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -917,6 +969,45 @@ pub fn reveal_linked_problem(
     }
     drop(registry);
     app.emit_to(owner_label.as_str(), "craidd:linked-reveal", location).map_err(|e| e.to_string())
+}
+
+
+/// Spawn a watchdog for a group action. After WATCHDOG_SECS, any member
+/// still marked pending is treated as failed: removed from pending and
+/// unfinished, so the group reconciles and the gold button unsticks.
+/// This exists because hidden WebKitGTK windows can be throttled and
+/// never ack. The backend must not depend on the frontend acking.
+fn spawn_action_watchdog(app: AppHandle, action_id: u64, solution_path: String) {
+    const WATCHDOG_SECS: u64 = 20;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(WATCHDOG_SECS));
+        let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return; };
+        let Ok(mut registry) = state.0.lock() else { return; };
+        // Collect the stragglers and clear their pending flags in one
+        // scoped borrow, then update the participants in a second one.
+        let stragglers: Vec<String> = {
+            let Some(action) = registry.actions.get_mut(&solution_path) else { return; };
+            if action.id != action_id { return; }
+            if action.pending.is_empty() { return; }
+            let labels: Vec<String> = action.pending.iter().cloned().collect();
+            for label in &labels {
+                action.pending.remove(label);
+                action.unfinished.remove(label);
+            }
+            labels
+        };
+        for label in &stragglers {
+            if let Some(participant) = registry.windows.get_mut(label) {
+                if is_busy(&participant.status) {
+                    participant.status = "failed".into();
+                    participant.failure_message = Some("Timed out waiting for the window to respond".into());
+                }
+            }
+        }
+        reconcile(&mut registry);
+        registry.sequence += 1;
+        broadcast(&app, &registry);
+    });
 }
 
 #[tauri::command]
@@ -1004,6 +1095,7 @@ pub fn start_linked_action(
         registry.sequence += 1;
         broadcast(&app, &registry);
     }
+    spawn_action_watchdog(app.clone(), id, solution_path.clone());
     Ok(())
 }
 
@@ -1080,41 +1172,60 @@ pub fn remove_linked_window(window: &tauri::Window) {
 pub fn prepare_native_close(window: &tauri::Window) -> bool {
     let app = window.app_handle();
     let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return true; };
-    let Ok(mut registry) = state.0.lock() else { return false; };
-    let Some(closing) = registry.windows.get(window.label()) else { return true; };
-    let solution = closing.solution_path.clone();
-    let dirty = closing.dirty_count > 0;
-    let closing_visible = closing.visible;
-    let related = registry.windows.values().filter(|item| item.solution_path == solution).count();
-    if !registry.allowed_closes.remove(window.label()) && (dirty || related > 1) {
-        let _ = app.emit_to(window.label(), "craidd:linked-native-close-blocked",
-            serde_json::json!({ "targetLabel": window.label() }));
-        return false;
+    let Ok(mut registry) = state.0.lock() else { return true; };
+
+    // If close_linked_window already approved this close, let it through.
+    if registry.allowed_closes.remove(window.label()) {
+        return true;
     }
-    let last_visible = closing_visible && registry.windows.values()
-        .filter(|item| item.solution_path == solution && item.visible && !item.restoring).count() == 1;
-    if last_visible {
-        let hidden: Vec<String> = registry.windows.iter().filter(|(label, item)|
-            label.as_str() != window.label() && item.solution_path == solution && !item.visible
-        ).map(|(label, _)| label.clone()).collect();
-        for label in &hidden {
-            registry.windows.remove(label);
-            registry.parked_entries.remove(label);
-            registry.view_targets.retain(|viewer, target| viewer != label && target != label);
-        }
-        if !hidden.is_empty() {
-            reconcile(&mut registry);
-            registry.sequence += 1;
-            broadcast(app, &registry);
-        }
-        drop(registry);
-        for label in hidden {
-            super::build::cancel_build_by_label(app, &label);
-            super::runner::cancel_run_by_label(app, &label);
-            super::debug::cancel_debug_by_label(app, &label);
-        }
+
+    // Native X. Honor it. Clean up the registry entry so no stale state
+    // lingers, then let the OS close the window. The on_window_event
+    // handler already cancels this window's build/run/debug just after.
+    //
+    // No deferral, no dialog, no event. Whatever dialog the user wants
+    // is a pre-close concern, not a blocker.
+    let label = window.label();
+    registry.windows.remove(label);
+    registry.last_titles.remove(label);
+    registry.parked_entries.remove(label);
+    registry.close_in_flight.remove(label);
+    registry.view_targets.retain(|viewer, viewed| viewer != label && viewed != label);
+    for action in registry.actions.values_mut() {
+        action.pending.remove(label);
+        action.unfinished.remove(label);
     }
+    reconcile(&mut registry);
+    registry.sequence += 1;
+    broadcast(app, &registry);
     true
+}
+
+#[tauri::command]
+pub fn clear_native_close_guard(
+    state: tauri::State<'_, LinkedWindowRegistry>,
+    target_label: String,
+) -> Result<(), String> {
+    let mut registry = state.0.lock().map_err(|e| e.to_string())?;
+    registry.close_in_flight.remove(&target_label);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reset_linked_action(
+    app: AppHandle,
+    state: tauri::State<'_, LinkedWindowRegistry>,
+) -> Result<(), String> {
+    let mut registry = state.0.lock().map_err(|e| e.to_string())?;
+    registry.actions.clear();
+    for participant in registry.windows.values_mut() {
+        if is_busy(&participant.status) {
+            participant.status = "idle".into();
+        }
+    }
+    registry.sequence += 1;
+    broadcast(&app, &registry);
+    Ok(())
 }
 
 #[cfg(test)]

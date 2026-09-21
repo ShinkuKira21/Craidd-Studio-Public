@@ -44,6 +44,10 @@ export default function CommandPalette({
     { id: "view.sidebar",   label: "View: Toggle Sidebar",         shortcut: "Ctrl+B", run: prefs.toggleSidebar },
     { id: "view.panel",     label: "View: Toggle Bottom Panel",    shortcut: "Ctrl+J", run: prefs.toggleBottomPanel },
     { id: "view.debug",     label: "View: Toggle Debug Panel",                         run: prefs.toggleRightPanel },
+    { id: "linked.reset",   label: "Linked: Reset stuck action state",     run: () => {
+      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("reset_linked_action"))
+        .catch((error) => alert(`Reset failed: ${String(error)}`));
+    } },
   ];
 
   const filtered = query.trim()

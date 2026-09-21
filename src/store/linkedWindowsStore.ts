@@ -58,9 +58,29 @@ export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
   ...empty, ownWindowLabel: null, ownInstanceId: null, viewedWindowLabel: null,
   selectWindow: async (label) => {
     const { invoke } = await import("@tauri-apps/api/core");
-    const snapshot = await invoke<LinkedSnapshot>("view_linked_window", { targetLabel: label });
-    set({ viewedWindowLabel: label });
-    applySnapshot(snapshot);
+    const state = useLinkedWindows.getState();
+    const target = state.windows.find((item) => item.windowLabel === label);
+    if (target && target.visible && !target.restoring && label !== state.ownWindowLabel) {
+      try {
+        await invoke("focus_linked_window", { targetLabel: label });
+      } catch (cause) {
+        console.error("[craidd] Could not focus linked window:", cause);
+      }
+      return;
+    }
+    try {
+      const snapshot = await invoke<LinkedSnapshot>("view_linked_window", { targetLabel: label });
+      set({ viewedWindowLabel: label });
+      applySnapshot(snapshot);
+    } catch (cause) {
+      const message = String(cause);
+      if (message.includes("visible-elsewhere:")) {
+        const other = message.split("visible-elsewhere:")[1].split('"')[0].trim();
+        try { await invoke("focus_linked_window", { targetLabel: other }); } catch { /* best effort */ }
+        return;
+      }
+      throw cause;
+    }
   },
 }));
 
@@ -153,6 +173,13 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   useLinkedWindows.setState((state) => ({ ownWindowLabel, viewedWindowLabel: ownWindowLabel,
     ownInstanceId: state.ownInstanceId ?? crypto.randomUUID() }));
   const unlistenState = await listen<LinkedSnapshot>("craidd:linked-state", (event) => applySnapshot(event.payload));
+  const unlistenTitle = await listen<{ title: string }>("craidd:linked-title", (event) => {
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      if (getCurrentWindow().label === ownWindowLabel) {
+        void getCurrentWindow().setTitle(event.payload.title).catch(() => { /* best effort */ });
+      }
+    });
+  });
   const unlistenCommand = await listen<{ kind: "start" | "stop"; action: Action | null; actionId: number }>(
     "craidd:linked-command", (event) => {
       const command = event.payload;
@@ -167,14 +194,22 @@ export async function listenToLinkedWindows(): Promise<() => void> {
           void invoke("acknowledge_linked_action", { actionId: command.actionId, status: actionStatus(command.action) });
           return;
         }
-        void useBuild.getState().start(command.action).finally(() => {
-          if (cancelledActions.has(command.actionId)) {
-            void (["building", "running", "paused"].includes(useDebug.getState().status)
-              ? useDebug.getState().control("stop") : useBuild.getState().stop());
-          }
-          void invoke("acknowledge_linked_action", { actionId: command.actionId, status: actionStatus(command.action!) })
+        // Always ack, whether start succeeds or throws. If start throws
+        // synchronously or rejects, we still want the backend to know.
+        let acked = false;
+        const ack = (status: string) => {
+          if (acked) return;
+          acked = true;
+          void invoke("acknowledge_linked_action", { actionId: command.actionId, status })
             .catch((error) => console.error("[craidd] Linked action acknowledgement failed:", error));
-        });
+        };
+        Promise.resolve()
+          .then(() => useBuild.getState().start(command.action!))
+          .then(() => ack(actionStatus(command.action!)))
+          .catch((error) => {
+            console.error("[craidd] Linked action start failed:", error);
+            ack("failed");
+          });
       }
     },
   );
@@ -232,7 +267,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
     .then(() => invoke("show_main_window"))
     .then(() => invoke("mark_linked_window_ready"))
     .catch((error) => console.error("[craidd] Could not register linked window:", error));
-  return () => { unlistenState(); unlistenCommand(); unlistenReveal(); unlistenTarget(); unlistenPrepare(); };
+  return () => { unlistenState(); unlistenCommand(); unlistenReveal(); unlistenTarget(); unlistenPrepare(); unlistenTitle(); };
 }
 
 async function prepareOwnWindow(decision: "save" | "discard"): Promise<void> {

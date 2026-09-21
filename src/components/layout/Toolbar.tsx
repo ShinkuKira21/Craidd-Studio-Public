@@ -25,6 +25,7 @@ function Toolbar() {
   const debugStatus = useDebug((s) => s.status);
   const debugControl = useDebug((s) => s.control);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Gold owns the group; white owns this window. They never share a control.
 
   const configs: ConfigEntry[] = [
     ...(solution?.inferredConfigs ?? []),
@@ -95,12 +96,12 @@ function Toolbar() {
       <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[180px]">
         {running && activeConfigName ? (
           <>
-            <span className="text-zinc-400">{activeConfigName}</span>
+            <span className="text-zinc-500">White · </span><span className="text-zinc-400">{activeConfigName}</span>
             <span className="text-zinc-600"> · </span>
             <span>{localStatus}</span>
           </>
         ) : (
-          <span>{localStatus}</span>
+          <><><span className="text-zinc-500">White · </span><span>{localStatus}</span></></>
         )}
       </div>
 
@@ -133,6 +134,13 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     <button type="button" title={title} aria-label={isStop ? `Stop ${count} linked instances` : `${KIND_TITLE[kind]} ${count} linked instances`}
       disabled={disabled}
       onClick={() => void (isStop ? stopLinkedAction() : startLinkedAction(kind)).catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        if (window.confirm("Reset linked action state? Use this if the gold button is stuck.")) {
+          void import("@tauri-apps/api/core").then(({ invoke }) => invoke("reset_linked_action"))
+            .catch((error) => alert(`Reset failed: ${String(error)}`));
+        }
+      }}
       className={"relative w-8 h-8 flex items-center justify-center rounded text-[14px] transition-colors " +
         (disabled ? "text-amber-700/70 cursor-default" : "text-amber-400 hover:bg-amber-900/30 hover:text-amber-300")}
     >

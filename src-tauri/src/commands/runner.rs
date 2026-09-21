@@ -87,8 +87,13 @@ struct RunnerEvent {
 }
 
 fn emit(app: &AppHandle, label: &str, session_id: u64, kind: &'static str, text: Option<String>, exit_code: Option<i32>) {
+    eprintln!("[craidd-debug] runner::emit -> label={:?} session_id={} kind={}",
+        label, session_id, kind);
     super::linked_windows::note_process_event(app, label, kind, text.as_deref(), exit_code);
-    let _ = app.emit_to(label, "craidd:build", RunnerEvent { session_id, kind, text, exit_code });
+    let result = app.emit_to(label, "craidd:build", RunnerEvent { session_id, kind, text, exit_code });
+    if let Err(error) = result {
+        eprintln!("[craidd-debug] emit_to error: {}", error);
+    }
 }
 
 pub fn active_run_id(app: &AppHandle, label: &str) -> Option<u64> {

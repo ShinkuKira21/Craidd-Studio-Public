@@ -97,8 +97,10 @@ export default function App() {
       void import("@tauri-apps/api/core").then(({ invoke }) => invoke("show_main_window"))
         .catch((cause) => console.error("[craidd] Could not show window:", cause));
     };
-    const showFrame = window.requestAnimationFrame(show);
-    const showTimer = window.setTimeout(show, 80);
+    const showFrame = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(show);
+    });
+    const showTimer = window.setTimeout(show, 400);
     void bootstrap().then((result) => {
       if (cancelled) return;
       setStartup(result.state);

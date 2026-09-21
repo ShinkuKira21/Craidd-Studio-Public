@@ -23,7 +23,6 @@ import { useSolution } from "../../store/solutionStore";
 import { useBuild } from "../../store/buildStore";
 import { listenToLinkedWindows, publishLinkedWindow, useLinkedWindows } from "../../store/linkedWindowsStore";
 import { listenForBreakpointFocus } from "../../lib/breakpointFocus";
-import { RemoteEditorPane, RemoteOutputPanel } from "./RemoteContext";
 import { listenForBreakpointChanges, useBreakpoints } from "../../store/breakpointStore";
 import { listenToDebug, useDebug } from "../../store/debugStore";
 
@@ -74,12 +73,6 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
     .find((config) => config.name === selectedConfigName);
   const savedProject = solution?.projects.find((project) => project.path === savedConfig?.target);
   const selectionName = savedConfig?.bestFit ? savedConfig.name : savedProject?.name ?? savedConfig?.name ?? null;
-  useEffect(() => {
-    if (!solution || !titleContext) return;
-    const title = `${titleContext.selectedConfigName ?? titleContext.projectName}: CS${titleContext.windowId} - Craidd Studio - ${solution.name}`;
-    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title))
-      .catch((error) => console.error("[craidd] Could not update window title:", error));
-  }, [solution?.name, titleContext?.windowId, titleContext?.selectedConfigName, titleContext?.projectName]);
   const missingChecks = toolchainChecks.filter((check) => check.missing.length > 0);
   const rustDebugConfigured = Boolean(solution && [...(solution.configs ?? []), ...(solution.inferredConfigs ?? [])]
     .some((config) => config.kind === "debug" && config.method === "cargo"
@@ -294,7 +287,7 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
           {bottomPanelVisible && (
             <>
               <ResizeHandle orientation="horizontal" onDrag={(delta) => setBottomPanelHeight(bottomPanelHeight - delta)} />
-              <div style={{ height: bottomPanelHeight }} className="shrink-0">{remoteContext ? <RemoteOutputPanel context={remoteContext} /> : <BottomPanel />}</div>
+              <div style={{ height: bottomPanelHeight }} className="shrink-0"><BottomPanel /></div>
             </>
           )}
         </div>

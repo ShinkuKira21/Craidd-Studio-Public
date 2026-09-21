@@ -339,6 +339,7 @@ fn profiles_for_cmake() -> Vec<Profile> {
 
 /// Python has no built-in profile concept. Inference produces none;
 /// the user extends the set when they want custom variants.
+#[allow(dead_code)]
 fn profiles_for_python() -> Vec<Profile> {
     vec![]
 }

@@ -84,3 +84,13 @@ select {
 .craidd-breakpoint { background: #ef4444; }
 .craidd-breakpoint-inactive { border: 2px solid #ef4444; opacity: 0.55; }
 .craidd-paused-line { background: rgba(245, 158, 11, 0.18); }
+
+/* Soft amber pulse for hidden sessions that hit a breakpoint.
+   Slow enough to read, gentle enough not to distract. */
+@keyframes craidd-pulse-soft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.animate-pulse-soft {
+  animation: craidd-pulse-soft 2.2s ease-in-out infinite;
+}

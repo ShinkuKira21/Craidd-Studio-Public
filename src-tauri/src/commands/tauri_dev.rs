@@ -1,14 +1,23 @@
-//! A Tauri project has one frontend dev server and may have many app instances.
-//! Keep that server alive until the last Craidd-owned client exits. Every
-//! `tauri dev` command receives a config override which stops the CLI from
-//! starting its own copy of the frontend server.
+//! Shared frontend, independent clients.
+//!
+//! A Tauri project has one frontend dev server (Vite) and may have many
+//! app instances. We start the frontend once, from `build.beforeDevCommand`,
+//! and keep it alive until the last Craidd-owned client exits.
+//!
+//! Each client is a plain `cargo run --no-default-features` in `src-tauri/`.
+//! That's exactly what `tauri dev` runs under the hood, minus the
+//! `beforeDevCommand` step (which we've already done once, in the shared
+//! server). The binary reads `build.devUrl` from `tauri.conf.json` and
+//! connects to the shared Vite.
+//!
+//! Result: one Vite, N app processes, no CLI-override gymnastics.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,7 +28,6 @@ use tauri::{AppHandle, Manager};
 use super::runner::RunSpec;
 
 const DEV_SERVER_WAIT: Duration = Duration::from_secs(30);
-const DEV_SERVER_CONFIG: &str = r#"{"build":{"beforeDevCommand":""}}"#;
 
 struct Server {
     pgid: i32,
@@ -63,9 +71,12 @@ fn terminate(pgid: i32) {
 
 fn is_tauri_dev(spec: &RunSpec) -> bool {
     let program = Path::new(&spec.program).file_name().and_then(|name| name.to_str()).unwrap_or("");
-    if program == "tauri" { return spec.args.first().is_some_and(|arg| arg == "dev"); }
-    if !matches!(program, "npm" | "pnpm" | "yarn" | "bun") { return false; }
-    spec.args.windows(2).any(|pair| pair[0] == "tauri" && pair[1] == "dev")
+    let result = if program == "tauri" { spec.args.first().is_some_and(|arg| arg == "dev") }
+        else if !matches!(program, "npm" | "pnpm" | "yarn" | "bun") { false }
+        else { spec.args.windows(2).any(|pair| pair[0] == "tauri" && pair[1] == "dev") };
+    eprintln!("[craidd-debug] is_tauri_dev: program={:?} args={:?} cwd={:?} result={}", 
+        spec.program, spec.args, spec.cwd, result);
+    result
 }
 
 fn server_address(dev_url: &str) -> Result<(String, u16), String> {
@@ -97,7 +108,7 @@ fn drain<R: Read + Send + 'static>(reader: R, tail: Arc<Mutex<VecDeque<String>>>
 
 fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap<String, String>) -> Result<Server, String> {
     if listening(host, port) {
-        return Err(format!("Port {port} is already in use. Stop the other frontend server or give this Tauri project its own devUrl."));
+        return Ok(Server { pgid: 0, clients: 1, alive: Arc::new(AtomicBool::new(true)), env: env.clone() });
     }
     let mut process = Command::new("sh");
     process.arg("-c").arg(command).current_dir(cwd).envs(env)
@@ -135,11 +146,47 @@ fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap
     Ok(Server { pgid, clients: 1, alive, env: env.clone() })
 }
 
+fn locate_manifest(project_root: &Path) -> Result<PathBuf, String> {
+    let direct = project_root.join("src-tauri/Cargo.toml");
+    if direct.is_file() { return Ok(project_root.join("src-tauri")); }
+    let here = project_root.join("Cargo.toml");
+    if here.is_file() && project_root.file_name().and_then(|n| n.to_str()) == Some("src-tauri") {
+        return Ok(project_root.to_path_buf());
+    }
+    Err(format!("Could not find src-tauri/Cargo.toml under {}", project_root.display()))
+}
+
+/// Search upward from `start` for a folder containing
+/// `src-tauri/tauri.conf.json`. Returns (config_path, project_root) where
+/// project_root is the folder that contains `src-tauri/`.
+fn locate_tauri_config(start: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut dir = start.to_path_buf();
+    for _ in 0..4 {
+        let candidate = dir.join("src-tauri/tauri.conf.json");
+        if candidate.is_file() {
+            return Some((candidate, dir));
+        }
+        if !dir.pop() { break; }
+    }
+    None
+}
+
 fn acquire(app: AppHandle, spec: RunSpec) -> Result<(RunSpec, Option<DevLease>), String> {
     if !is_tauri_dev(&spec) { return Ok((spec, None)); }
     let cwd = Path::new(&spec.cwd);
-    let config_path = cwd.join("src-tauri/tauri.conf.json");
-    if !config_path.is_file() { return Ok((spec, None)); }
+
+    // The cwd is the frontend folder (where package.json lives). The
+    // tauri.conf.json lives in `src-tauri/`, which is a sibling of the
+    // frontend folder inside the project root. Search upward from the
+    // cwd until we find it — max 4 levels to avoid walking to /.
+    let (config_path, project_root) = match locate_tauri_config(cwd) {
+        Some(pair) => pair,
+        None => {
+            eprintln!("[craidd-debug] acquire: no tauri.conf.json found upward from {:?}", cwd);
+            return Ok((spec, None));
+        }
+    };
+    let _ = &project_root;
     let config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path).map_err(|error| error.to_string())?)
         .map_err(|error| format!("Could not read Tauri configuration: {error}"))?;
     let before_dev = config.pointer("/build/beforeDevCommand").and_then(|value| value.as_str())
@@ -166,17 +213,33 @@ fn acquire(app: AppHandle, spec: RunSpec) -> Result<(RunSpec, Option<DevLease>),
             servers.insert(key.clone(), start_server(cwd, before_dev, &host, port, &spec.env)?);
         }
     }
-    let mut spec = spec;
-    if Path::new(&spec.program).file_name().and_then(|name| name.to_str()) != Some("tauri") {
-        spec.args.push("--".into());
-    }
-    spec.args.extend(["--config".into(), DEV_SERVER_CONFIG.into()]);
-    Ok((spec, Some(DevLease { app, key })))
+
+    let manifest_dir = locate_manifest(&project_root)?;
+    let mut replacement = spec.clone();
+    replacement.program = "cargo".into();
+    replacement.args = vec![
+        "run".into(),
+        "--no-default-features".into(),
+        "--color".into(),
+        "always".into(),
+        "--".into(),
+    ];
+    replacement.cwd = manifest_dir.to_string_lossy().into_owned();
+    replacement.label = format!("{} (client)", replacement.label);
+
+    Ok((replacement, Some(DevLease { app, key })))
 }
 
 pub async fn prepare_run(app: AppHandle, spec: RunSpec) -> Result<(RunSpec, Option<DevLease>), String> {
-    tauri::async_runtime::spawn_blocking(move || acquire(app, spec))
-        .await.map_err(|error| error.to_string())?
+    eprintln!("[craidd-debug] prepare_run called: program={:?} args={:?} cwd={:?}", spec.program, spec.args, spec.cwd);
+    let result = tauri::async_runtime::spawn_blocking(move || acquire(app, spec))
+        .await.map_err(|error| error.to_string())?;
+    match &result {
+        Ok((new_spec, lease)) => eprintln!("[craidd-debug] prepare_run returned: program={:?} args={:?} cwd={:?} lease={}",
+            new_spec.program, new_spec.args, new_spec.cwd, lease.is_some()),
+        Err(e) => eprintln!("[craidd-debug] prepare_run error: {}", e),
+    }
+    result
 }
 
 #[cfg(test)]
