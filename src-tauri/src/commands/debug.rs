@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::breakpoints::Breakpoint;
-use super::linked_windows::note_debug_state;
+use super::linked_windows::{note_debug_details, note_debug_output, note_debug_state};
 use super::toolchain::{get_toolchain, resolve_known_program};
 
 #[derive(Deserialize)]
@@ -40,6 +40,22 @@ struct Session {
 #[derive(Default)]
 pub struct DebugManager(Mutex<HashMap<String, Arc<Session>>>);
 
+struct BuildJob {
+    pgid: i32,
+    cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+pub struct DebugBuildManager(Mutex<HashMap<String, BuildJob>>);
+
+impl Drop for DebugBuildManager {
+    fn drop(&mut self) {
+        if let Ok(active) = self.0.lock() {
+            for job in active.values() { unsafe { libc::killpg(job.pgid, libc::SIGTERM); } }
+        }
+    }
+}
+
 impl Drop for DebugManager {
     fn drop(&mut self) {
         if let Ok(active) = self.0.lock() {
@@ -51,10 +67,30 @@ impl Drop for DebugManager {
 fn emit(app: &AppHandle, label: &str, value: Value) {
     if let Some(status) = value["status"].as_str() {
         if matches!(status, "building" | "running" | "paused" | "terminated" | "error") {
-            note_debug_state(app, label, status, value["file"].as_str(), value["line"].as_u64().and_then(|line| u32::try_from(line).ok()));
+            note_debug_state(app, label, status, value["file"].as_str(),
+                value["line"].as_u64().and_then(|line| u32::try_from(line).ok()), value["reason"].as_str());
         }
     }
+    if value["status"] == "output" {
+        if let Some(text) = value["text"].as_str() { note_debug_output(app, label, text); }
+    }
+    if value["frames"].is_array() || value["variables"].is_array() {
+        note_debug_details(app, label, &value);
+    }
     let _ = app.emit_to(label, "craidd:debug-state", value);
+}
+
+pub fn has_debug_session(app: &AppHandle, label: &str) -> bool {
+    app.try_state::<DebugManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
+        || app.try_state::<DebugBuildManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
+}
+
+pub fn update_parked_breakpoints(app: &AppHandle, solution_path: &str, points: &[Breakpoint]) {
+    let labels = super::linked_windows::parked_labels_for_solution(app, solution_path);
+    let Some(manager) = app.try_state::<DebugManager>() else { return; };
+    let sessions: Vec<_> = manager.0.lock().ok().map(|active| labels.iter()
+        .filter_map(|label| active.get(label).cloned()).collect()).unwrap_or_default();
+    for session in sessions { let _ = send_breakpoints(&session, points); }
 }
 
 fn request(session: &Session, command: &str, arguments: Value) -> Result<u64, String> {
@@ -83,22 +119,48 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
     serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string())
 }
 
-fn executable_from_cargo(cwd: &Path, release: bool) -> Result<PathBuf, String> {
+fn executable_from_cargo(app: &AppHandle, label: &str, cwd: &Path, release: bool) -> Result<PathBuf, String> {
     let cargo = resolve_known_program("cargo")?.unwrap_or_else(|| PathBuf::from("cargo"));
     let mut command = Command::new(cargo);
-    command.current_dir(cwd).args(["build", "--message-format=json"]);
+    command.current_dir(cwd).args(["build", "--message-format=json"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if release { command.arg("--release"); }
-    let output = command.output().map_err(|e| format!("Could not run cargo build: {e}"))?;
-    if !output.status.success() {
-        return Err(format!("Cargo debug build failed:\n{}", String::from_utf8_lossy(&output.stderr)));
-    }
+    unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
+    let mut child = command.spawn().map_err(|e| format!("Could not run cargo build: {e}"))?;
+    let pgid = child.id() as i32;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?
+        .insert(label.into(), BuildJob { pgid, cancelled: cancelled.clone() });
+    let stderr = child.stderr.take().ok_or("Cargo error output unavailable")?;
+    let stdout = child.stdout.take().ok_or("Cargo build output unavailable")?;
+    let app_errors = app.clone();
+    let label_errors = label.to_string();
+    let stderr_thread = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            emit(&app_errors, &label_errors, json!({"status":"output", "text":line}));
+        }
+    });
     let mut executables = Vec::new();
-    for line in output.stdout.split(|byte| *byte == b'\n') {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else { continue; };
+    let mut last_error = String::new();
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else { continue; };
+        if value["reason"] == "compiler-message" && value["message"]["level"] == "error" {
+            if let Some(rendered) = value["message"]["rendered"].as_str() {
+                last_error = rendered.chars().take(6_000).collect();
+                emit(app, label, json!({"status":"output", "text":last_error}));
+            }
+        }
         if value["reason"] != "compiler-artifact" { continue; }
         let is_bin = value["target"]["kind"].as_array().is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"));
         if !is_bin { continue; }
         if let Some(path) = value["executable"].as_str() { executables.push(PathBuf::from(path)); }
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let _ = stderr_thread.join();
+    if let Ok(mut builds) = app.state::<DebugBuildManager>().0.lock() { builds.remove(label); }
+    if cancelled.load(Ordering::Acquire) { return Err("Debug build cancelled".into()); }
+    if !status.success() {
+        return Err(format!("Cargo debug build failed ({}). {}", status, last_error));
     }
     match executables.len() {
         1 => Ok(executables.remove(0)),
@@ -137,6 +199,7 @@ fn send_breakpoints(session: &Session, points: &[Breakpoint]) -> Result<(), Stri
     }
     let mut files = session.breakpoint_files.lock().map_err(|e| e.to_string())?;
     for previous in files.iter() { by_file.entry(previous.clone()).or_default(); }
+    for lines in by_file.values_mut() { lines.sort_unstable(); lines.dedup(); }
     for (file, lines) in &by_file {
         request(session, "setBreakpoints", json!({"source":{"path":file},
             "breakpoints":lines.iter().map(|line| json!({"line":line})).collect::<Vec<_>>() }))?;
@@ -160,16 +223,34 @@ pub fn adapter_available() -> bool {
 
 #[tauri::command]
 pub async fn start_rust_debug(window: WebviewWindow, app: AppHandle, request_spec: RustDebugRequest) -> Result<(), String> {
-    let label = window.label().to_string();
+    start_rust_debug_for_label(app, window.label().to_string(), request_spec).await
+}
+
+pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_spec: RustDebugRequest) -> Result<(), String> {
     if app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window already has a debug session".into());
+    }
+    if app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
+        return Err("This IDE window is already building a debug session".into());
     }
     let cwd = PathBuf::from(&request_spec.cwd).canonicalize().map_err(|e| e.to_string())?;
     if !cwd.is_dir() { return Err("Debug working directory is missing".into()); }
     let adapter = adapter_path()?;
     emit(&app, &label, json!({"status":"building", "text":"Building a debuggable Rust executable…"}));
-    let executable = tauri::async_runtime::spawn_blocking({ let cwd = cwd.clone(); move || executable_from_cargo(&cwd, request_spec.release) })
-        .await.map_err(|e| e.to_string())??;
+    let executable = tauri::async_runtime::spawn_blocking({
+        let cwd = cwd.clone();
+        let app = app.clone();
+        let label = label.clone();
+        move || executable_from_cargo(&app, &label, &cwd, request_spec.release)
+    }).await.map_err(|e| e.to_string())?;
+    let executable = match executable {
+        Ok(path) => path,
+        Err(error) => {
+            let status = if error == "Debug build cancelled" { "terminated" } else { "error" };
+            emit(&app, &label, json!({"status":status, "text":error}));
+            return Err(error);
+        }
+    };
     let mut command = Command::new(adapter);
     command.current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
@@ -189,6 +270,10 @@ pub async fn start_rust_debug(window: WebviewWindow, app: AppHandle, request_spe
     let label_reader = label.clone();
     let args = request_spec.args;
     let breakpoints = request_spec.breakpoints;
+    let initialized = Arc::new(AtomicBool::new(false));
+    let initialized_reader = initialized.clone();
+    let ready = Arc::new(AtomicBool::new(false));
+    let ready_reader = ready.clone();
     thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut pending: HashMap<u64, String> = HashMap::new();
@@ -206,12 +291,14 @@ pub async fn start_rust_debug(window: WebviewWindow, app: AppHandle, request_spe
                         let _ = request(&session, "configurationDone", json!({}));
                     }
                     "stopped" => {
+                        ready_reader.store(true, Ordering::Release);
                         let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
                         session.thread_id.store(thread_id, Ordering::Relaxed);
                         emit(&app_reader, &label_reader, json!({"status":"paused", "reason":message["body"]["reason"], "threadId":thread_id}));
                         if let Ok(seq) = request(&session, "stackTrace", json!({"threadId":thread_id, "startFrame":0, "levels":20})) { pending.insert(seq, "stackTrace".into()); }
                     }
                     "continued" => {
+                        ready_reader.store(true, Ordering::Release);
                         if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0) {
                             session.thread_id.store(id, Ordering::Relaxed);
                         }
@@ -242,9 +329,11 @@ pub async fn start_rust_debug(window: WebviewWindow, app: AppHandle, request_spe
                     .or_else(|| message["command"].as_str().map(String::from)).unwrap_or_default();
                 match command.as_str() {
                     "initialize" => {
+                        initialized_reader.store(true, Ordering::Release);
                         if let Ok(seq) = request(&session, "launch", launch.clone()) { pending.insert(seq, "launch".into()); }
                     }
                     "configurationDone" => {
+                        ready_reader.store(true, Ordering::Release);
                         emit(&app_reader, &label_reader, json!({"status":"running"}));
                         if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
                     }
@@ -282,18 +371,56 @@ pub async fn start_rust_debug(window: WebviewWindow, app: AppHandle, request_spe
         emit(&app_reader, &label_reader, json!({"status":"terminated"}));
     });
     let app_stderr = app.clone();
+    let stderr_label = label.clone();
     thread::spawn(move || {
         for line in BufReader::new(stderr).lines().flatten() {
-            emit(&app_stderr, &label, json!({"status":"output", "text":line}));
+            emit(&app_stderr, &stderr_label, json!({"status":"output", "text":line}));
         }
     });
     let manager = app.state::<DebugManager>();
     let active = manager.0.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = active.get(window.label()) {
-        let _ = request(session, "initialize", json!({"clientID":"craidd-studio", "adapterID":"lldb-dap",
+    if let Some(session) = active.get(&label) {
+        if let Err(error) = request(session, "initialize", json!({"clientID":"craidd-studio", "adapterID":"lldb-dap",
             "pathFormat":"path", "linesStartAt1":true, "columnsStartAt1":true,
-            "supportsRunInTerminalRequest":false}));
+            "supportsRunInTerminalRequest":false})) {
+            unsafe { libc::killpg(session.pgid, libc::SIGTERM); }
+            return Err(format!("Could not initialize lldb-dap: {error}"));
+        }
     }
+    drop(active);
+    let app_watchdog = app.clone();
+    let label_watchdog = label.clone();
+    let watchdog_pgid = pgid;
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(15));
+        if !initialized.load(Ordering::Acquire) {
+            if let Some(manager) = app_watchdog.try_state::<DebugManager>() {
+                if let Ok(active) = manager.0.lock() {
+                    if let Some(session) = active.get(&label_watchdog).filter(|session| session.pgid == watchdog_pgid) {
+                        if !initialized.load(Ordering::Acquire) {
+                            emit(&app_watchdog, &label_watchdog, json!({"status":"error",
+                                "text":"lldb-dap did not respond to initialization within 15 seconds."}));
+                            unsafe { libc::killpg(session.pgid, libc::SIGTERM); }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        thread::sleep(Duration::from_secs(30));
+        if ready.load(Ordering::Acquire) { return; }
+        if let Some(manager) = app_watchdog.try_state::<DebugManager>() {
+            if let Ok(active) = manager.0.lock() {
+                if let Some(session) = active.get(&label_watchdog).filter(|session| session.pgid == watchdog_pgid) {
+                    if !ready.load(Ordering::Acquire) {
+                        emit(&app_watchdog, &label_watchdog, json!({"status":"error",
+                            "text":"lldb-dap did not launch the Rust executable within 30 seconds."}));
+                        unsafe { libc::killpg(session.pgid, libc::SIGTERM); }
+                    }
+                }
+            }
+        }
+    });
     Ok(())
 }
 
@@ -305,10 +432,28 @@ pub fn update_debug_breakpoints(window: WebviewWindow, state: tauri::State<'_, D
 }
 
 #[tauri::command]
-pub fn debug_control(window: WebviewWindow, state: tauri::State<'_, DebugManager>, action: String) -> Result<(), String> {
+pub fn debug_control(window: WebviewWindow, state: tauri::State<'_, DebugManager>, builds: tauri::State<'_, DebugBuildManager>, action: String) -> Result<(), String> {
+    control_debug(window.label(), &state, &builds, &action)
+}
+
+pub fn control_debug_by_label(app: &AppHandle, label: &str, action: &str) -> Result<(), String> {
+    let state = app.state::<DebugManager>();
+    let builds = app.state::<DebugBuildManager>();
+    control_debug(label, &state, &builds, action)
+}
+
+fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, action: &str) -> Result<(), String> {
+    if action == "stop" {
+        let active_builds = builds.0.lock().map_err(|e| e.to_string())?;
+        if let Some(job) = active_builds.get(label) {
+            job.cancelled.store(true, Ordering::Release);
+            unsafe { libc::killpg(job.pgid, libc::SIGTERM); }
+            return Ok(());
+        }
+    }
     let active = state.0.lock().map_err(|e| e.to_string())?;
-    let session = active.get(window.label()).ok_or("No debug session is active")?;
-    let command = match action.as_str() {
+    let session = active.get(label).ok_or("No debug session is active")?;
+    let command = match action {
         "continue" => "continue", "pause" => "pause", "stepOver" => "next",
         "stepInto" => "stepIn", "stepOut" => "stepOut",
         "stop" => {
@@ -331,9 +476,21 @@ pub fn debug_control(window: WebviewWindow, state: tauri::State<'_, DebugManager
 }
 
 pub fn cancel_window_debug(window: &tauri::Window) {
-    if let Some(manager) = window.app_handle().try_state::<DebugManager>() {
+    cancel_debug_by_label(window.app_handle(), window.label());
+}
+
+pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
+    if let Some(builds) = app.try_state::<DebugBuildManager>() {
+        if let Ok(active) = builds.0.lock() {
+            if let Some(job) = active.get(label) {
+                job.cancelled.store(true, Ordering::Release);
+                unsafe { libc::killpg(job.pgid, libc::SIGTERM); }
+            }
+        }
+    }
+    if let Some(manager) = app.try_state::<DebugManager>() {
         if let Ok(mut active) = manager.0.lock() {
-            if let Some(session) = active.remove(window.label()) {
+            if let Some(session) = active.remove(label) {
                 let _ = request(&session, "disconnect", json!({"terminateDebuggee":true}));
                 let pgid = session.pgid;
                 thread::spawn(move || { thread::sleep(std::time::Duration::from_millis(800)); unsafe { libc::killpg(pgid, libc::SIGTERM); } });

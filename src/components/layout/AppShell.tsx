@@ -64,6 +64,7 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   const ownInstanceId = useLinkedWindows((s) => s.ownInstanceId);
   const buildProblems = useBuild((s) => s.problems);
   const remoteContext = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.viewedWindowLabel && item.windowLabel !== state.ownWindowLabel));
+  const titleContext = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.ownWindowLabel));
   const bannerState = useSolution((s) => s.bannerState);
   const isSolutionLoading = useSolution((s) => s.isSolutionLoading);
   const projectLanguages = [...new Set((solution?.projects ?? [])
@@ -73,6 +74,12 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
     .find((config) => config.name === selectedConfigName);
   const savedProject = solution?.projects.find((project) => project.path === savedConfig?.target);
   const selectionName = savedConfig?.bestFit ? savedConfig.name : savedProject?.name ?? savedConfig?.name ?? null;
+  useEffect(() => {
+    if (!solution || !titleContext) return;
+    const title = `${titleContext.selectedConfigName ?? titleContext.projectName}: CS${titleContext.windowId} - Craidd Studio - ${solution.name}`;
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title))
+      .catch((error) => console.error("[craidd] Could not update window title:", error));
+  }, [solution?.name, titleContext?.windowId, titleContext?.selectedConfigName, titleContext?.projectName]);
   const missingChecks = toolchainChecks.filter((check) => check.missing.length > 0);
   const rustDebugConfigured = Boolean(solution && [...(solution.configs ?? []), ...(solution.inferredConfigs ?? [])]
     .some((config) => config.kind === "debug" && config.method === "cargo"
@@ -138,24 +145,24 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   }, [buildProblems]);
   useEffect(() => {
     let timer: number | undefined;
-    const publish = () => {
+    const publish = (delay = 180) => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         const state = useSolution.getState();
         void publishLinkedWindow(state.solution, state.clnPath)
           .catch((error) => console.error("[craidd] Could not share window context:", error));
-      }, 180);
+      }, delay);
     };
-    let previousFile = "";
-    const unlistenSolution = useSolution.subscribe((state) => {
-      const tab = state.tabs.find((item) => item.fileId === state.activeFileId);
-      const key = `${state.activeFileId ?? ""}\0${tab?.content ?? ""}\0${state.tabs.map((item) => `${item.fileId}:${item.dirty}`).join("|")}`;
-      if (key !== previousFile) { previousFile = key; publish(); }
+    const unlistenSolution = useSolution.subscribe((state, previous) => {
+      if (state.activeFileId !== previous.activeFileId || state.tabs !== previous.tabs) {
+        const oldTab = previous.tabs.find((item) => item.fileId === previous.activeFileId);
+        const newTab = state.tabs.find((item) => item.fileId === state.activeFileId);
+        const typing = state.activeFileId === previous.activeFileId && oldTab?.content !== newTab?.content;
+        publish(typing ? 600 : 80);
+      }
     });
-    let previousOutput = "";
-    const unlistenBuild = useBuild.subscribe((state) => {
-      const key = `${state.selectedProfileName ?? ""}\0${state.output}`;
-      if (key !== previousOutput) { previousOutput = key; publish(); }
+    const unlistenBuild = useBuild.subscribe((state, previous) => {
+      if (state.selectedProfileName !== previous.selectedProfileName || state.output !== previous.output) publish();
     });
     const unlistenDebug = useDebug.subscribe((state, previous) => {
       if (state.output !== previous.output || state.status !== previous.status ||
@@ -277,7 +284,13 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
         )}
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          {remoteContext ? <RemoteEditorPane context={remoteContext} /> : <EditorPane />}
+          <div className="relative flex-1 min-h-0 flex flex-col">
+            <div className={"flex-1 min-h-0 flex flex-col " + (remoteContext ? "invisible pointer-events-none" : "")}
+              aria-hidden={Boolean(remoteContext)}>
+              <EditorPane />
+            </div>
+            {remoteContext && <div className="absolute inset-0 flex flex-col min-h-0"><RemoteEditorPane context={remoteContext} /></div>}
+          </div>
           {bottomPanelVisible && (
             <>
               <ResizeHandle orientation="horizontal" onDrag={(delta) => setBottomPanelHeight(bottomPanelHeight - delta)} />

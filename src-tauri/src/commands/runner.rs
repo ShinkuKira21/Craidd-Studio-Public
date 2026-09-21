@@ -87,7 +87,12 @@ struct RunnerEvent {
 }
 
 fn emit(app: &AppHandle, label: &str, session_id: u64, kind: &'static str, text: Option<String>, exit_code: Option<i32>) {
+    super::linked_windows::note_process_event(app, label, kind, text.as_deref(), exit_code);
     let _ = app.emit_to(label, "craidd:build", RunnerEvent { session_id, kind, text, exit_code });
+}
+
+pub fn active_run_id(app: &AppHandle, label: &str) -> Option<u64> {
+    app.try_state::<RunnerManager>()?.0.lock().ok()?.get(label).map(|run| run.id)
 }
 
 /// SIGTERM the whole process group. Idempotent: if the group is gone, the
@@ -124,11 +129,18 @@ pub async fn start_config(
     app: AppHandle,
     spec: RunSpec,
 ) -> Result<u64, String> {
-    let label = window.label().to_string();
-    let cwd = Path::new(&spec.cwd);
-    if !cwd.is_dir() {
+    start_config_for_label(app, window.label().to_string(), spec).await
+}
+
+pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec) -> Result<u64, String> {
+    if !Path::new(&spec.cwd).is_dir() {
         return Err(format!("Working directory does not exist: {}", spec.cwd));
     }
+
+    // Multiple Tauri clients share one frontend server, but each receives
+    // its own app process and independent runner state.
+    let (spec, dev_lease) = super::tauri_dev::prepare_run(app.clone(), spec).await?;
+    let cwd = Path::new(&spec.cwd);
 
     let requested_program = spec.program.clone();
     let program = tauri::async_runtime::spawn_blocking(move || resolve_known_program(&requested_program))
@@ -179,8 +191,12 @@ pub async fn start_config(
     drop(active);
 
     emit(&app, &label, id, "start", Some(format!("$ {}  (in {})", spec.label, spec.cwd)), None);
+    if dev_lease.is_some() {
+        emit(&app, &label, id, "output", Some("Using the shared Tauri frontend dev server.".into()), None);
+    }
 
     thread::spawn(move || {
+        let _dev_lease = dev_lease;
         guard("runner::manager", || {
             let out = stream_lines(app.clone(), label.clone(), id, stdout);
             let err = stream_lines(app.clone(), label.clone(), id, stderr);
@@ -265,9 +281,13 @@ pub fn stop_config(window: WebviewWindow, state: State<'_, RunnerManager>) -> Re
 }
 
 pub fn cancel_window_run(window: &tauri::Window) {
-    if let Some(manager) = window.app_handle().try_state::<RunnerManager>() {
+    cancel_run_by_label(window.app_handle(), window.label());
+}
+
+pub fn cancel_run_by_label(app: &AppHandle, label: &str) {
+    if let Some(manager) = app.try_state::<RunnerManager>() {
         if let Ok(active) = manager.0.lock() {
-            if let Some(run) = active.get(window.label()) {
+            if let Some(run) = active.get(label) {
                 run.cancelled.store(true, Ordering::SeqCst);
                 kill_group(run.pgid);
             }

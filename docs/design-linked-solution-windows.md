@@ -4,10 +4,20 @@
 combined Problems, an IDE-window tray, and Rust Cargo DAP debugging are
 implemented. Other debugger adapters and shared writable remote documents
 remain open.
+
+**Hide implementation, 21 September 2026:** Hide now destroys the IDE
+window after its save/discard flow. Rust keeps the linked identity, runner,
+debugger, and bounded output; Show recreates the window and reopens its
+solution, project choice, and clean tabs. Cursor positions and Monaco undo
+history are not yet restored. A shared writable document model is still
+required to preserve those across GUI teardown.
 **Companion:** [Window model](design-window-model.md),
 [solution orchestration](design-solution-orchestration.md),
 [configuration megamenu](design-configuration-megamenu.md),
 [linked solution window manager](design-linked-window-manager.md).
+The latest interaction decisions for shared Tauri launch, writable views,
+session closing, and breakpoint menus are in
+[linked session UX](design-linked-session-ux.md).
 
 ---
 
@@ -198,18 +208,16 @@ This is the same state-shifting pattern used by the white buttons
 
 ## The white button set
 
-White controls reflect the **currently viewed window context**. By
-default that is the physical IDE window itself. Selecting another
-linked window in the upper-right tray makes its project, config,
-profile, runner, debugger, and white Build/Run/Debug/Stop controls
-effective here. The toolbar must label that context. See
-[linked solution window manager](design-linked-window-manager.md).
+White controls belong to the **physical IDE window**. Selecting another
+linked session in the upper-right tray changes the preview, output, and
+breakpoint context, but never retargets white Build/Run/Debug/Stop. Only gold
+controls address more than one session.
 
-**Idle.** White Build, Run, and Debug are enabled iff the viewed
-context's selected project has a configuration of that kind.
+**Idle.** White Build, Run, and Debug are enabled iff the physical window's
+selected project has a configuration of that kind.
 
-**Running.** White Run dims (a second run cannot start in the viewed
-context). White Stop lights up. White Debug dims.
+**Running.** White Run dims when that physical window is running. White Stop
+lights up for that window. White Debug dims.
 
 **Debugging.** The white Play slot becomes a three-state button:
 
@@ -222,17 +230,14 @@ Same slot, same shape, different tooltip. The user learns one control
 that means "make the debugger move, or stop moving." This is the
 media-player convention, and it holds up.
 
-**White Stop** terminates the viewed context's ordinary run or debug
-session. The control must show the context name before it can stop a
-remote session. Gold Stop terminates the linked group's sessions.
+**White Stop** terminates only the physical window's ordinary run or debug
+session. Gold Stop terminates the linked group's sessions.
 
 **Isolation is the point.** While the linked group is running, each
-window's white controls remain live. By default, a user can pause one
-client's debugger, step through it, and inspect its state while the
-server and the other client keep running. Explicitly selecting another
-IDE window in the tray changes the effective context for all window
-scoped controls and views; the physical window's own state waits until
-the user selects it again. Gold Stop remains the master control.
+window's white controls remain live. A user can pause one client's debugger,
+step through it, and inspect its state while the server and other client keep
+running. Selecting another session changes inspection views and breakpoint
+activation only. Gold Stop remains the master control.
 
 ---
 
@@ -246,11 +251,11 @@ is visible on another monitor or hidden.
 
 Selecting A makes Window C **view A's complete window context**. A's
 default project moves to the top of C's Solution Explorer; C's toolbar,
-editor tabs, breakpoint markers, Problems, output, and white controls
-show A's state. The editor opens A's stopped source location. Stepping
-from either visible view commands A's one debugger session and updates
-both views. C's original project, tabs, and unsaved edits return when
-the user selects C again. Selecting A never raises a hidden A window.
+editor tabs, breakpoint markers, Problems, and output show A's state. The
+editor opens A's stopped source location. C's white controls continue to
+operate C. To step A, use A's physical window or Show it if hidden. C's
+original project, tabs, and unsaved edits return when the user selects C
+again. Selecting A never raises a hidden A window.
 
 If several clients pause, their tray rows remain marked separately.
 Selecting A does not continue B. The user handles one context at a
@@ -278,17 +283,17 @@ breakpoint markers; an explicit shared-breakpoint export could be added
 separately.
 
 Every window on that solution observes the same breakpoint definitions,
-but **activation belongs to each debugger instance**. A normal gutter
-click creates an **All instances** breakpoint: each applicable debugger
-receives it, including a client instance opened later. The breakpoint
-menu can instead choose **Only this instance** or select particular
-instances. This lets Client A stop at one line and Client B stop at
-another, even when both run the same project and configuration.
+but **activation belongs to each debugger instance**. A normal gutter click
+creates a breakpoint for the session currently viewed in that IDE window.
+Viewing Client A from another physical window shows A's active marker; Client
+B sees the definition as inactive and does not stop there. The quick menu
+contains Set/Delete Breakpoint here, with no instance selector. Group-wide
+scope management can live in the Breakpoints view when it is implemented.
 
-Monaco renders a solid red circle for a breakpoint active in that
-window's debugger and an outlined or muted circle when the definition
-exists but is inactive there. The tooltip states its scope, for
-example `Active in Client · 1` or `Active in all instances`.
+Monaco renders a solid red circle for a breakpoint active in the viewed
+session's debugger and an outlined or muted circle when the definition
+exists but is inactive there. The tooltip states whether it is active in
+the viewed session.
 The Breakpoints view lists all definitions and lets the user change
 scope without opening every window. Two clients can also pause at the
 same breakpoint; the UI records two paused sessions rather than
@@ -483,38 +488,12 @@ own; hiding one solution's last window does not affect the other.
 
 ## Closing the last visible window
 
-Closing the last visible window is a **full shutdown**, not a partial
-one. The user's intent when closing the last window is "I am done with
-this solution," and Craidd honors that intent literally.
-
-Order of operations:
-
-1. **Run the save-before-close flow.** This is the existing flow —
-   the same one Close uses today. Every dirty tab in the visible
-   window, and every dirty tab in every hidden window of the same
-   solution, gets the standard prompt. Save, Discard, or Cancel. If
-   any save conflicts, the close is abandoned until the conflict is
-   resolved through the editor.
-2. **Detach every debugger.** For each hidden window's session and
-   the visible window's session, send the DAP `disconnect` and wait
-   briefly for the adapter to confirm. If unresponsive, SIGTERM the
-   adapter. A paused session is killed, not resumed — the user has
-   decided the session is over.
-3. **Stop every runner.** SIGTERM the process group for every
-   window's running process, wait 500 ms, SIGKILL if needed. This is
-   the same discipline the existing containment rules apply on IDE
-   close; it extends to hidden windows. A build that is mid-flight is
-   killed, not awaited.
-4. **Tear down every hidden window's state.**
-5. **Close the visible window.**
-6. **Exit Craidd for that solution.**
-
-Nothing survives. No process is left running. No port is left held. No
-orphan waits to be discovered on next launch.
-
-This is the difference between "the IDE leaves nothing behind" and "the
-IDE leaves whatever it forgot to clean up." VS Code leaves orphans in
-the same situation. Craidd does not.
+The user now chooses the close scope after resolving unsaved work. Closing the
+last visible window can close only that session: Craidd first restores a hidden
+sibling so there is still a visible control surface. **Close all Windows**
+explicitly ends every runner and debugger in the solution. The current flow
+and its save/discard behavior are specified in
+[linked session UX](design-linked-session-ux.md#closing-a-linked-solution).
 
 ---
 
@@ -643,8 +622,8 @@ Acceptance checks:
 - One window with a library selected, one with an application: gold
   buttons absent (library is not application-kind, so the group does
   not form).
-- Gold Run active: gold Run slot shows gold Stop; white Run dims;
-  white Stop enabled in every participating window.
+- Gold Run active: gold Run slot shows gold Stop. Each physical window's white
+  Stop controls only its own participant.
 - One window's debugger paused: the other windows' debuggers keep
   running; their white step controls remain live.
 - Two windows run the same client: a breakpoint scoped to Client A

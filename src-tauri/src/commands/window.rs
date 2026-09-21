@@ -36,6 +36,12 @@ pub struct WorkspaceEntry {
     pub selected_profile_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restored_tabs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_active_file: Option<String>,
+    #[serde(default)]
+    pub restored_from_hidden: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -125,8 +131,9 @@ pub fn record_workspace_open(
         selected_config_name,
         selected_profile_name,
         selection_name,
+        restored_tabs: vec![], restored_active_file: None, restored_from_hidden: false,
     };
-    let _ = window.set_title(&format!("{} — Craidd Studio", entry.name));
+    if entry.kind == "folder" { let _ = window.set_title(&format!("{} - Craidd Studio", entry.name)); }
     let _guard = RECENT_LOCK.lock().map_err(|e| e.to_string())?;
     let recent = recent_path()?;
     let mut state = read_state(&recent)?;
@@ -167,20 +174,24 @@ pub fn take_window_open_request(window: WebviewWindow, requests: tauri::State<'_
 
 #[tauri::command]
 pub fn open_workspace_window(app: AppHandle, requests: tauri::State<'_, WindowRequests>, entry: WorkspaceEntry) -> Result<(), String> {
+    let label = format!("workspace-{}", NEXT_WINDOW.fetch_add(1, Ordering::Relaxed));
+    create_workspace_window(&app, &requests, &label, entry)
+}
+
+pub fn create_workspace_window(app: &AppHandle, requests: &WindowRequests, label: &str, entry: WorkspaceEntry) -> Result<(), String> {
     let disk = Path::new(&entry.path);
     if (entry.kind == "solution" && !disk.is_file()) || (entry.kind == "folder" && !disk.is_dir()) {
         return Err(format!("Workspace is missing: {}", entry.path));
     }
     if entry.kind != "solution" && entry.kind != "folder" { return Err("Unsupported workspace kind".into()); }
-    let label = format!("workspace-{}", NEXT_WINDOW.fetch_add(1, Ordering::Relaxed));
-    requests.0.lock().map_err(|e| e.to_string())?.insert(label.clone(), entry.clone());
-    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
+    requests.0.lock().map_err(|e| e.to_string())?.insert(label.into(), entry.clone());
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title(format!("{} — Craidd Studio", entry.name)).background_color(tauri::window::Color(9, 9, 11, 255))
         .inner_size(entry.width.unwrap_or(1280) as f64, entry.height.unwrap_or(800) as f64)
         .min_inner_size(900.0, 600.0).visible(false);
     if let (Some(x), Some(y)) = (entry.x, entry.y) { builder = builder.position(x as f64, y as f64); }
     if let Err(error) = builder.build() {
-        requests.0.lock().map_err(|e| e.to_string())?.remove(&label);
+        requests.0.lock().map_err(|e| e.to_string())?.remove(label);
         return Err(error.to_string());
     }
     Ok(())
@@ -230,6 +241,7 @@ mod tests {
             window_label: "workspace-1".into(), instance_id: Some("instance-a".into()), x: None, y: None, width: None, height: None,
             selected_config_name: Some("API: Local".into()), selected_profile_name: None,
             selection_name: Some("API".into()),
+            restored_tabs: vec![], restored_active_file: None, restored_from_hidden: false,
         };
         let state = StartupState { session_format: SESSION_FORMAT, recent_solutions: vec![entry.clone()], last_session: vec![entry] };
         write_state(&path, &state).unwrap();

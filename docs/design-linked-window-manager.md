@@ -1,6 +1,8 @@
 # Proposal: Linked solution window manager
 
-**Status:** Proposal for review. No UI or runner change is made by this document.
+**Status:** Implemented in stages. The tray, linked runtime controls, and
+backend parked sessions are present; shared writable document state remains
+open.
 **Companion:** [Linked solution windows](design-linked-solution-windows.md),
 [window model](design-window-model.md).
 
@@ -20,10 +22,11 @@ the window is a viewport, the session is a process, the tray selects
 which session this window is showing, and Hide turns a viewport off.
 
 The tray lets a user create four client IDE windows, then hide three
-while keeping all four available. Hiding an IDE window changes only
-its visibility. Its project selection, running program, debugger,
-unsaved editor buffers, breakpoints, and linked membership remain
-intact. Program state appears as a secondary status on the window row.
+while keeping all four available. Hiding destroys the GUI and leaves the
+session in the backend. Its project selection, running program, debugger,
+breakpoints, and linked membership remain intact. Dirty editor buffers
+go through the save/discard flow before Hide. Program state appears as a
+secondary status on the window row.
 
 ```
                            [Viewing: Client · 1 ▾] [3 IDE windows · 1 hidden ▾]
@@ -63,12 +66,10 @@ Selecting B's row makes B the **viewed window context** inside A. A's
 physical IDE window remains A, but its toolbar clearly reads
 `Viewing: B`. Every project and session scoped part of A now behaves
 as B: **B's default project moves to the top of Solution Explorer**;
-the toolbar shows B's project, configuration, and profile; the editor
-shows B's tabs and current source location; the gutter shows B's
-active breakpoints; Problems and output show B's session; and white
-Build, Run, Debug, and Stop commands route to B. Project Tools and
-project scoped commands use B too. Gold controls still address the
-linked solution group.
+the editor shows B's tabs and current source location; the gutter shows B's
+active breakpoints; Problems and output show B's session. White Build, Run,
+Debug, Stop, configuration, and profile controls remain owned by physical
+Window A. Gold controls address the linked solution group.
 
 This is the *effective* default project while B is selected. A's own
 default project, tab layout, unsaved edits, and runner remain stored
@@ -116,7 +117,7 @@ row. They do not hide or close a launched application's GUI window.
 | Action | Result |
 | --- | --- |
 | **Show** | Reveal and focus that instance's window. Keep its current editor and debugger state. |
-| **Hide** | Hide that OS window without stopping its process or debugger, discarding edits, or unlinking it. The tray changes to **Show**. |
+| **Hide** | Destroy that OS window after the save/discard flow, without stopping its process or debugger or unlinking it. The tray changes to **Show**. |
 | **Close** | Close the instance, stop its owned process/debugger, and remove it from the linked group. Resolve dirty tabs and warn about an active process before closing. |
 
 **Hide and Close share one save flow.** Both run the same
@@ -158,17 +159,15 @@ solution receives the paused-session notification, and `Client · 2`'s
 tray row stays amber and marked **Paused**. The visible window keeps
 its current project and editor until the user selects that row.
 
-Selecting `Client · 2` switches the visible window to B's effective
-project and editor context. The stopped file and breakpoint appear
-there; white debug controls address B. When the user selects their
-own window again, their earlier tabs and project return. **Show**
-reveals B's original IDE window if they prefer to debug there.
+Selecting `Client · 2` switches the preview to B's editor context. The stopped
+file and breakpoint appear there; white debug controls still address the
+physical visible window. When the user selects their own session again, their
+earlier tabs return. **Show** reveals B's original IDE window to step or
+continue B.
 
-During the read-only intermediate phase, selecting B opens its
-labelled paused source preview and routes only debug transport
-controls to B. The full context switch, including writable editor
-state and Build/Run controls, is available only after the shared
-document model and command routing are complete.
+During the read-only intermediate phase, selecting B opens its labelled paused
+source preview. Remote debug transport is not routed through another window.
+Shared writable editor state remains future work.
 
 If several hidden clients pause, each tray row remains individually
 marked. Switching to B never resumes C. A hidden window is never
@@ -190,15 +189,15 @@ still reads `5 IDE windows · 3 hidden` and adds a `2 paused` badge.
 B and C briefly pulse amber and remain marked **Paused** in their IDE
 window rows. A, D, and the server continue running.
 The user can **Show** B and C to inspect each in its own window, or
-select B's row to view B's effective project, paused editor, and
-controls in the main window. C stays paused and amber. Selecting C
+select B's row to view B's paused editor in the main window. C stays paused
+and amber. Selecting C
 switches the viewed context to C;
 it does not continue B or interrupt the other three sessions.
 
-If the user finds a bug, Gold Stop ends all five sessions before they
-edit and restart. If not, they can continue B, inspect C, and leave
-A, D, and the server untouched. The selected target remains labelled
-at the top right throughout.
+If the user finds a bug, Gold Stop ends all five sessions before they edit and
+restart. If not, they can Show B to continue it, inspect C from the current
+window, and leave A, D, and the server untouched. The selected preview remains
+labelled at the top right throughout.
 
 ## Technical conditions before implementation
 
@@ -247,7 +246,7 @@ window invisible.
 4. A visible API debugger pauses while a client window is focused.
    The API row pulses, but both windows retain their current contexts.
    Selecting API in the client tray shows API's effective project and
-   paused source in that client IDE window; stepping updates both views.
+   paused source in that client IDE window. White step controls stay local.
 5. Show the hidden client. Its editor and paused debugger are where
    they were before Hide.
 6. Close a running hidden client. Its process ends, dirty work is
@@ -259,20 +258,13 @@ window invisible.
    selecting one does not resume the other, and Gold Stop reaches all
    five sessions. The tray still counts five IDE windows and three hidden
    windows after the sessions stop.
-10. Keep Client C visible on another monitor and select it from Window
-    A's tray. Step from A, then from C. Both windows show the same
-    stopped location without changing OS focus or creating a second
-    debugger session.
-11. Select hidden Window B from A, then return to A. B's project and
-    editor context appear while selected; B's default project moves to
-    the top of Solution Explorer, and B's white actions, Problems, and
-    output are shown. A's original project order, tabs, and unsaved
-    edits return intact afterward.
-11. Select hidden Window B from A, then return to A. B's project and
-    editor context appear while selected; B's default project moves to
-    the top of Solution Explorer, and B's white actions, Problems, and
-    output are shown. A's original project order, tabs, and unsaved
-    edits return intact afterward.
+10. Keep Client C visible on another monitor and select it from Window A's
+    tray. A previews C's stopped location; stepping from C updates that preview.
+    A's white controls continue to address A.
+11. Select hidden Window B from A, then return to A. B's editor preview,
+    breakpoints, Problems, and output appear while selected. A's white actions
+    continue to control A. A's original tabs and unsaved edits return intact
+    afterward.
 12. Place Window A on the left monitor and Window C on the right.
     Select different sessions in each. Step in A; A's editor shows the
     stopped location. Step in C; C's editor shows the stopped location.
@@ -287,10 +279,11 @@ window invisible.
     clicking Hide again succeeds.
 15. Attempt to hide the last visible window of a solution. The Hide
     action is disabled with a tooltip. No dialog, no override.
-16. Close the last visible window while three hidden windows are
-    running, one of them paused at a breakpoint. The debuggers detach,
-    every runner receives SIGTERM, the window closes, and Craidd exits.
-    No process survives; no port is held.
+16. Close the last visible window while three hidden windows are running,
+    one paused at a breakpoint. After the unsaved-work stage, choose
+    **Close this Window**: one hidden sibling becomes visible and its runner
+    survives. Repeat and choose **Close all Windows**: every debugger detaches,
+    every runner receives SIGTERM, and no owned process survives.
 
 ## Assessment
 

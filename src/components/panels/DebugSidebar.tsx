@@ -14,7 +14,8 @@ export default function DebugSidebar() {
     : reveal(file, line, 1);
   const frames = remote?.debugFrames ?? debug.frames;
   const variables = remote?.debugVariables ?? debug.variables;
-  const activePoints = points.filter((point) => point.scope === "all" || point.scope === (remote?.instanceId ?? own));
+  const activePoints = points.filter((point) => point.scope === "all" || point.scope === (remote?.instanceId ?? own))
+    .filter((point, index, all) => all.findIndex((item) => item.file === point.file && item.line === point.line) === index);
   return <div className="w-72 bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden shrink-0 text-xs">
     <div className="h-9 px-3 flex items-center border-b border-zinc-800 shrink-0 font-semibold text-zinc-300 uppercase tracking-wide">Debug</div>
     <div className="overflow-auto scroll-thin flex-1">

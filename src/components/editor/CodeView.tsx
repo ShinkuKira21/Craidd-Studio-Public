@@ -8,14 +8,19 @@ import { useBreakpoints } from "../../store/breakpointStore";
 import { useLinkedWindows } from "../../store/linkedWindowsStore";
 import type { Breakpoint } from "../../store/breakpointStore";
 import { useDebug } from "../../store/debugStore";
+import BreakpointMenu from "./BreakpointMenu";
 
-function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: string | null, ownLabel: string | null, pausedLine: number | null) {
-  return [...points.filter((point) => point.file === file).map((point) => ({
-    range: new monaco.Range(point.line, 1, point.line, 1),
+function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: string | null, instanceId: string | null, pausedLine: number | null) {
+  const lines = [...new Set(points.filter((point) => point.file === file).map((point) => point.line))];
+  return [...lines.map((line) => ({
+    range: new monaco.Range(line, 1, line, 1),
     options: {
       isWholeLine: false,
-      glyphMarginClassName: point.scope === "all" || point.scope === ownLabel ? "craidd-breakpoint" : "craidd-breakpoint-inactive",
-      glyphMarginHoverMessage: { value: point.scope === "all" ? "Breakpoint · All instances" : `Breakpoint · ${point.scope}` },
+      glyphMarginClassName: points.some((point) => point.file === file && point.line === line && (point.scope === "all" || point.scope === instanceId))
+        ? "craidd-breakpoint" : "craidd-breakpoint-inactive",
+      glyphMarginHoverMessage: { value: points.some((point) => point.file === file && point.line === line &&
+        (point.scope === "all" || point.scope === instanceId))
+        ? `Breakpoint active in this session · line ${line}` : `Breakpoint in another linked session · line ${line}` },
     },
   })), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }
@@ -37,10 +42,7 @@ export default function CodeView() {
   const [breakpointMenu, setBreakpointMenu] = useState<{ x: number; y: number; line: number } | null>(null);
   const activeFileId = useSolution((s) => s.activeFileId);
   const points = useBreakpoints((s) => s.points);
-  const toggleBreakpoint = useBreakpoints((s) => s.toggle);
-  const setBreakpointScope = useBreakpoints((s) => s.setScope);
   const ownLabel = useLinkedWindows((s) => s.ownInstanceId);
-  const linkedWindows = useLinkedWindows((s) => s.windows);
   const debugStatus = useDebug((s) => s.status);
   const debugFile = useDebug((s) => s.file);
   const debugLine = useDebug((s) => s.line);
@@ -88,7 +90,8 @@ export default function CodeView() {
   useEffect(() => {
     const decorations = decorationsRef.current;
     if (!decorations || !monacoRef.current) return;
-    trackedPointsRef.current = points.filter((point) => point.file === activeFileId);
+    trackedPointsRef.current = points.filter((point) => point.file === activeFileId)
+      .filter((point, index, all) => all.findIndex((item) => item.line === point.line) === index);
     decorations.set(breakpointDecorations(monacoRef.current, points, activeFileId, ownLabel, pausedLine));
   }, [points, activeFileId, ownLabel, pausedLine]);
 
@@ -130,7 +133,8 @@ export default function CodeView() {
           editorRef.current = instance;
           monacoRef.current = monaco;
           decorationsRef.current = instance.createDecorationsCollection();
-          trackedPointsRef.current = points.filter((point) => point.file === activeFileId);
+          trackedPointsRef.current = points.filter((point) => point.file === activeFileId)
+            .filter((point, index, all) => all.findIndex((item) => item.line === point.line) === index);
           decorationsRef.current.set(breakpointDecorations(monaco, points, activeFileId, ownLabel, pausedLine));
           revealCurrentNavigation(instance);
           instance.onDidChangeModel(() => revealCurrentNavigation(instance));
@@ -138,7 +142,10 @@ export default function CodeView() {
             if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !event.event.leftButton) return;
             const file = useSolution.getState().activeFileId;
             const line = event.target.position?.lineNumber;
-            if (file && line) void useBreakpoints.getState().toggle(file, line).catch((error) => alert(`Breakpoint failed: ${String(error)}`));
+            const state = useLinkedWindows.getState();
+            if (file && line && state.ownInstanceId) void useBreakpoints.getState()
+              .toggleForInstance(file, line, state.ownInstanceId, state.windows.map((item) => item.instanceId))
+              .catch((error) => alert(`Breakpoint failed: ${String(error)}`));
           });
           instance.onContextMenu((event) => {
             if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
@@ -150,25 +157,9 @@ export default function CodeView() {
         }}
         options={options}
       />
-      {breakpointMenu && activeFileId && <>
-        <button className="fixed inset-0 z-40 cursor-default" aria-label="Close breakpoint menu" onClick={() => setBreakpointMenu(null)} />
-        <div className="fixed z-50 min-w-44 bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 text-xs"
-          style={{ left: breakpointMenu.x, top: breakpointMenu.y }}>
-          {points.some((point) => point.file === activeFileId && point.line === breakpointMenu.line) ? <>
-            <button className="block w-full px-3 py-1.5 text-left hover:bg-blue-700" onClick={() => { void setBreakpointScope(activeFileId, breakpointMenu.line, "all"); setBreakpointMenu(null); }}>All instances</button>
-            {ownLabel && <button className="block w-full px-3 py-1.5 text-left hover:bg-blue-700" onClick={() => { void setBreakpointScope(activeFileId, breakpointMenu.line, ownLabel); setBreakpointMenu(null); }}>Only this IDE window</button>}
-            {linkedWindows.filter((item) => item.instanceId !== ownLabel).map((item) =>
-              <button key={item.instanceId} className="block w-full px-3 py-1.5 text-left hover:bg-blue-700"
-                onClick={() => { void setBreakpointScope(activeFileId, breakpointMenu.line, item.instanceId); setBreakpointMenu(null); }}>
-                Only {item.projectName} · {item.windowLabel}
-              </button>)}
-            <button className="block w-full px-3 py-1.5 text-left text-red-300 hover:bg-zinc-800" onClick={() => { void useBreakpoints.getState().remove(activeFileId, breakpointMenu.line); setBreakpointMenu(null); }}>Remove breakpoint</button>
-          </> : <>
-            <button className="block w-full px-3 py-1.5 text-left hover:bg-blue-700" onClick={() => { void toggleBreakpoint(activeFileId, breakpointMenu.line); setBreakpointMenu(null); }}>Add for all instances</button>
-            {ownLabel && <button className="block w-full px-3 py-1.5 text-left hover:bg-blue-700" onClick={() => { void toggleBreakpoint(activeFileId, breakpointMenu.line, ownLabel); setBreakpointMenu(null); }}>Add only for this IDE window</button>}
-          </>}
-        </div>
-      </>}
+      {breakpointMenu && activeFileId && ownLabel && <BreakpointMenu file={activeFileId}
+        line={breakpointMenu.line} instanceId={ownLabel} x={breakpointMenu.x} y={breakpointMenu.y}
+        onClose={() => setBreakpointMenu(null)} />}
     </div>
   );
 }

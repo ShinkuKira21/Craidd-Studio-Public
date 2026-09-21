@@ -7,8 +7,9 @@ interface BreakpointState {
   points: Breakpoint[];
   load: (solutionPath: string | null) => Promise<void>;
   toggle: (file: string, line: number, scope?: string) => Promise<void>;
+  toggleForInstance: (file: string, line: number, instanceId: string, linkedIds: string[]) => Promise<void>;
   setScope: (file: string, line: number, scope: string) => Promise<void>;
-  remove: (file: string, line: number) => Promise<void>;
+  remove: (file: string, line: number, scope?: string) => Promise<void>;
   moveLines: (file: string, moves: { from: number; to: number }[]) => Promise<void>;
   movePath: (oldPath: string, newPath: string) => Promise<void>;
 }
@@ -30,9 +31,28 @@ export const useBreakpoints = create<BreakpointState>((set, get) => ({
   toggle: async (file, line, scope = "all") => {
     const { solutionPath, points } = get();
     if (!solutionPath) return;
-    const next = points.some((point) => point.file === file && point.line === line)
-      ? points.filter((point) => point.file !== file || point.line !== line)
+    const next = points.some((point) => point.file === file && point.line === line && point.scope === scope)
+      ? points.filter((point) => point.file !== file || point.line !== line || point.scope !== scope)
       : [...points, { file, line, scope }];
+    set({ points: next });
+    try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
+  },
+  toggleForInstance: async (file, line, instanceId, linkedIds) => {
+    const { solutionPath, points } = get();
+    if (!solutionPath) return;
+    const own = points.some((point) => point.file === file && point.line === line && point.scope === instanceId);
+    const shared = points.some((point) => point.file === file && point.line === line && point.scope === "all");
+    let next = points.filter((point) => point.file !== file || point.line !== line ||
+      (point.scope !== instanceId && point.scope !== "all"));
+    if (shared) {
+      // Keep legacy all-instance markers active for the other current sessions.
+      const others = [...new Set(linkedIds.filter((id) => id !== instanceId))]
+        .filter((id) => !next.some((point) => point.file === file && point.line === line && point.scope === id))
+        .map((scope) => ({ file, line, scope }));
+      next = [...next, ...others];
+    } else if (!own) {
+      next.push({ file, line, scope: instanceId });
+    }
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },
@@ -43,10 +63,10 @@ export const useBreakpoints = create<BreakpointState>((set, get) => ({
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },
-  remove: async (file, line) => {
+  remove: async (file, line, scope) => {
     const { solutionPath, points } = get();
     if (!solutionPath) return;
-    const next = points.filter((point) => point.file !== file || point.line !== line);
+    const next = points.filter((point) => point.file !== file || point.line !== line || (scope !== undefined && point.scope !== scope));
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },

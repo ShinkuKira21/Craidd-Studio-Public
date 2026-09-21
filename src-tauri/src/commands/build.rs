@@ -54,7 +54,12 @@ struct BuildEvent {
 }
 
 fn emit(app: &AppHandle, label: &str, session_id: u64, kind: &'static str, text: Option<String>, exit_code: Option<i32>) {
+    super::linked_windows::note_process_event(app, label, kind, text.as_deref(), exit_code);
     let _ = app.emit_to(label, "craidd:build", BuildEvent { session_id, kind, text, exit_code });
+}
+
+pub fn active_build_id(app: &AppHandle, label: &str) -> Option<u64> {
+    app.try_state::<BuildManager>()?.0.lock().ok()?.get(label).map(|build| build.id)
 }
 
 fn kill_group(pgid: i32) {
@@ -220,9 +225,13 @@ pub fn stop_cargo(window: WebviewWindow, state: State<'_, BuildManager>) -> Resu
 }
 
 pub fn cancel_window_build(window: &tauri::Window) {
-    if let Some(manager) = window.app_handle().try_state::<BuildManager>() {
+    cancel_build_by_label(window.app_handle(), window.label());
+}
+
+pub fn cancel_build_by_label(app: &AppHandle, label: &str) {
+    if let Some(manager) = app.try_state::<BuildManager>() {
         if let Ok(active) = manager.0.lock() {
-            if let Some(build) = active.get(window.label()) {
+            if let Some(build) = active.get(label) {
                 build.cancelled.store(true, Ordering::SeqCst);
                 kill_group(build.pgid);
             }

@@ -2,7 +2,9 @@ import { useEffect } from "react";
 import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
-import { startViewedAction, stopViewedAction, useLinkedWindows } from "../store/linkedWindowsStore";
+import { useLinkedWindows } from "../store/linkedWindowsStore";
+import { useBuild } from "../store/buildStore";
+import { useDebug } from "../store/debugStore";
 
 export function useKeyboardShortcuts(
   openCommandPalette: () => void,
@@ -14,22 +16,26 @@ export function useKeyboardShortcuts(
 
       if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        await startViewedAction("build");
+        await useBuild.getState().start("build");
         return;
       }
       if (mod && e.key === "F5") {
         e.preventDefault();
-        await startViewedAction("run");
+        await useBuild.getState().start("run");
         return;
       }
       if (!mod && !e.shiftKey && e.key === "F5") {
         e.preventDefault();
-        await startViewedAction("debug");
+        await useBuild.getState().start("debug");
         return;
       }
       if (e.shiftKey && e.key === "F5") {
         e.preventDefault();
-        await stopViewedAction();
+        if (["building", "running", "paused"].includes(useDebug.getState().status)) {
+          await useDebug.getState().control("stop");
+        } else {
+          await useBuild.getState().stop();
+        }
         return;
       }
 

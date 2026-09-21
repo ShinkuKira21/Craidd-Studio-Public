@@ -11,6 +11,9 @@ export interface WorkspaceEntry {
   selectedConfigName?: string;
   selectedProfileName?: string;
   selectionName?: string;
+  restoredTabs?: string[];
+  restoredActiveFile?: string;
+  restoredFromHidden?: boolean;
 }
 
 export interface StartupState {

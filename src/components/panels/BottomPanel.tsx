@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useBuild } from "../../store/buildStore";
+import { useDebug } from "../../store/debugStore";
 import { useSolution } from "../../store/solutionStore";
 import { useLinkedWindows, revealLinkedProblem } from "../../store/linkedWindowsStore";
 
@@ -15,6 +16,8 @@ type Tab = typeof tabs[number]["id"];
 export default function BottomPanel() {
   const [tab, setTab] = useState<Tab>("output");
   const output = useBuild((state) => state.output);
+  const debugOutput = useDebug((state) => state.output);
+  const debugStatus = useDebug((state) => state.status);
   const artifact = useBuild((state) => state.artifact);
   const problems = useBuild((state) => state.problems);
   const linked = useLinkedWindows();
@@ -43,8 +46,8 @@ export default function BottomPanel() {
       <div className="flex-1 overflow-y-auto scroll-thin p-3 mono text-[11.5px] leading-5 text-zinc-400">
         {tab === "output" && (
           <pre className="whitespace-pre-wrap break-words">
-            {renderOutput(output || "No output yet.")}
-            {artifact && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
+            {renderOutput((["building", "running", "paused", "error"].includes(debugStatus) && debugOutput) || output || debugOutput || "No output yet.")}
+            {artifact && debugStatus === "idle" && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
           </pre>
         )}
         {tab === "problems" && (shownProblems.length === 0 ? (

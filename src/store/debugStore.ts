@@ -36,7 +36,8 @@ export const useDebug = create<DebugState>((set, get) => ({
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_rust_debug", { requestSpec: { cwd, release, instanceId, args, breakpoints: useBreakpoints.getState().points } });
     } catch (error) {
-      set({ status: "error", output: get().output + `${String(error)}\n` });
+      const cancelled = String(error).includes("Debug build cancelled");
+      set({ status: cancelled ? "terminated" : "error", output: get().output + `${String(error)}\n` });
     }
   },
   control: async (action) => {

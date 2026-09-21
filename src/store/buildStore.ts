@@ -74,10 +74,12 @@ async function ensureEvents() {
   return eventListener;
 }
 
+export function listenToBuildEvents(): Promise<void> { return ensureEvents(); }
+
 
 import type { ConfigEntry, CraiddSolution } from "../types/project";
 
-interface RunSpec {
+export interface RunSpec {
   label: string;
   program: string;
   args: string[];
@@ -97,7 +99,7 @@ interface RunSpec {
  * is deliberately small and honest: it either knows what to do, or
  * it returns null and the toolbar shows a failure message.
  */
-function resolveSpec(
+export function resolveSpec(
   config: ConfigEntry,
   solutionRoot: string,
   solution: CraiddSolution,
@@ -200,7 +202,7 @@ function parseCommandLine(line: string): string[] {
 }
 
 
-function choicesForConfig(solution: CraiddSolution, selected: ConfigEntry): MainChoices {
+export function choicesForConfig(solution: CraiddSolution, selected: ConfigEntry): MainChoices {
   const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
   const forTarget = all.filter((candidate) => candidate.target === selected.target && !candidate.bestFit);
   const choose = (kind: keyof MainChoices) => {

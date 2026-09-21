@@ -4,7 +4,6 @@ import { useBuild, syncMainChoices, selectConfiguration } from "../../store/buil
 import type { ConfigEntry, CraiddProject } from "../../types/project";
 import ConfigurationsDialog from "../dialogs/configurations/ConfigurationsDialog";
 import { useLinkedWindows, startLinkedAction, stopLinkedAction, type LinkedSnapshot } from "../../store/linkedWindowsStore";
-import { dispatchLinkedWindowCommand } from "../../store/linkedWindowsStore";
 import WindowManager from "./WindowManager";
 import { useDebug } from "../../store/debugStore";
 
@@ -25,7 +24,6 @@ function Toolbar() {
   const linked = useLinkedWindows();
   const debugStatus = useDebug((s) => s.status);
   const debugControl = useDebug((s) => s.control);
-  const remote = linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel && item.windowLabel !== linked.ownWindowLabel);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const configs: ConfigEntry[] = [
@@ -37,39 +35,25 @@ function Toolbar() {
     if (solution) syncMainChoices(solution);
   }, [solution]);
 
-  const viewedStatus = remote?.status ?? (["building", "running", "paused"].includes(debugStatus) ? debugStatus : status);
-  const viewedConfigName = remote?.selectedConfigName ?? selectedConfigName;
-  const viewedProfileName = remote?.selectedProfileName ?? selectedProfileName;
-  const running = viewedStatus === "starting" || viewedStatus === "running" || viewedStatus === "paused";
-  const selectedConfig = configs.find((config) => config.name === viewedConfigName);
-  const remoteChoice = (kind: Kind) => remote
-    ? (configs.find((config) => config.kind === kind && config.target === selectedConfig?.target)?.name ?? null)
-    : undefined;
-  const fire = (kind: Kind, name: string) => remote
-    ? dispatchLinkedWindowCommand(remote.windowLabel, `start_${kind}`, name)
-    : start(kind, name);
-  const stopViewed = () => remote ? dispatchLinkedWindowCommand(remote.windowLabel, "stop")
-    : ["building", "running", "paused"].includes(debugStatus) ? debugControl("stop") : stop();
-  const controlViewed = (action: "continue" | "pause" | "stepOver" | "stepInto" | "stepOut") => remote
-    ? dispatchLinkedWindowCommand(remote.windowLabel, "debug_control", action)
-    : debugControl(action);
+  const localStatus = ["building", "running", "paused"].includes(debugStatus) ? debugStatus : status;
+  const running = localStatus === "starting" || localStatus === "running" || localStatus === "paused";
+  const selectedConfig = configs.find((config) => config.name === selectedConfigName);
+  const stopLocal = () => ["building", "running", "paused"].includes(debugStatus) ? debugControl("stop") : stop();
 
   const onChipSelect = (name: string) => {
-    if (remote) void dispatchLinkedWindowCommand(remote.windowLabel, "select_config", name);
-    else if (solution) selectConfiguration(solution, name);
+    if (solution) selectConfiguration(solution, name);
   };
 
   return (
     <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-1.5 shrink-0 text-xs">
-      <KindButton kind="build" configs={configs} running={running} mainChoiceOverride={remoteChoice("build")}
-                  onFire={(name) => void fire("build", name)} />
+      <KindButton kind="build" configs={configs} running={running} onFire={(name) => void start("build", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="build" linked={linked} />}
 
       <ConfigChip
         hasSolution={!!solution}
         projects={solution?.projects ?? []}
         configs={configs}
-        selectedName={viewedConfigName}
+        selectedName={selectedConfigName}
         onSelect={onChipSelect}
         onOpenDialog={() => setDialogOpen(true)}
       />
@@ -77,20 +61,19 @@ function Toolbar() {
       {selectedConfig && (selectedConfig.profiles?.length ?? 0) > 0 && (
         <ProfileChip
           config={selectedConfig}
-          selectedName={viewedProfileName}
-          onSelect={(name) => remote ? void dispatchLinkedWindowCommand(remote.windowLabel, "select_profile", name) : setSelectedProfile(name)}
+          selectedName={selectedProfileName}
+          onSelect={setSelectedProfile}
           disabled={running}
         />
       )}
 
-      <KindButton kind="run" configs={configs} running={running} mainChoiceOverride={remoteChoice("run")}
-                  onFire={(name) => void fire("run", name)} />
+      <KindButton kind="run" configs={configs} running={running} onFire={(name) => void start("run", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="run" linked={linked} />}
 
       <button
         title={running ? "Stop (Shift+F5)" : "Nothing is running"}
         disabled={!running}
-        onClick={() => void stopViewed()}
+        onClick={() => void stopLocal()}
         className={
           "w-8 h-8 flex items-center justify-center rounded text-[14px] transition-colors " +
           (running ? "text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
@@ -98,27 +81,26 @@ function Toolbar() {
         }
       >⏹</button>
 
-      <KindButton kind="debug" configs={configs} running={running} mainChoiceOverride={remoteChoice("debug")}
-                  onFire={(name) => void fire("debug", name)} />
+      <KindButton kind="debug" configs={configs} running={running} onFire={(name) => void start("debug", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="debug" linked={linked} />}
-      {(viewedStatus === "paused" || (viewedStatus === "running" && (remote || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
-        {viewedStatus === "paused" ? <>
-          <DebugTransport label="Continue" icon="▶" onClick={() => void controlViewed("continue")} />
-          <DebugTransport label="Step Over" icon="↷" onClick={() => void controlViewed("stepOver")} />
-          <DebugTransport label="Step Into" icon="↓" onClick={() => void controlViewed("stepInto")} />
-          <DebugTransport label="Step Out" icon="↑" onClick={() => void controlViewed("stepOut")} />
-        </> : <DebugTransport label="Pause" icon="⏸" onClick={() => void controlViewed("pause")} />}
+      {(debugStatus === "paused" || debugStatus === "running") && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
+        {debugStatus === "paused" ? <>
+          <DebugTransport label="Continue" icon="▶" onClick={() => void debugControl("continue")} />
+          <DebugTransport label="Step Over" icon="↷" onClick={() => void debugControl("stepOver")} />
+          <DebugTransport label="Step Into" icon="↓" onClick={() => void debugControl("stepInto")} />
+          <DebugTransport label="Step Out" icon="↑" onClick={() => void debugControl("stepOut")} />
+        </> : <DebugTransport label="Pause" icon="⏸" onClick={() => void debugControl("pause")} />}
       </div>}
 
       <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[180px]">
-        {running && (remote?.selectedConfigName ?? activeConfigName) ? (
+        {running && activeConfigName ? (
           <>
-            <span className="text-zinc-400">{remote?.selectedConfigName ?? activeConfigName}</span>
+            <span className="text-zinc-400">{activeConfigName}</span>
             <span className="text-zinc-600"> · </span>
-            <span>{viewedStatus}</span>
+            <span>{localStatus}</span>
           </>
         ) : (
-          <span>{viewedStatus}</span>
+          <span>{localStatus}</span>
         )}
       </div>
 

@@ -49,6 +49,8 @@ pub fn save_breakpoints(app: AppHandle, solution_path: String, breakpoints: Vec<
     fs::write(&temp, serde_json::to_vec_pretty(&all).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     fs::rename(temp, path).map_err(|e| e.to_string())?;
+    drop(_guard);
+    super::debug::update_parked_breakpoints(&app, &key, &breakpoints);
     let _ = app.emit("craidd:breakpoints-changed", serde_json::json!({
         "solutionPath": key, "breakpoints": breakpoints,
     }));

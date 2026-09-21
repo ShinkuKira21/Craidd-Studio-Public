@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { CraiddSolution } from "../types/project";
-import { selectConfiguration, useBuild } from "./buildStore";
+import { choicesForConfig, resolveSpec, selectConfiguration, useBuild } from "./buildStore";
 import { useSolution } from "./solutionStore";
 import type { BuildProblem } from "../lib/buildDiagnostics";
 import { useDebug, type DebugFrame, type DebugVariable } from "./debugStore";
@@ -22,17 +22,21 @@ export interface LinkedSnapshot {
 
 export interface LinkedMember {
   windowLabel: string;
+  windowId: number;
   instanceId: string;
   projectName: string;
   status: string;
   visible: boolean;
+  restoring: boolean;
   selectedConfigName: string | null;
   selectedProfileName: string | null;
-  activeFile: { path: string; name: string; language: string; content: string; dirty: boolean } | null;
+  activeFile: { path: string; name: string; language: string; content: string; dirty: boolean; truncated: boolean } | null;
   tabs: { path: string; name: string; dirty: boolean }[];
   output: string;
   dirtyCount: number;
   pausedLine: number | null;
+  pauseReason: string | null;
+  failureMessage: string | null;
   debugFrames: DebugFrame[];
   debugVariables: DebugVariable[];
 }
@@ -50,15 +54,13 @@ const empty: LinkedSnapshot = {
   problems: [],
 };
 
-export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set, get) => ({
+export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
   ...empty, ownWindowLabel: null, ownInstanceId: null, viewedWindowLabel: null,
   selectWindow: async (label) => {
-    const previous = get().viewedWindowLabel;
+    const { invoke } = await import("@tauri-apps/api/core");
+    const snapshot = await invoke<LinkedSnapshot>("view_linked_window", { targetLabel: label });
     set({ viewedWindowLabel: label });
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("view_linked_window", { targetLabel: label });
-    } catch (error) { set({ viewedWindowLabel: previous }); throw error; }
+    applySnapshot(snapshot);
   },
 }));
 
@@ -76,6 +78,7 @@ function applySnapshot(snapshot: LinkedSnapshot) {
 }
 
 let revision = 0;
+const rendererId = crypto.randomUUID();
 const cancelledActions = new Set<number>();
 
 function actionStatus(action: Action): string {
@@ -94,6 +97,16 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
   const currentRevision = ++revision;
   const solutionState = useSolution.getState();
   const activeTab = solutionState.tabs.find((tab) => tab.fileId === solutionState.activeFileId);
+  const specs: Record<string, NonNullable<ReturnType<typeof resolveSpec>>> = {};
+  if (solution && solutionState.rootPath) {
+    for (const action of ["build", "run", "debug"] as const) {
+      const config = configs.find((item) => item.name === build.mainChoices[action] && item.kind === action);
+      if (config) {
+        const spec = resolveSpec(config, solutionState.rootPath, solution, build.selectedProfileName);
+        if (spec) specs[action] = spec;
+      }
+    }
+  }
   const snapshot = await invoke<LinkedSnapshot>("update_linked_window", { update: {
     solutionPath: clnPath,
     instanceId: useLinkedWindows.getState().ownInstanceId,
@@ -107,14 +120,17 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     selectedConfigName: build.selectedConfigName,
     selectedProfileName: build.selectedProfileName,
     activeFile: activeTab ? { path: activeTab.fileId, name: activeTab.name,
-      language: activeTab.monacoLanguage, content: activeTab.content, dirty: activeTab.dirty } : null,
+      language: activeTab.monacoLanguage, content: activeTab.content.slice(0, 80_000),
+      dirty: activeTab.dirty, truncated: activeTab.content.length > 80_000 } : null,
     tabs: solutionState.tabs.map((tab) => ({ path: tab.fileId, name: tab.name, dirty: tab.dirty })),
-    output: (debug.status !== "idle" && debug.status !== "terminated" ? debug.output : build.output).slice(-50_000),
+    output: (debug.status !== "idle" && debug.status !== "terminated" ? debug.output : build.output).slice(-16_000),
     dirtyCount: solutionState.tabs.filter((tab) => tab.dirty).length,
     debugFrames: debug.frames,
     debugVariables: debug.variables,
     revision: currentRevision,
+    rendererId,
     problems: build.problems,
+    specs,
   } });
   applySnapshot(snapshot);
 }
@@ -196,22 +212,25 @@ export async function listenToLinkedWindows(): Promise<() => void> {
       }
     },
   );
-  const unlistenPrepare = await listen<{ requestId: string; replyLabel: string; decision: "save" | "discard"; solutionPath: string }>(
+  const unlistenPrepare = await listen<{ requestId: string; replyLabel: string; decision: "save" | "discard" | "inspect"; solutionPath: string }>(
     "craidd:linked-prepare", (event) => {
       const { requestId, replyLabel, decision, solutionPath } = event.payload;
       void (async () => {
         let error: string | null = null;
         try {
           if (useSolution.getState().clnPath !== solutionPath) throw new Error("The solution changed before the window could be prepared");
-          await prepareOwnWindow(decision);
+          if (decision !== "inspect") await prepareOwnWindow(decision);
           await publishLinkedWindow(useSolution.getState().solution, useSolution.getState().clnPath);
         } catch (cause) { error = String(cause); }
-        await emitTo(replyLabel, "craidd:linked-prepare-result", { requestId, error });
+        await emitTo(replyLabel, "craidd:linked-prepare-result", { requestId, error,
+          dirtyCount: useSolution.getState().tabs.filter((tab) => tab.dirty).length });
       })();
     },
   );
   // Publish after both listeners exist, so a new window receives the first snapshot.
   void publishLinkedWindow(useSolution.getState().solution, useSolution.getState().clnPath)
+    .then(() => invoke("show_main_window"))
+    .then(() => invoke("mark_linked_window_ready"))
     .catch((error) => console.error("[craidd] Could not register linked window:", error));
   return () => { unlistenState(); unlistenCommand(); unlistenReveal(); unlistenTarget(); unlistenPrepare(); };
 }
@@ -228,33 +247,33 @@ async function prepareOwnWindow(decision: "save" | "discard"): Promise<void> {
   }
 }
 
-export async function prepareLinkedWindow(targetLabel: string, decision: "save" | "discard"): Promise<void> {
+export async function prepareLinkedWindow(targetLabel: string, decision: "save" | "discard" | "inspect"): Promise<number> {
   const { ownWindowLabel, windows } = useLinkedWindows.getState();
   const solutionPath = useSolution.getState().clnPath;
   if (!ownWindowLabel || !solutionPath || !windows.some((item) => item.windowLabel === targetLabel)) {
     throw new Error("That IDE window is no longer linked to this solution");
   }
   if (targetLabel === ownWindowLabel) {
-    await prepareOwnWindow(decision);
+    if (decision !== "inspect") await prepareOwnWindow(decision);
     await publishLinkedWindow(useSolution.getState().solution, solutionPath);
-    return;
+    return useSolution.getState().tabs.filter((tab) => tab.dirty).length;
   }
   const { emitTo, listen } = await import("@tauri-apps/api/event");
   const requestId = crypto.randomUUID();
-  await new Promise<void>(async (resolve, reject) => {
+  return new Promise<number>(async (resolve, reject) => {
     let done = false;
     let unlisten: (() => void) | null = null;
-    const finish = (error: string | null) => {
+    const finish = (error: string | null, dirtyCount = 0) => {
       if (done) return;
       done = true;
       window.clearTimeout(timer);
       unlisten?.();
-      if (error) reject(new Error(error)); else resolve();
+      if (error) reject(new Error(error)); else resolve(dirtyCount);
     };
     const timer = window.setTimeout(() => finish("The IDE window did not respond"), 30_000);
     try {
-      unlisten = await listen<{ requestId: string; error: string | null }>("craidd:linked-prepare-result", (event) => {
-        if (event.payload.requestId === requestId) finish(event.payload.error);
+      unlisten = await listen<{ requestId: string; error: string | null; dirtyCount: number }>("craidd:linked-prepare-result", (event) => {
+        if (event.payload.requestId === requestId) finish(event.payload.error, event.payload.dirtyCount);
       });
       await emitTo(targetLabel, "craidd:linked-prepare", { requestId, replyLabel: ownWindowLabel, decision, solutionPath });
     } catch (cause) { finish(String(cause)); }
@@ -263,34 +282,70 @@ export async function prepareLinkedWindow(targetLabel: string, decision: "save" 
 
 export async function setLinkedWindowVisible(targetLabel: string, visible: boolean): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_linked_window_visible", { targetLabel, visible });
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await invoke("set_linked_window_visible", { targetLabel, visible });
+      return;
+    } catch (error) {
+      if (!visible || !String(error).includes("still closing") || attempt === 9) throw error;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 60));
+    }
+  }
+}
+
+export async function focusLinkedWindow(targetLabel: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("focus_linked_window", { targetLabel });
+}
+
+export function waitForLinkedWindowReady(targetLabel: string): Promise<void> {
+  if (useLinkedWindows.getState().windows.some((item) => item.windowLabel === targetLabel && item.visible && !item.restoring)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => { unsubscribe(); reject(new Error("The linked IDE window did not finish opening")); }, 30_000);
+    const unsubscribe = useLinkedWindows.subscribe((state) => {
+      if (state.windows.some((item) => item.windowLabel === targetLabel && item.visible && !item.restoring)) {
+        window.clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
 }
 
 export async function dispatchLinkedWindowCommand(targetLabel: string, kind: string, value?: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
+  const target = useLinkedWindows.getState().windows.find((item) => item.windowLabel === targetLabel);
+  if (target && !target.visible && (kind === "select_config" || kind === "select_profile")) {
+    const solutionState = useSolution.getState();
+    const solution = solutionState.solution;
+    if (!solution || !solutionState.rootPath) throw new Error("No solution is open");
+    const configs = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
+    const configName = kind === "select_config" ? value : target.selectedConfigName;
+    const selected = configs.find((config) => config.name === configName);
+    if (!selected) throw new Error("Configuration is no longer available");
+    const profileName = kind === "select_profile" ? value ?? null : null;
+    const choices = choicesForConfig(solution, selected);
+    const specs: Record<string, NonNullable<ReturnType<typeof resolveSpec>>> = {};
+    for (const action of ["build", "run", "debug"] as const) {
+      const config = configs.find((item) => item.name === choices[action] && item.kind === action);
+      if (config) {
+        const spec = resolveSpec(config, solutionState.rootPath, solution, profileName);
+        if (spec) specs[action] = spec;
+      }
+    }
+    const project = solution.projects.find((candidate) => candidate.path === selected.target);
+    const debugChoice = configs.find((config) => config.name === choices.debug);
+    await invoke("update_parked_window_configuration", { targetLabel, update: {
+      selectedConfigName: selected.name, selectedProfileName: profileName,
+      projectPath: project?.path ?? null, projectName: project?.name ?? null, projectKind: project?.kind ?? null,
+      canBuild: Boolean(choices.build), canRun: Boolean(choices.run),
+      canDebug: debugChoice?.kind === "debug" && debugChoice.method === "cargo", specs,
+    } });
+    return;
+  }
   await invoke("dispatch_linked_window_command", { targetLabel, kind, value: value ?? null });
-}
-
-export async function startViewedAction(action: Action): Promise<void> {
-  const state = useLinkedWindows.getState();
-  const target = state.viewedWindowLabel;
-  if (target && target !== state.ownWindowLabel) {
-    await dispatchLinkedWindowCommand(target, `start_${action}`);
-  } else {
-    await useBuild.getState().start(action);
-  }
-}
-
-export async function stopViewedAction(): Promise<void> {
-  const state = useLinkedWindows.getState();
-  const target = state.viewedWindowLabel;
-  if (target && target !== state.ownWindowLabel) {
-    await dispatchLinkedWindowCommand(target, "stop");
-  } else if (["building", "running", "paused"].includes(useDebug.getState().status)) {
-    await useDebug.getState().control("stop");
-  } else {
-    await useBuild.getState().stop();
-  }
 }
 
 export async function revealLinkedProblem(ownerLabel: string, problem: BuildProblem): Promise<void> {
