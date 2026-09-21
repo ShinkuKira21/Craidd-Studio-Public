@@ -1,5 +1,15 @@
 import { create } from "zustand";
 
+export type BreakpointFocusMode = "always" | "idle" | "never";
+const FOCUS_KEY = "craidd:breakpoint-focus-mode";
+
+export function readBreakpointFocusMode(): BreakpointFocusMode {
+  try {
+    const value = localStorage.getItem(FOCUS_KEY);
+    return value === "always" || value === "idle" ? value : "never";
+  } catch { return "never"; }
+}
+
 interface PreferencesState {
   fontSize: number;
   setFontSize: (n: number) => void;
@@ -24,6 +34,8 @@ interface PreferencesState {
 
   rightPanelVisible: boolean;
   toggleRightPanel: () => void;
+  breakpointFocusMode: BreakpointFocusMode;
+  setBreakpointFocusMode: (mode: BreakpointFocusMode) => void;
 }
 
 const FONT_MIN = 8;
@@ -55,4 +67,15 @@ export const usePreferences = create<PreferencesState>((set) => ({
 
   rightPanelVisible: true,
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
+  breakpointFocusMode: readBreakpointFocusMode(),
+  setBreakpointFocusMode: (mode) => {
+    try { localStorage.setItem(FOCUS_KEY, mode); } catch { /* The current window still uses the choice. */ }
+    set({ breakpointFocusMode: mode });
+  },
 }));
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === FOCUS_KEY) usePreferences.setState({ breakpointFocusMode: readBreakpointFocusMode() });
+  });
+}

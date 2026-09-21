@@ -1,0 +1,8 @@
+[project]
+name = "C# Work API"
+language = "csharp"
+root = "."
+
+[config]
+name = "API Config"
+enabled = true

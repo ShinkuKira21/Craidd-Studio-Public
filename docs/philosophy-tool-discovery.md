@@ -347,35 +347,47 @@ didn't.**
 
 ### When discovery runs
 
-**Exactly once per language, at first use.** Three triggers, no others.
+**Once per language in the background when a project first needs it.**
+Explicit rescans and a first-invocation fallback are also available.
 
-1. **Project creation.** When the user creates a new project or declares
-   an existing folder as a project, and the language is chosen, discovery
-   runs for that language. **In the background.** The dialog closes
-   immediately; the tree appears immediately; a small banner appears when
-   discovery completes.
+1. **Project load or creation.** When a solution opens, or a project is
+   created or declared, each project language without a cached scan is
+   detected in a separate background task. The solution and project tree
+   become usable immediately. A banner announces newly found toolchains or
+   missing core tools and links to Toolchain Preferences.
 
 2. **First invocation.** The first time a build, run, or debug action
-   touches a language whose tools are not cached, discovery runs
-   synchronously (300ms or less), then the action proceeds.
+   touches a language whose tools are not cached, discovery runs before
+   launching the command. This also covers an action started before its
+   background discovery completes.
 
 3. **Explicit rescan.** The user clicks `Rescan my system` in either
    scope.
 
 All three triggers write results to
-`~/.craidd-studio/user_preferences.toml`. Trigger 1 is one-time-ever per
-language. Triggers 2 and 3 are only when the user asks.
+`~/.craidd-studio/user_preferences.toml`. The background trigger skips
+languages already scanned. An explicit rescan refreshes the cache.
+
+Newly detected core toolchains show a blue notice that closes after a short
+delay. Missing core tools show a red notice until the user dismisses it or
+opens Toolchain Preferences. A missing Rust debug adapter is reported only
+when a Rust debug configuration uses Cargo; this is separate from whether
+the build toolchain is installed.
+
 
 ### When discovery does NOT run
 
 - **On app launch.** Never. Zero cost.
-- **On opening a solution.** Never. Opening a solution is instant, always.
+- **On opening a solution.** Unscanned project languages are discovered in
+  background tasks; opening the solution does not wait for them.
 - **On expanding a project tree.** Never.
 - **On switching between projects.** Never.
 
 ### What discovery actually does
 
-For Rust: `which cargo`, `cargo --version`. Two shell calls. ~50ms.
+For Rust: search for `cargo`, `rustc`, `rustup`, and `lldb-dap`, then
+query versions for tools that are present. Cargo and rustc are the core
+tools used for the missing-tool warning.
 
 For C#: `which dotnet`, `dotnet --version`, `dotnet --list-sdks`. Two to
 three shell calls. ~200–400ms.
@@ -388,10 +400,9 @@ For C/C++: `which g++`, `g++ --version`, `which clang++`, `clang++
 --version`, optionally `which ninja`, `ninja --version`. Up to ten shell
 calls. ~150ms.
 
-These calls are synchronous, cheap, and total. There is no daemon, no
-watcher, no service. Craidd runs a few commands and reads their outputs.
-The whole thing fits in the background between the project dialog closing
-and the user's next action.
+There is no daemon, watcher, or service. Craidd runs these commands on
+background workers and reads their outputs. The editor remains usable
+while the scans complete.
 
 ---
 

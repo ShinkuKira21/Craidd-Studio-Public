@@ -1,0 +1,8 @@
+[project]
+name = "Tauri Rust"
+language = "rust"
+root = "."
+
+[config]
+name = "Rust Config"
+enabled = true

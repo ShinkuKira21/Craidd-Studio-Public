@@ -1,7 +1,16 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { StartupState, WorkspaceEntry } from "../../types/startup";
 
 function nameOf(path: string) { return path.split(/[\\/]/).filter(Boolean).pop() ?? path; }
+
+function groupPreviousWindows(entries: WorkspaceEntry[]) {
+  const groups = new Map<string, WorkspaceEntry[]>();
+  for (const entry of entries.filter((item) => item.kind === "solution")) {
+    const key = `${entry.path}\u0000${entry.selectionName ?? entry.selectedConfigName ?? ""}`;
+    groups.set(key, [...(groups.get(key) ?? []), entry]);
+  }
+  return [...groups.values()];
+}
 
 export default function GetStarted({ startup, initialError, onOpen, onStartProject }: {
   startup: StartupState;
@@ -11,17 +20,6 @@ export default function GetStarted({ startup, initialError, onOpen, onStartProje
 }) {
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState(false);
-  const [recent, setRecent] = useState(startup);
-
-  useEffect(() => {
-    const refresh = () => {
-      void import("@tauri-apps/api/core").then(({ invoke }) =>
-        invoke<StartupState>("get_startup_state")
-      ).then(setRecent).catch(() => {});
-    };
-    window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
-  }, []);
 
   const run = (action: () => Promise<void>) => {
     setError(null);
@@ -51,16 +49,16 @@ export default function GetStarted({ startup, initialError, onOpen, onStartProje
     if (typeof path === "string") await onOpen({ path, kind: "solution", name: nameOf(path), windowLabel: "" });
   });
 
-  const reopenSession = () => run(async () => {
-    const entries = recent.lastSession.filter((entry) => entry.kind === "solution").slice(0, 3);
+  const reopenEntries = async (entries: WorkspaceEntry[]) => {
     if (entries.length === 0) return;
     const { invoke } = await import("@tauri-apps/api/core");
     for (const entry of entries.slice(1)) await invoke("open_workspace_window", { entry });
     await invoke("apply_window_geometry", { entry: entries[0] });
     await onOpen(entries[0]);
-  });
+  };
 
-  const previous = recent.lastSession.filter((entry) => entry.kind === "solution").slice(0, 3);
+  const previous = startup.lastSession.filter((entry) => entry.kind === "solution");
+  const previousGroups = groupPreviousWindows(previous);
 
   return (
     <main className="h-screen overflow-y-auto text-zinc-200" style={{ background: "radial-gradient(circle at 90% 5%, rgba(37, 99, 235, 0.075), transparent 34%), #09090b" }}>
@@ -88,17 +86,17 @@ export default function GetStarted({ startup, initialError, onOpen, onStartProje
 
             <section className="border-t border-zinc-800 pt-5">
               <div className="flex items-center justify-between mb-2">
-                <h2 className="text-[11px] uppercase tracking-[0.15em] font-semibold text-zinc-500">Open previous session</h2>
-                {previous.length > 1 && <button onClick={reopenSession} disabled={busy} className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50">Open all</button>}
+                <h2 className="text-[11px] uppercase tracking-[0.15em] font-semibold text-zinc-500">Previously Opened Windows</h2>
+                {previous.length > 1 && <button onClick={() => run(() => reopenEntries(previous))} disabled={busy} className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50">Open all</button>}
               </div>
-              {previous.length === 0 ? <p className="text-xs text-zinc-600">Your last opened solutions will appear here.</p> :
-                previous.map((entry) => <SolutionLink key={entry.path} entry={entry} disabled={busy} onClick={() => run(() => onOpen(entry))} />)}
-            </section>
-
-            <section className="border-t border-zinc-800 pt-5">
-              <h2 className="text-[11px] uppercase tracking-[0.15em] font-semibold text-zinc-500 mb-2">Open recent solutions</h2>
-              {recent.recentSolutions.length === 0 ? <p className="text-xs text-zinc-600">No recent solutions yet.</p> :
-                recent.recentSolutions.map((entry) => <SolutionLink key={entry.path} entry={entry} disabled={busy} onClick={() => run(() => onOpen(entry))} />)}
+              {previousGroups.length === 0 ? <p className="text-xs text-zinc-600">No solution windows from the previous session.</p> :
+                previousGroups.map((entries) => {
+                  const entry = entries[0];
+                  return <PreviousWindowLink key={`${entry.path}:${entry.selectionName ?? entry.selectedConfigName ?? ""}`}
+                    entry={entry} count={entries.length} disabled={busy}
+                    onOpenGroup={() => run(() => reopenEntries(entries))}
+                    onOpenSolo={() => run(() => onOpen(entry))} />;
+                })}
             </section>
           </div>
 
@@ -132,9 +130,28 @@ function StartLink({ label, detail, icon, onClick, disabled }: { label: string; 
   </button>;
 }
 
-function SolutionLink({ entry, onClick, disabled }: { entry: WorkspaceEntry; onClick: () => void; disabled: boolean }) {
-  return <button onClick={onClick} disabled={disabled} className="block w-full text-left rounded px-2 py-1.5 hover:bg-zinc-900/80 disabled:opacity-50">
-    <span className="block text-xs text-blue-400 hover:text-blue-300 truncate">{entry.name}</span>
-    <span className="block text-[11px] text-zinc-600 truncate" title={entry.path}>{entry.path}</span>
-  </button>;
+function PreviousWindowLink({ entry, count, onOpenGroup, onOpenSolo, disabled }: {
+  entry: WorkspaceEntry;
+  count: number;
+  onOpenGroup: () => void;
+  onOpenSolo: () => void;
+  disabled: boolean;
+}) {
+  const selection = entry.selectionName ?? entry.selectedConfigName ?? "Default project";
+  return <div className="group flex items-center gap-2 w-full rounded hover:bg-zinc-900/80 focus-within:bg-zinc-900/80">
+    <button type="button" onClick={count > 1 ? onOpenGroup : onOpenSolo} disabled={disabled}
+      title={count > 1 ? `Open all ${count} saved windows for ${selection}` : `Open ${selection}`}
+      className="min-w-0 flex-1 text-left px-2 py-1.5 disabled:opacity-50">
+      <span className="block text-xs text-blue-400 group-hover:text-blue-300 truncate">{entry.name} <span className="text-zinc-600">—</span> {selection}<sup className="ml-1 text-[10px] text-amber-400 font-semibold">{count}</sup></span>
+      <span className="block text-[11px] text-zinc-600 truncate" title={entry.path}>{entry.path}</span>
+    </button>
+    {count > 1 && <div className="flex items-center gap-1 pr-2 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto [@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto">
+      <button type="button" onClick={onOpenGroup} disabled={disabled}
+        aria-label={`Open all ${count} ${selection} windows`}
+        className="rounded px-2 py-1 text-[10px] text-blue-300 bg-blue-950/50 hover:bg-blue-900/60 disabled:opacity-50">Open {count}</button>
+      <button type="button" onClick={onOpenSolo} disabled={disabled}
+        aria-label={`Open one ${selection} window`}
+        className="rounded px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Open solo</button>
+    </div>}
+  </div>;
 }

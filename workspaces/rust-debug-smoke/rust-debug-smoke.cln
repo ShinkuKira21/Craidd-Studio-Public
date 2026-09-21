@@ -1,0 +1,5 @@
+[solution]
+version = "1.0"
+name = "Rust Debug Smoke"
+projects = ["rust-debug-smoke.craidd"]
+default_project = "rust-debug-smoke.craidd"

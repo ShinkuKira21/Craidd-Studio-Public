@@ -43,6 +43,7 @@ interface SolutionState {
   discovery: FileNode | null;
   tabs: EditorTab[];
   activeFileId: string | null;
+  navigation: { fileId: string; line: number; column: number; serial: number } | null;
 
   bannerState: BannerState;
   bannerMessage: string | null;
@@ -88,6 +89,7 @@ interface SolutionState {
   deletePath: (path: string, recursive: boolean) => Promise<void>;
 
   openFile: (absolutePath: string, fileName: string) => Promise<void>;
+  revealFile: (absolutePath: string, line: number, column: number) => Promise<void>;
   closeTab: (fileId: string) => void;
   setActiveFile: (fileId: string) => void;
 
@@ -381,6 +383,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
   discovery: null,
   tabs: [],
   activeFileId: null,
+  navigation: null,
   bannerState: "none",
   bannerMessage: null,
   rootMissing: false,
@@ -707,6 +710,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
 
   clearSolution: () => set({
     rootPath: null, solution: null, discovery: null, tabs: [], activeFileId: null,
+    navigation: null,
     solutionError: null, bannerState: "none", bannerMessage: null,
     pendingAncestor: null, pendingPath: null, bannerAncestor: null,
   }),
@@ -1457,6 +1461,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
   renamePath: async (oldPath, newPath) => {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("rename_path", { from: oldPath, to: newPath });
+    const { useBreakpoints } = await import("./breakpointStore");
+    try { await useBreakpoints.getState().movePath(oldPath, newPath); }
+    catch (error) { logErr("Could not update breakpoint paths after rename:", error); }
 
     // Update any open tab that pointed at the old path.
     set((s) => ({
@@ -1516,6 +1523,16 @@ export const useSolution = create<SolutionState>((set, get) => ({
     }
   },
 
+  revealFile: async (absolutePath, line, column) => {
+    await get().openFile(absolutePath, absolutePath.split("/").pop() || absolutePath);
+    if (!get().tabs.some((tab) => tab.fileId === absolutePath)) return;
+    set((state) => ({
+      activeFileId: absolutePath,
+      navigation: { fileId: absolutePath, line: Math.max(1, line), column: Math.max(1, column),
+        serial: (state.navigation?.serial ?? 0) + 1 },
+    }));
+  },
+
   closeTab: (fileId) => set((s) => {
     const tabs = s.tabs.filter((t) => t.fileId !== fileId);
     let activeFileId = s.activeFileId;
@@ -1573,6 +1590,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
             : t
         ),
       }));
+      window.dispatchEvent(new CustomEvent("craidd:file-saved", { detail: fileId }));
       return "saved";
     } catch (err) {
       logErr("saveFile failed:", err);

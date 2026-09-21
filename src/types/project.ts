@@ -104,6 +104,10 @@ export interface ConfigEntry {
   name: string;
   kind: ConfigKind;
   target: string;              // path to the target .craidd, "." for whole solution
+  /** Inference-only solution suggestion. The target still identifies the project used by Play. */
+  bestFit?: boolean;
+  /** Project markers whose manifests established this suggestion. */
+  relatedProjects?: string[];
   method?: string;             // "cargo" | "npm" | "dotnet" | "cmake" | "shell" | "composed" | "python"
   command?: string;            // literal command; overrides method+manifest
   cwd?: string;                // relative to solution root

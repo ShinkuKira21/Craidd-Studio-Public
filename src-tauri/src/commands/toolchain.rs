@@ -26,10 +26,21 @@ pub struct ToolchainSnapshot {
     pub preferences_path: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectToolchainCheck {
+    pub language: String,
+    pub missing: Vec<String>,
+    pub newly_found: bool,
+    pub debugger_missing: bool,
+}
+
 fn catalog(language: &str) -> Result<&'static [(&'static str, &'static str)], String> {
     match language {
-        "rust" => Ok(&[("build", "cargo"), ("compiler", "rustc"), ("manager", "rustup"), ("debugger", "lldb-dap")]),
-        "typescript" | "javascript" => Ok(&[("runtime", "node"), ("package_manager", "pnpm"), ("package_manager", "yarn"), ("package_manager", "npm")]),
+        "rust" => Ok(&[("build", "cargo"), ("compiler", "rustc"), ("manager", "rustup"),
+            ("debugger", "lldb-dap"), ("debugger", "lldb-dap-19"), ("debugger", "lldb-dap-18"),
+            ("debugger", "lldb-dap-17"), ("debugger", "lldb-vscode")]),
+        "typescript" | "javascript" => Ok(&[("runtime", "node"), ("package_manager", "pnpm"), ("package_manager", "yarn"), ("package_manager", "npm"), ("package_manager", "bun")]),
         "cpp" => Ok(&[("compiler", "g++"), ("compiler", "clang++"), ("build_system", "cmake"), ("build_system", "ninja"), ("build_system", "make")]),
         "csharp" => Ok(&[("sdk", "dotnet")]),
         "python" => Ok(&[("runtime", "python3"), ("package_manager", "uv"), ("package_manager", "poetry"), ("package_manager", "pdm"), ("package_manager", "pip3")]),
@@ -150,6 +161,40 @@ pub fn scan_toolchain(language: String) -> Result<ToolchainSnapshot, String> {
     Ok(snapshot(&language, &prefs, &path))
 }
 
+/// Each invocation runs on a worker thread, so scanning installed tools
+/// cannot delay opening a solution or interacting with the editor.
+#[tauri::command]
+pub async fn ensure_project_toolchain(language: String) -> Result<ProjectToolchainCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        catalog(&language)?;
+        let cached = get_toolchain(language.clone())?;
+        let newly_scanned = !cached.scanned;
+        let snapshot = if newly_scanned { scan_toolchain(language.clone())? } else { cached };
+        let required: &[(&str, &str)] = match language.as_str() {
+            "rust" => &[("build", "Cargo"), ("compiler", "rustc")],
+            "typescript" | "javascript" => &[("runtime", "Node.js"), ("package_manager", "npm, pnpm, Yarn or Bun")],
+            "cpp" => &[("compiler", "g++ or clang++")],
+            "csharp" => &[("sdk", ".NET SDK")],
+            "python" => &[("runtime", "Python")],
+            _ => &[],
+        };
+        let missing: Vec<String> = required.iter().filter_map(|(role, name)| {
+            let available = match snapshot.defaults.get(*role) {
+                Some(path) => Path::new(path).is_file(),
+                None => snapshot.tools.iter().any(|tool| tool.role == *role && Path::new(&tool.path).is_file()),
+            };
+            (!available).then(|| (*name).to_string())
+        }).collect();
+        let debugger_missing = language == "rust" && !super::debug::adapter_available();
+        Ok(ProjectToolchainCheck {
+            language,
+            newly_found: newly_scanned && missing.is_empty() && !snapshot.tools.is_empty(),
+            debugger_missing,
+            missing,
+        })
+    }).await.map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub fn set_tool_default(language: String, role: String, path: Option<String>) -> Result<ToolchainSnapshot, String> {
     if !catalog(&language)?.iter().any(|(r, _)| *r == role) { return Err(format!("Unsupported role: {role}")); }
@@ -181,6 +226,49 @@ pub fn resolve_tool(language: &str, role: &str) -> Result<PathBuf, String> {
     let fresh = scan_toolchain(language.into())?;
     fresh.tools.iter().find(|tool| tool.role == role).map(|tool| PathBuf::from(&tool.path))
         .ok_or_else(|| format!("No {role} tool found for {language}. Install it or choose a path in Preferences."))
+}
+
+/// Check a configured command against known toolchains before launching it.
+/// Explicit commands keep their exact executable (for example, `npm` must
+/// not silently become `pnpm`). Unknown commands remain available to users.
+pub fn resolve_known_program(program: &str) -> Result<Option<PathBuf>, String> {
+    if Path::new(program).components().count() != 1 { return Ok(None); }
+
+    if program == "cargo" {
+        return resolve_tool("rust", "build").map(Some);
+    }
+
+    let match_found = ["rust", "typescript", "cpp", "csharp", "python"]
+        .into_iter()
+        .find_map(|language| {
+            catalog(language).ok()?.iter()
+                .find(|(_, name)| *name == program)
+                .map(|(role, _)| (language, *role))
+        });
+    let Some((language, role)) = match_found else { return Ok(None); };
+
+    let cached = get_toolchain(language.into())?;
+    let already_scanned = cached.scanned;
+    let current = if already_scanned { cached } else { scan_toolchain(language.into())? };
+    if let Some(path) = current.defaults.get(role) {
+        let candidate = Path::new(path);
+        if candidate.file_name().is_some_and(|name| name == program) && candidate.is_file() {
+            return Ok(Some(candidate.to_path_buf()));
+        }
+    }
+    if let Some(tool) = current.tools.iter().find(|tool| tool.name == program && Path::new(&tool.path).is_file()) {
+        return Ok(Some(PathBuf::from(&tool.path)));
+    }
+
+    if !already_scanned {
+        return Err(format!("{program} was not found. Install it or choose a tool path in File → Preferences → Toolchain."));
+    }
+
+    // Cached paths can become stale after an installation or removal.
+    let fresh = scan_toolchain(language.into())?;
+    fresh.tools.iter().find(|tool| tool.name == program)
+        .map(|tool| Some(PathBuf::from(&tool.path)))
+        .ok_or_else(|| format!("{program} was not found. Install it or choose a tool path in File → Preferences → Toolchain."))
 }
 
 

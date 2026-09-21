@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useSolution } from "./solutionStore";
+import { decodeBuildLine, type BuildProblem } from "../lib/buildDiagnostics";
 
 type Profile = "debug" | "release";
 type Status = "idle" | "starting" | "running" | "success" | "failed" | "cancelled";
@@ -23,14 +24,14 @@ interface BuildState {
   selectedProfileName: string | null;
   activeConfigName: string | null;
   mainChoices: MainChoices;
-  setSelectedConfig: (name: string | null) => void;
   setSelectedProfile: (name: string | null) => void;
-  setMainChoice: (kind: keyof MainChoices, name: string) => void;
   profile: Profile;
   status: Status;
   activeId: number | null;
   output: string;
   artifact: string | null;
+  problems: BuildProblem[];
+  activeCwd: string | null;
   action: "build" | "run" | "debug" | null;
   setProjectPath: (path: string) => void;
   setProfile: (profile: Profile) => void;
@@ -43,13 +44,23 @@ let eventListener: Promise<void> | null = null;
 
 async function ensureEvents() {
   if (eventListener) return eventListener;
-  eventListener = import("@tauri-apps/api/event").then(({ listen }) =>
-    listen<BuildEvent>("craidd:build", (event) => {
+  eventListener = import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) =>
+    // The module-level event.listen() target is Any, so every renderer accepted
+    // every window's targeted runner events. Scope the subscription itself to
+    // this WebviewWindow; session ids are only meaningful within their owner.
+    getCurrentWebviewWindow().listen<BuildEvent>("craidd:build", (event) => {
       const message = event.payload;
       useBuild.setState((state) => {
         if (message.kind !== "start" && state.activeId !== message.sessionId) return state;
         if (message.kind === "start") return { activeId: message.sessionId, status: "running", output: `${message.text ?? "Cargo started"}\n` };
-        if (message.kind === "output") return { output: (state.output + (message.text ?? "") + "\n").slice(-150_000) };
+        if (message.kind === "output") {
+          const decoded = decodeBuildLine(message.text ?? "", state.activeCwd ?? "");
+          return {
+            output: decoded.display === null ? state.output : (state.output + decoded.display + "\n").slice(-150_000),
+            artifact: decoded.artifact ?? state.artifact,
+            problems: decoded.problem ? [...state.problems, decoded.problem].slice(-500) : state.problems,
+          };
+        }
         if (message.kind === "artifact") return { artifact: message.text, output: state.output + `Artifact: ${message.text}\n` };
         if (message.kind === "cancelled") return { activeId: null, status: "cancelled", activeConfigName: null, output: state.output + "Cancelled.\n" };
         if (message.kind === "crashed") return { activeId: null, status: "failed", activeConfigName: null, output: state.output + (message.text ?? "Process crashed.\n") + "\n" };
@@ -66,10 +77,12 @@ async function ensureEvents() {
   return eventListener;
 }
 
+export function listenToBuildEvents(): Promise<void> { return ensureEvents(); }
+
 
 import type { ConfigEntry, CraiddSolution } from "../types/project";
 
-interface RunSpec {
+export interface RunSpec {
   label: string;
   program: string;
   args: string[];
@@ -89,10 +102,11 @@ interface RunSpec {
  * is deliberately small and honest: it either knows what to do, or
  * it returns null and the toolbar shows a failure message.
  */
-function resolveSpec(
+export function resolveSpec(
   config: ConfigEntry,
   solutionRoot: string,
   solution: CraiddSolution,
+  selectedProfileName: string | null,
 ): RunSpec | null {
   const root = solutionRoot.replace(/\/+$/, "");
 
@@ -113,7 +127,9 @@ function resolveSpec(
 
   // Profile env (from the selected profile, if any).
   const profiles = config.profiles ?? [];
-  const chosen = profiles.find((p) => p.name === config.defaultProfile) ?? profiles[0];
+  const chosen = profiles.find((p) => p.name === selectedProfileName)
+    ?? profiles.find((p) => p.name === config.defaultProfile)
+    ?? profiles[0];
   const env: Record<string, string> = { ...(chosen?.env ?? {}) };
   const profileArgs = chosen?.args ?? [];
 
@@ -122,10 +138,14 @@ function resolveSpec(
     const parts = parseCommandLine(config.command.trim());
     if (parts.length === 0) return null;
     const [program, ...rest] = parts;
+    const cargoJson = config.origin === "inferred" && config.method === "cargo"
+      && config.kind === "build" && (rest[0] === "build" || rest[0] === "check")
+      && !rest.some((arg) => arg.startsWith("--message-format"));
+    const args = [...rest, ...profileArgs, ...(cargoJson ? ["--message-format=json"] : [])];
     return {
-      label: config.command.trim(),
+      label: [program, ...args].join(" "),
       program,
-      args: [...rest, ...profileArgs],
+      args,
       env,
       cwd,
     };
@@ -135,9 +155,10 @@ function resolveSpec(
   switch (config.method) {
     case "cargo":
       return {
-        label: `cargo ${config.kind === "run" ? "run" : "build"}${profileArgs.length ? " " + profileArgs.join(" ") : ""}`,
+        label: `cargo ${config.kind === "run" ? "run" : "build"}${profileArgs.length ? " " + profileArgs.join(" ") : ""}${config.kind === "build" ? " --message-format=json" : ""}`,
         program: "cargo",
-        args: [config.kind === "run" ? "run" : "build", ...profileArgs],
+        args: [config.kind === "run" ? "run" : "build", ...profileArgs,
+          ...(config.kind === "build" ? ["--message-format=json"] : [])],
         env,
         cwd,
       };
@@ -145,7 +166,7 @@ function resolveSpec(
       return { label: "npm run dev", program: "npm", args: ["run", "dev", ...profileArgs], env, cwd };
     case "dotnet":
       return {
-        label: `dotnet ${config.kind === "run" ? "run" : "build"}`,
+        label: `dotnet ${config.kind === "run" ? "run" : "build"}${profileArgs.length ? " " + profileArgs.join(" ") : ""}`,
         program: "dotnet",
         args: [config.kind === "run" ? "run" : "build", ...profileArgs],
         env,
@@ -184,21 +205,57 @@ function parseCommandLine(line: string): string[] {
 }
 
 
-/** Seed mainChoices from a freshly-loaded solution, without clobbering
- *  choices the user has already made this session. */
-export function seedMainChoices(solution: CraiddSolution): void {
+export function choicesForConfig(solution: CraiddSolution, selected: ConfigEntry): MainChoices {
   const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
-  const firstOf = (kind: "build" | "run" | "debug") =>
-    all.find((c) => c.kind === kind)?.name ?? null;
+  const forTarget = all.filter((candidate) => candidate.target === selected.target && !candidate.bestFit);
+  const choose = (kind: keyof MainChoices) => {
+    if (selected.kind === kind) return selected.name;
+    return (forTarget.find((candidate) => candidate.kind === kind && candidate.origin === "user")
+      ?? forTarget.find((candidate) => candidate.kind === kind))?.name ?? null;
+  };
+  return { build: choose("build"), run: choose("run"), debug: choose("debug") };
+}
 
-  const current = useBuild.getState().mainChoices;
+export function selectConfiguration(solution: CraiddSolution, name: string): void {
+  const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
+  const selected = all.find((candidate) => candidate.name === name);
+  if (!selected) return;
   useBuild.setState({
-    mainChoices: {
-      build: current.build ?? firstOf("build"),
-      run:   current.run   ?? firstOf("run"),
-      debug: current.debug ?? firstOf("debug"),
-    },
+    selectedConfigName: selected.name,
+    selectedProfileName: null,
+    mainChoices: choicesForConfig(solution, selected),
   });
+}
+
+/** Keep the current project's actions in sync after configurations are edited. */
+export function syncMainChoices(solution: CraiddSolution): void {
+  const selectedName = useBuild.getState().selectedConfigName;
+  const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
+  const selected = all.find((candidate) => candidate.name === selectedName);
+  if (!selected) {
+    seedMainChoices(solution);
+    return;
+  }
+  const next = choicesForConfig(solution, selected);
+  const current = useBuild.getState().mainChoices;
+  if (next.build !== current.build || next.run !== current.run || next.debug !== current.debug) {
+    useBuild.setState({ mainChoices: next });
+  }
+}
+
+/** Establish this window's context from an explicit solution default, then inference. */
+export function seedMainChoices(solution: CraiddSolution): void {
+  useBuild.setState({ problems: [], activeCwd: null });
+  const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
+  const preferred = all.find((candidate) => candidate.name === solution.defaultConfig)
+    ?? all.find((candidate) => candidate.target === solution.defaultProject && candidate.kind === "run")
+    ?? all.find((candidate) => candidate.target === solution.defaultProject)
+    ?? all.find((candidate) => candidate.bestFit && candidate.kind === "run")
+    ?? all.find((candidate) => candidate.kind === "run")
+    ?? all[0];
+  if (preferred) selectConfiguration(solution, preferred.name);
+  else useBuild.setState({ selectedConfigName: null, selectedProfileName: null,
+    mainChoices: { build: null, run: null, debug: null } });
 }
 
 export const useBuild = create<BuildState>((set, get) => ({
@@ -207,15 +264,14 @@ export const useBuild = create<BuildState>((set, get) => ({
   selectedProfileName: null,
   activeConfigName: null,
   mainChoices: { build: null, run: null, debug: null },
-  setSelectedConfig: (name) => set({ selectedConfigName: name }),
   setSelectedProfile: (name) => set({ selectedProfileName: name }),
-  setMainChoice: (kind, name) =>
-    set((s) => ({ mainChoices: { ...s.mainChoices, [kind]: name } })),
   profile: "debug",
   status: "idle",
   activeId: null,
   output: "",
   artifact: null,
+  problems: [],
+  activeCwd: null,
   action: null,
   setProjectPath: (projectPath) => set({ projectPath }),
   setProfile: (profile) => set({ profile }),
@@ -229,16 +285,13 @@ export const useBuild = create<BuildState>((set, get) => ({
 
     const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
 
-    // Two ways to pick what fires:
-    //   1. configName provided  → fire exactly that (chevron one-off).
-    //   2. else                  → fire mainChoices[action].
+    // A chevron fires once. The main button only uses this window's selected project.
     let chosen: typeof all[number] | null = null;
     if (configName) {
       chosen = all.find((c) => c.name === configName) ?? null;
     } else {
       const main = state.mainChoices[action];
       if (main) chosen = all.find((c) => c.name === main) ?? null;
-      if (!chosen) chosen = all.find((c) => c.kind === action) ?? null;
     }
 
     if (!chosen) {
@@ -259,9 +312,33 @@ export const useBuild = create<BuildState>((set, get) => ({
 
     if (state.activeId !== null || state.status === "starting") return;
 
-    const spec = resolveSpec(chosen, rootPath, solution);
+    // The launched program must match the source currently visible in the
+    // editor. A conflict blocks launch instead of overwriting another view.
+    for (const tab of useSolution.getState().tabs.filter((tab) => tab.dirty)) {
+      const result = await useSolution.getState().saveFile(tab.fileId);
+      if (result !== "saved") {
+        set({ status: "failed", output: `${result === "conflict" ? "Disk conflict" : "Could not save"}: ${tab.name}. Resolve it before ${action}.\n` });
+        if (result === "conflict") useSolution.getState().setPendingSave({ fileId: tab.fileId, kind: "newer" });
+        return;
+      }
+    }
+
+    const spec = resolveSpec(chosen, rootPath, solution, state.selectedProfileName);
     if (!spec) {
       set({ status: "failed", output: `Could not resolve a command for "${chosen.name}".\n` });
+      return;
+    }
+
+    if (action === "debug") {
+      if (chosen.method !== "cargo") {
+        set({ status: "failed", output: `A real debugger adapter is currently available only for Rust Cargo configurations.\n` });
+        return;
+      }
+      const { useDebug } = await import("./debugStore");
+      const { useLinkedWindows } = await import("./linkedWindowsStore");
+      set({ action: "debug", activeConfigName: chosen.name, output: "Rust debug session starting…\n" });
+      await useDebug.getState().start(spec.cwd, state.selectedProfileName === "release",
+        useLinkedWindows.getState().ownInstanceId ?? crypto.randomUUID());
       return;
     }
 
@@ -269,6 +346,8 @@ export const useBuild = create<BuildState>((set, get) => ({
       status: "starting",
       action,
       artifact: null,
+      problems: [],
+      activeCwd: spec.cwd,
       output: `Starting ${spec.label}\u2026\n`,
       activeConfigName: chosen.name,
     });

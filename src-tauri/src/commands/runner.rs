@@ -27,6 +27,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use super::containment::{guard, signal_name};
+use super::toolchain::resolve_known_program;
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
@@ -86,7 +87,17 @@ struct RunnerEvent {
 }
 
 fn emit(app: &AppHandle, label: &str, session_id: u64, kind: &'static str, text: Option<String>, exit_code: Option<i32>) {
-    let _ = app.emit_to(label, "craidd:build", RunnerEvent { session_id, kind, text, exit_code });
+    eprintln!("[craidd-debug] runner::emit -> label={:?} session_id={} kind={}",
+        label, session_id, kind);
+    super::linked_windows::note_process_event(app, label, kind, text.as_deref(), exit_code);
+    let result = app.emit_to(label, "craidd:build", RunnerEvent { session_id, kind, text, exit_code });
+    if let Err(error) = result {
+        eprintln!("[craidd-debug] emit_to error: {}", error);
+    }
+}
+
+pub fn active_run_id(app: &AppHandle, label: &str) -> Option<u64> {
+    app.try_state::<RunnerManager>()?.0.lock().ok()?.get(label).map(|run| run.id)
 }
 
 /// SIGTERM the whole process group. Idempotent: if the group is gone, the
@@ -118,18 +129,29 @@ fn stream_lines<R: Read + Send + 'static>(
 }
 
 #[tauri::command]
-pub fn start_config(
+pub async fn start_config(
     window: WebviewWindow,
     app: AppHandle,
-    state: State<'_, RunnerManager>,
     spec: RunSpec,
 ) -> Result<u64, String> {
-    let cwd = Path::new(&spec.cwd);
-    if !cwd.is_dir() {
+    start_config_for_label(app, window.label().to_string(), spec).await
+}
+
+pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec) -> Result<u64, String> {
+    if !Path::new(&spec.cwd).is_dir() {
         return Err(format!("Working directory does not exist: {}", spec.cwd));
     }
 
-    let mut command = Command::new(&spec.program);
+    // Multiple Tauri clients share one frontend server, but each receives
+    // its own app process and independent runner state.
+    let (spec, dev_lease) = super::tauri_dev::prepare_run(app.clone(), spec).await?;
+    let cwd = Path::new(&spec.cwd);
+
+    let requested_program = spec.program.clone();
+    let program = tauri::async_runtime::spawn_blocking(move || resolve_known_program(&requested_program))
+        .await.map_err(|error| error.to_string())??
+        .unwrap_or_else(|| spec.program.clone().into());
+    let mut command = Command::new(&program);
     command
         .current_dir(cwd)
         .args(&spec.args)
@@ -147,7 +169,7 @@ pub fn start_config(
         });
     }
 
-    let label = window.label().to_string();
+    let state = app.state::<RunnerManager>();
     let mut active = state.0.lock().map_err(|e| e.to_string())?;
     if active.contains_key(&label) {
         return Err("A run is already active in this window. Stop it first.".into());
@@ -174,8 +196,12 @@ pub fn start_config(
     drop(active);
 
     emit(&app, &label, id, "start", Some(format!("$ {}  (in {})", spec.label, spec.cwd)), None);
+    if dev_lease.is_some() {
+        emit(&app, &label, id, "output", Some("Using the shared Tauri frontend dev server.".into()), None);
+    }
 
     thread::spawn(move || {
+        let _dev_lease = dev_lease;
         guard("runner::manager", || {
             let out = stream_lines(app.clone(), label.clone(), id, stdout);
             let err = stream_lines(app.clone(), label.clone(), id, stderr);
@@ -260,9 +286,13 @@ pub fn stop_config(window: WebviewWindow, state: State<'_, RunnerManager>) -> Re
 }
 
 pub fn cancel_window_run(window: &tauri::Window) {
-    if let Some(manager) = window.app_handle().try_state::<RunnerManager>() {
+    cancel_run_by_label(window.app_handle(), window.label());
+}
+
+pub fn cancel_run_by_label(app: &AppHandle, label: &str) {
+    if let Some(manager) = app.try_state::<RunnerManager>() {
         if let Ok(active) = manager.0.lock() {
-            if let Some(run) = active.get(window.label()) {
+            if let Some(run) = active.get(label) {
                 run.cancelled.store(true, Ordering::SeqCst);
                 kill_group(run.pgid);
             }

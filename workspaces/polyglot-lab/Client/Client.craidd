@@ -1,0 +1,8 @@
+[project]
+name = "Tauri Frontend"
+language = "typescript"
+root = "."
+
+[config]
+name = "Frontend Config"
+enabled = true

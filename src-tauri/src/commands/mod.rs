@@ -7,4 +7,8 @@ pub mod manifests;
 pub mod infer;
 pub mod window;
 pub mod runner;
+pub mod tauri_dev;
 pub mod containment;
+pub mod linked_windows;
+pub mod breakpoints;
+pub mod debug;
