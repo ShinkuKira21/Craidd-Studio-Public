@@ -166,21 +166,18 @@ export async function stopLinkedAction(): Promise<void> {
 }
 
 export async function listenToLinkedWindows(): Promise<() => void> {
-  const { listen, emitTo } = await import("@tauri-apps/api/event");
+  const { emitTo } = await import("@tauri-apps/api/event");
   const { invoke } = await import("@tauri-apps/api/core");
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const ownWindowLabel = getCurrentWindow().label;
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const currentWindow = getCurrentWebviewWindow();
+  const ownWindowLabel = currentWindow.label;
   useLinkedWindows.setState((state) => ({ ownWindowLabel, viewedWindowLabel: ownWindowLabel,
     ownInstanceId: state.ownInstanceId ?? crypto.randomUUID() }));
-  const unlistenState = await listen<LinkedSnapshot>("craidd:linked-state", (event) => applySnapshot(event.payload));
-  const unlistenTitle = await listen<{ title: string }>("craidd:linked-title", (event) => {
-    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-      if (getCurrentWindow().label === ownWindowLabel) {
-        void getCurrentWindow().setTitle(event.payload.title).catch(() => { /* best effort */ });
-      }
-    });
+  const unlistenState = await currentWindow.listen<LinkedSnapshot>("craidd:linked-state", (event) => applySnapshot(event.payload));
+  const unlistenTitle = await currentWindow.listen<{ title: string }>("craidd:linked-title", (event) => {
+    void currentWindow.setTitle(event.payload.title).catch(() => { /* best effort */ });
   });
-  const unlistenCommand = await listen<{ kind: "start" | "stop"; action: Action | null; actionId: number }>(
+  const unlistenCommand = await currentWindow.listen<{ kind: "start" | "stop"; action: Action | null; actionId: number }>(
     "craidd:linked-command", (event) => {
       const command = event.payload;
       if (command.kind === "stop") {
@@ -213,13 +210,13 @@ export async function listenToLinkedWindows(): Promise<() => void> {
       }
     },
   );
-  const unlistenReveal = await listen<{ file: string; line: number; column: number }>(
+  const unlistenReveal = await currentWindow.listen<{ file: string; line: number; column: number }>(
     "craidd:linked-reveal", (event) => {
       const { file, line, column } = event.payload;
       void useSolution.getState().revealFile(file, line, column);
     },
   );
-  const unlistenTarget = await listen<{ kind: string; value: string | null }>(
+  const unlistenTarget = await currentWindow.listen<{ kind: string; value: string | null }>(
     "craidd:linked-target-command", (event) => {
       const { kind, value } = event.payload;
       if (kind === "stop") void (["building", "running", "paused"].includes(useDebug.getState().status)
@@ -247,7 +244,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
       }
     },
   );
-  const unlistenPrepare = await listen<{ requestId: string; replyLabel: string; decision: "save" | "discard" | "inspect"; solutionPath: string }>(
+  const unlistenPrepare = await currentWindow.listen<{ requestId: string; replyLabel: string; decision: "save" | "discard" | "inspect"; solutionPath: string }>(
     "craidd:linked-prepare", (event) => {
       const { requestId, replyLabel, decision, solutionPath } = event.payload;
       void (async () => {
@@ -293,7 +290,8 @@ export async function prepareLinkedWindow(targetLabel: string, decision: "save" 
     await publishLinkedWindow(useSolution.getState().solution, solutionPath);
     return useSolution.getState().tabs.filter((tab) => tab.dirty).length;
   }
-  const { emitTo, listen } = await import("@tauri-apps/api/event");
+  const { emitTo } = await import("@tauri-apps/api/event");
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const requestId = crypto.randomUUID();
   return new Promise<number>(async (resolve, reject) => {
     let done = false;
@@ -307,7 +305,7 @@ export async function prepareLinkedWindow(targetLabel: string, decision: "save" 
     };
     const timer = window.setTimeout(() => finish("The IDE window did not respond"), 30_000);
     try {
-      unlisten = await listen<{ requestId: string; error: string | null; dirtyCount: number }>("craidd:linked-prepare-result", (event) => {
+      unlisten = await getCurrentWebviewWindow().listen<{ requestId: string; error: string | null; dirtyCount: number }>("craidd:linked-prepare-result", (event) => {
         if (event.payload.requestId === requestId) finish(event.payload.error, event.payload.dirtyCount);
       });
       await emitTo(targetLabel, "craidd:linked-prepare", { requestId, replyLabel: ownWindowLabel, decision, solutionPath });

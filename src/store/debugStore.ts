@@ -49,8 +49,8 @@ export const useDebug = create<DebugState>((set, get) => ({
 }));
 
 export async function listenToDebug(): Promise<() => void> {
-  const { listen } = await import("@tauri-apps/api/event");
-  return listen<DebugEvent>("craidd:debug-state", (event) => {
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  return getCurrentWebviewWindow().listen<DebugEvent>("craidd:debug-state", (event) => {
     const message = event.payload;
     if (message.status === "output") {
       useDebug.setState((state) => ({ output: (state.output + (message.text ?? "") + "\n").slice(-150_000) }));

@@ -44,8 +44,11 @@ let eventListener: Promise<void> | null = null;
 
 async function ensureEvents() {
   if (eventListener) return eventListener;
-  eventListener = import("@tauri-apps/api/event").then(({ listen }) =>
-    listen<BuildEvent>("craidd:build", (event) => {
+  eventListener = import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) =>
+    // The module-level event.listen() target is Any, so every renderer accepted
+    // every window's targeted runner events. Scope the subscription itself to
+    // this WebviewWindow; session ids are only meaningful within their owner.
+    getCurrentWebviewWindow().listen<BuildEvent>("craidd:build", (event) => {
       const message = event.payload;
       useBuild.setState((state) => {
         if (message.kind !== "start" && state.activeId !== message.sessionId) return state;
@@ -379,24 +382,3 @@ export const useBuild = create<BuildState>((set, get) => ({
     useSolution.setState({ solution: { ...solution, defaultProject: projectPath, defaultBuild: profile } });
   },
 }));
-
-// ── DIAGNOSTIC (Phase 2.4.8) ──
-// Logs every change to status / activeId / activeConfigName so we can
-// trace the white-Stop desync. Remove once the real fix lands.
-const __originalSetState = useBuild.setState.bind(useBuild);
-(useBuild as any).setState = (updater: any, replace?: any) => {
-  const prev = useBuild.getState();
-  const next = typeof updater === "function" ? updater(prev) : updater;
-  const keys = ["status", "activeId", "activeConfigName"] as const;
-  const changed = keys.filter((k) => (prev as any)[k] !== (next as any)[k]);
-  if (changed.length) {
-    const stack = (new Error().stack ?? "").split("\n").slice(2, 5).join(" | ");
-    console.log(
-      "[craidd-debug] useBuild.setState changed=" + JSON.stringify(changed) +
-      " from=" + JSON.stringify(changed.reduce((o: any, k) => (o[k] = (prev as any)[k], o), {})) +
-      " to=" + JSON.stringify(changed.reduce((o: any, k) => (o[k] = (next as any)[k], o), {})) +
-      " stack=" + stack
-    );
-  }
-  return __originalSetState(updater, replace);
-};
