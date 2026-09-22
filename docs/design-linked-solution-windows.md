@@ -91,6 +91,21 @@ admitting it needs help.
 
 ---
 
+## Companion designs
+
+- [linked solution window manager](design-linked-window-manager.md) —
+  the tray, Hide, and window context selection.
+- [profile markers](design-profile-markers.md) — how the IDE measures
+  what the code is doing, and how those measurements reach the user
+  and the AI panel.
+- [philosophy-mixed-debugging.md](philosophy-mixed-debugging.md) — why
+  cross-process debugging of a shared process is out of reach on
+  Linux.
+- [design-window-model.md](design-window-model.md) — one solution per
+  window.
+
+---
+
 ## What this is not
 
 Four things it does not attempt, recorded here so the boundary doesn't
