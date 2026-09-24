@@ -108,8 +108,18 @@ export default function WindowManager() {
     try {
       const linked = windows.length > 1;
       if (!linked) {
-        // No scope question. Just dirty-check the single window.
-        await promptNext({ initiator, scope: "window", phase: "dirty", queue: [], current: null });
+        // No scope question, but the single window still needs its dirty
+        // tabs checked. An empty queue would skip straight to finalize
+        // and close with unsaved edits.
+        const item = windows.find((w) => w.windowLabel === initiator);
+        const dirty = item && item.visible
+          ? await prepareLinkedWindow(initiator, "inspect")
+          : item?.dirtyCount ?? 0;
+        if (dirty > 0) {
+          setFlow({ initiator, scope: "window", phase: "dirty", queue: [initiator], current: null });
+        } else {
+          setFlow({ initiator, scope: "window", phase: "finalize", queue: [], current: null });
+        }
         return;
       }
       setFlow({ initiator, scope: "window", phase: "scope", queue: [], current: null });
@@ -222,9 +232,14 @@ export default function WindowManager() {
         }
       }
     }
-    // Close initiator last so the flow survives to the end.
+    // Close initiator last so the flow survives to the end. The
+    // comparator returns a positive number when `a` is the initiator,
+    // pushing it to the end of the sorted list; if it returned negative
+    // the initiator would close first and its React tree — with the flow
+    // state and dialogs — would unmount before the remaining windows
+    // were closed.
     const ordered = [...args.targets].sort(
-      (a, b) => Number(a === args.initiator) - Number(b === args.initiator),
+      (a, b) => Number(b === args.initiator) - Number(a === args.initiator),
     );
     for (const label of ordered) {
       await invoke("close_linked_window", { targetLabel: label });

@@ -55,6 +55,12 @@ let startupPromise: Promise<{ state: StartupState; workspace: boolean; error: st
 function bootstrap() {
   if (startupPromise) return startupPromise;
   startupPromise = (async () => {
+    // Every window subscribes to its own runner/build events. This is
+    // idempotent — ensureEvents caches the listener promise — so calling
+    // it here guarantees the very first build in a fresh window is not
+    // dropped while `start` is still wiring things up.
+    void listenToBuildEvents().catch((error) =>
+      console.error("[craidd] Could not subscribe to build events:", error));
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const state = await invoke<StartupState>("get_startup_state");

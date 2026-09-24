@@ -1653,7 +1653,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
           if (!st) return t;
           let diskState: "inSync" | "deleted" | "newer" = "inSync";
           if (!st.exists) diskState = "deleted";
-          else if (st.mtimeMs > t.mtimeAtLastSync + 1) diskState = "newer";
+          // A file that exists but cannot be read is not deleted. Treating
+          // it as in-sync avoids showing a red dot for a permission issue.
+          else if (st.readable !== false && st.mtimeMs > t.mtimeAtLastSync + 1) diskState = "newer";
           return t.diskState === diskState ? t : { ...t, diskState };
         }),
       }));
@@ -1676,7 +1678,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
       if (!st) return;
       let diskState: "inSync" | "deleted" | "newer" = "inSync";
       if (!st.exists) diskState = "deleted";
-      else if (st.mtimeMs > tab.mtimeAtLastSync + 1) diskState = "newer";
+      else if (st.readable !== false && st.mtimeMs > tab.mtimeAtLastSync + 1) diskState = "newer";
       if (diskState === tab.diskState) return;
       set((s) => ({
         tabs: s.tabs.map((t) => (t.fileId === fileId ? { ...t, diskState } : t)),

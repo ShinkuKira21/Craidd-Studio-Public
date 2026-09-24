@@ -296,6 +296,10 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>, depth: us
 pub struct FileStat {
     pub path: String,
     pub exists: bool,
+    /// True when the file exists and its metadata could be read.
+    /// A file that exists but is unreadable reports exists: true,
+    /// readable: false — never as "deleted".
+    pub readable: bool,
     pub mtime_ms: u64,
     pub size: u64,
 }
@@ -307,6 +311,22 @@ pub fn stat_files(paths: Vec<String>) -> Vec<FileStat> {
         .into_iter()
         .map(|path| {
             let p = Path::new(&path);
+            // symlink_metadata is the entry-level stat: it succeeds if the
+            // path exists at all, even when read on its contents would fail.
+            // A permission error on metadata() then correctly reads as
+            // "exists but unreadable", not "deleted".
+            let entry = match fs::symlink_metadata(p) {
+                Ok(md) => md,
+                Err(_) => {
+                    return FileStat {
+                        path,
+                        exists: false,
+                        readable: false,
+                        mtime_ms: 0,
+                        size: 0,
+                    };
+                }
+            };
             match fs::metadata(p) {
                 Ok(md) => {
                     let mtime_ms = md
@@ -318,16 +338,29 @@ pub fn stat_files(paths: Vec<String>) -> Vec<FileStat> {
                     FileStat {
                         path,
                         exists: true,
+                        readable: true,
                         mtime_ms,
                         size: md.len(),
                     }
                 }
-                Err(_) => FileStat {
-                    path,
-                    exists: false,
-                    mtime_ms: 0,
-                    size: 0,
-                },
+                Err(_) => {
+                    // It exists (symlink_metadata succeeded) but we cannot
+                    // stat its contents. Report the entry's own mtime so a
+                    // "newer on disk" check still has something to compare.
+                    let mtime_ms = entry
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    FileStat {
+                        path,
+                        exists: true,
+                        readable: false,
+                        mtime_ms,
+                        size: entry.len(),
+                    }
+                }
             }
         })
         .collect()

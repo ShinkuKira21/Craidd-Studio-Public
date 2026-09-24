@@ -61,10 +61,15 @@ export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
     const state = useLinkedWindows.getState();
     const target = state.windows.find((item) => item.windowLabel === label);
     if (target && target.visible && !target.restoring && label !== state.ownWindowLabel) {
+      // A visible sibling on another monitor should be focused, not
+      // adopted. If focusing fails, the user sees nothing happen when
+      // they clicked the row; surface the failure instead of swallowing it.
       try {
         await invoke("focus_linked_window", { targetLabel: label });
       } catch (cause) {
+        const message = String(cause);
         console.error("[craidd] Could not focus linked window:", cause);
+        throw new Error(`Could not focus that IDE window: ${message}`);
       }
       return;
     }

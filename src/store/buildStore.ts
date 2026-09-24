@@ -337,8 +337,16 @@ export const useBuild = create<BuildState>((set, get) => ({
       const { useDebug } = await import("./debugStore");
       const { useLinkedWindows } = await import("./linkedWindowsStore");
       set({ action: "debug", activeConfigName: chosen.name, output: "Rust debug session starting…\n" });
-      await useDebug.getState().start(spec.cwd, state.selectedProfileName === "release",
-        useLinkedWindows.getState().ownInstanceId ?? crypto.randomUUID());
+      // Pass the full resolved argv. The configuration's profile args and
+      // any command overrides live in spec.args; without them lldb-dap
+      // launches the binary with no arguments and the debug session is
+      // silently missing its flags.
+      await useDebug.getState().start(
+        spec.cwd,
+        state.selectedProfileName === "release",
+        useLinkedWindows.getState().ownInstanceId ?? crypto.randomUUID(),
+        spec.args,
+      );
       return;
     }
 

@@ -929,10 +929,31 @@ pub fn close_linked_window(
     }
     registry.allowed_closes.insert(target_label.clone());
     registry.close_in_flight.remove(&target_label);
+    // destroy() bypasses the CloseRequested handler entirely. The
+    // on_window_event cleanup in lib.rs therefore never runs for this
+    // path, so we do the full teardown here, before the window is gone.
+    // Skipping any of these leaves a ghost window in the tray (Bug 1) or
+    // leaks its process group (Bug D).
+    registry.windows.remove(&target_label);
+    registry.parked_entries.remove(&target_label);
+    registry.view_targets.retain(|viewer, viewed| viewer != &target_label && viewed != &target_label);
+    registry.last_titles.remove(&target_label);
+    for action in registry.actions.values_mut() {
+        action.pending.remove(&target_label);
+        action.unfinished.remove(&target_label);
+    }
+    reconcile(&mut registry);
+    registry.sequence += 1;
+    broadcast(&app, &registry);
     drop(registry);
+
+    // Cancel the window's live processes. This must happen even if the
+    // window itself is destroyed without firing CloseRequested.
+    super::build::cancel_build_by_label(&app, &target_label);
+    super::runner::cancel_run_by_label(&app, &target_label);
+    super::debug::cancel_debug_by_label(&app, &target_label);
+
     let Some(window) = app.get_webview_window(&target_label) else { return Ok(()); };
-    // destroy() bypasses the CloseRequested handler entirely. That's what
-    // we want here: the user already consented through the flow dialog.
     window.destroy().map_err(|e| e.to_string())
 }
 
