@@ -35,7 +35,6 @@ function stateLabel(item: LinkedMember): string {
 }
 
 type Scope = "window" | "solution" | "ide";
-type Prompt = "save" | "manual";
 type FlowPhase = "scope" | "dirty" | "finalize";
 
 interface CloseFlow {
@@ -116,7 +115,7 @@ export default function WindowManager() {
           ? await prepareLinkedWindow(initiator, "inspect")
           : item?.dirtyCount ?? 0;
         if (dirty > 0) {
-          setFlow({ initiator, scope: "window", phase: "dirty", queue: [initiator], current: null });
+          await promptNext({ initiator, scope: "window", phase: "dirty", queue: [initiator], current: null });
         } else {
           setFlow({ initiator, scope: "window", phase: "finalize", queue: [], current: null });
         }
@@ -143,7 +142,7 @@ export default function WindowManager() {
         await finalize({ scope: "window", initiator: target, targets: [target] });
         return;
       }
-      setFlow({
+      await promptNext({
         initiator: target,
         scope: "window",
         phase: "dirty",
@@ -172,7 +171,7 @@ export default function WindowManager() {
         const dirty = item.visible ? await prepareLinkedWindow(label, "inspect") : item.dirtyCount;
         if (dirty > 0) queue.push(label);
       }
-      setFlow({ ...flow, scope, phase: queue.length ? "dirty" : "finalize", queue, current: null });
+      await promptNext({ ...flow, scope, phase: "dirty", queue, current: null });
     } catch (cause) {
       setError(String(cause));
     }
@@ -239,7 +238,7 @@ export default function WindowManager() {
     // state and dialogs — would unmount before the remaining windows
     // were closed.
     const ordered = [...args.targets].sort(
-      (a, b) => Number(b === args.initiator) - Number(a === args.initiator),
+      (a, b) => Number(a === args.initiator) - Number(b === args.initiator),
     );
     for (const label of ordered) {
       await invoke("close_linked_window", { targetLabel: label });
@@ -287,7 +286,7 @@ export default function WindowManager() {
         if (item?.visible) {
           const dirty = await prepareLinkedWindow(label, "inspect");
           if (dirty > 0) {
-            setFlow({ initiator: label, scope: "window", phase: "dirty", queue: [label], current: null });
+            await promptNext({ initiator: label, scope: "window", phase: "dirty", queue: [label], current: null });
             return;
           }
         }

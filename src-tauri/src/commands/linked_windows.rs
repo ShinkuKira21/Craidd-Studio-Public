@@ -194,6 +194,7 @@ pub struct LinkedSnapshot {
     pub can_debug: bool,
     pub busy: bool,
     pub active_action: Option<String>,
+    pub active_count: usize,
     pub problems: Vec<LinkedProblem>,
 }
 
@@ -272,7 +273,7 @@ fn group_members(registry: &Registry, solution: &str) -> Vec<String> {
 fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let Some(window) = registry.windows.get(label) else {
         return LinkedSnapshot { sequence: registry.sequence, linked: false, members: vec![], windows: vec![],
-            can_build: false, can_run: false, can_debug: false, busy: false, active_action: None,
+            can_build: false, can_run: false, can_debug: false, busy: false, active_action: None, active_count: 0,
             problems: vec![] };
     };
     let members = group_members(registry, &window.solution_path);
@@ -303,6 +304,7 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
             && super::debug::adapter_available(),
         busy,
         active_action: action.map(|action| action.action.clone()),
+        active_count: action.map_or(0, |action| action.unfinished.len()),
         problems: if linked || action.is_some() { displayed_members.iter().filter_map(|member| registry.windows.get(member).map(|participant| (member, participant)))
             .flat_map(|(member, participant)| participant.problems.iter().map(|problem| LinkedProblem {
                 window_label: member.clone(),
@@ -760,7 +762,7 @@ async fn launch_parked(app: AppHandle, label: String, participant: Participant, 
         let request = super::debug::RustDebugRequest {
             cwd: spec.cwd, instance_id: participant.instance_id,
             release: participant.selected_profile_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("release")),
-            args: vec![], breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
+            command_args: spec.args, breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
         super::debug::start_rust_debug_for_label(app, label, request).await
     } else {
@@ -1308,6 +1310,7 @@ mod tests {
             unfinished: HashSet::from(["a".into(), "b".into(), "c".into()]), id: 1,
         });
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
+        assert_eq!(snapshot(&registry, "a").active_count, 3);
         registry.windows.get_mut("a").unwrap().status = "failed".into();
         // Published window status may be stale while its backend runner lives.
         registry.windows.get_mut("b").unwrap().status = "idle".into();
@@ -1316,12 +1319,15 @@ mod tests {
         finish_group_member(&mut registry, "a");
         reconcile(&mut registry);
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
+        assert_eq!(snapshot(&registry, "a").active_count, 2);
         finish_group_member(&mut registry, "b");
         reconcile(&mut registry);
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
+        assert_eq!(snapshot(&registry, "a").active_count, 1);
         finish_group_member(&mut registry, "c");
         reconcile(&mut registry);
         assert!(snapshot(&registry, "a").active_action.is_none());
+        assert_eq!(snapshot(&registry, "a").active_count, 0);
     }
 
     #[test]

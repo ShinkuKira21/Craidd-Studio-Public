@@ -17,6 +17,7 @@ export interface LinkedSnapshot {
   canDebug: boolean;
   busy: boolean;
   activeAction: Action | null;
+  activeCount: number;
   problems: (BuildProblem & { windowLabel: string; projectName: string })[];
 }
 
@@ -50,7 +51,7 @@ interface LinkedView {
 
 const empty: LinkedSnapshot = {
   sequence: 0, linked: false, members: [], windows: [], canBuild: false,
-  canRun: false, canDebug: false, busy: false, activeAction: null,
+  canRun: false, canDebug: false, busy: false, activeAction: null, activeCount: 0,
   problems: [],
 };
 

@@ -125,13 +125,14 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   const disabled = !isStop && (!linked.linked || linked.busy || !available);
   const projects = linked.members.map((member) => member.projectName).join(" + ");
   const count = linked.members.length;
-  const title = isStop ? `Stop ${count} linked ${count === 1 ? "instance" : "instances"}`
+  const activeCount = linked.activeCount;
+  const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
     : kind === "debug" && !linked.canDebug ? `Debug ${count} instances requires a real debugger adapter in every window`
     : !available ? `Cannot ${kind} all ${count} linked instances: a configuration is missing`
     : linked.busy ? "A linked action is active"
     : `${KIND_TITLE[kind]} ${count} linked instances: ${projects}`;
   return (
-    <button type="button" title={title} aria-label={isStop ? `Stop ${count} linked instances` : `${KIND_TITLE[kind]} ${count} linked instances`}
+    <button type="button" title={title} aria-label={isStop ? `Stop ${activeCount} active linked ${activeCount === 1 ? "instance" : "instances"} of ${count}` : `${KIND_TITLE[kind]} ${count} linked instances`}
       disabled={disabled}
       onClick={() => void (isStop ? stopLinkedAction() : startLinkedAction(kind)).catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
       onContextMenu={(event) => {
@@ -146,6 +147,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     >
       <GoldActionIcon kind={kind} stop={isStop} />
       <sup aria-hidden="true" className="absolute top-0 right-0 text-[9px] leading-none font-semibold tabular-nums">{count}</sup>
+      {isStop && <sub aria-hidden="true" className="absolute bottom-0 right-0 text-[9px] leading-none font-semibold tabular-nums text-zinc-100">{activeCount}</sub>}
     </button>
   );
 }

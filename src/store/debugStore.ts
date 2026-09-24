@@ -23,18 +23,18 @@ interface DebugState {
   line: number | null;
   frames: DebugFrame[];
   variables: DebugVariable[];
-  start: (cwd: string, release: boolean, instanceId: string, args?: string[]) => Promise<void>;
+  start: (cwd: string, release: boolean, instanceId: string, commandArgs?: string[]) => Promise<void>;
   control: (action: "continue" | "pause" | "stepOver" | "stepInto" | "stepOut" | "stop") => Promise<void>;
 }
 
 export const useDebug = create<DebugState>((set, get) => ({
   status: "idle", output: "", reason: null, file: null, line: null, frames: [], variables: [],
-  start: async (cwd, release, instanceId, args = []) => {
+  start: async (cwd, release, instanceId, commandArgs = []) => {
     if (["building", "running", "paused"].includes(get().status)) return;
     set({ status: "building", output: "Building a debuggable Rust executable…\n", frames: [], variables: [], file: null, line: null });
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("start_rust_debug", { requestSpec: { cwd, release, instanceId, args, breakpoints: useBreakpoints.getState().points } });
+      await invoke("start_rust_debug", { requestSpec: { cwd, release, instanceId, commandArgs, breakpoints: useBreakpoints.getState().points } });
     } catch (error) {
       const cancelled = String(error).includes("Debug build cancelled");
       set({ status: cancelled ? "terminated" : "error", output: get().output + `${String(error)}\n` });

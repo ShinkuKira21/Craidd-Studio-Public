@@ -337,10 +337,8 @@ export const useBuild = create<BuildState>((set, get) => ({
       const { useDebug } = await import("./debugStore");
       const { useLinkedWindows } = await import("./linkedWindowsStore");
       set({ action: "debug", activeConfigName: chosen.name, output: "Rust debug session starting…\n" });
-      // Pass the full resolved argv. The configuration's profile args and
-      // any command overrides live in spec.args; without them lldb-dap
-      // launches the binary with no arguments and the debug session is
-      // silently missing its flags.
+      // Rust separates Cargo's command/profile arguments from any program
+      // arguments after `--` before launching the resulting executable.
       await useDebug.getState().start(
         spec.cwd,
         state.selectedProfileName === "release",

@@ -1564,7 +1564,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const { invoke } = await import("@tauri-apps/api/core");
 
     try {
-      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+      const stats = await invoke<{ path: string; exists: boolean; readable: boolean; mtimeMs: number; size: number }[]>(
         "stat_files",
         { paths: [fileId] }
       );
@@ -1642,7 +1642,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       const paths = state.tabs.map((t) => t.fileId);
-      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+      const stats = await invoke<{ path: string; exists: boolean; readable: boolean; mtimeMs: number; size: number }[]>(
         "stat_files",
         { paths }
       );
@@ -1670,7 +1670,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (!tab) return;
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+      const stats = await invoke<{ path: string; exists: boolean; readable: boolean; mtimeMs: number; size: number }[]>(
         "stat_files",
         { paths: [fileId] }
       );
