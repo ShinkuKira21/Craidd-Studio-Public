@@ -223,6 +223,14 @@ function parseCommandLine(line: string): string[] {
 export function choicesForConfig(solution: CraiddSolution, selected: ConfigEntry): MainChoices {
   const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
 
+  if (selected.slots) {
+    const resolve = (kind: keyof MainChoices) => {
+      const name = selected.slots?.[kind];
+      return all.find((candidate) => candidate.name === name && candidate.kind === kind && !candidate.slots)?.name ?? null;
+    };
+    return { build: resolve("build"), run: resolve("run"), debug: resolve("debug") };
+  }
+
   if (selected.bestFit && (selected.relatedProjects?.length ?? 0) > 0) {
     const family = new Set(selected.relatedProjects);
     const inFamily = all.filter((c) =>

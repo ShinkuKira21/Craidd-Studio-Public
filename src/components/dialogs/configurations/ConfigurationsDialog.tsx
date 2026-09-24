@@ -1,147 +1,149 @@
 import { useMemo, useState } from "react";
 import { useSolution } from "../../../store/solutionStore";
-import type { ConfigEntry, CraiddProject } from "../../../types/project";
+import { choicesForConfig, selectConfiguration } from "../../../store/buildStore";
+import type { ConfigEntry } from "../../../types/project";
 import ConfigurationForm from "./ConfigurationForm";
 
-interface Props {
-  onClose: () => void;
-}
-
-type Row =
-  | { kind: "composition"; entry: ConfigEntry }
-  | { kind: "project-header"; project: CraiddProject | null; key: string; label: string }
-  | { kind: "project-config"; entry: ConfigEntry; project: CraiddProject | null };
+interface Props { onClose: () => void; }
+type Row = { key: string; entry?: ConfigEntry; label?: string };
+const actionClass = "px-2 py-1 rounded text-[11px] text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:text-zinc-700 disabled:cursor-default";
+const clone = (entry: ConfigEntry): ConfigEntry => ({ ...entry, slots: entry.slots ? { ...entry.slots } : undefined, profiles: entry.profiles?.map((p) => ({ ...p, args: [...p.args], env: { ...p.env } })) ?? [] });
 
 export default function ConfigurationsDialog({ onClose }: Props) {
   const solution = useSolution((s) => s.solution);
-  const [selectedName, setSelectedName] = useState<string | null>(null);
-
-  const configs: ConfigEntry[] = useMemo(() => [
-    ...(solution?.inferredConfigs ?? []),
-    ...(solution?.configs ?? []),
-  ], [solution]);
-
+  const saveConfigurations = useSolution((s) => s.saveConfigurations);
+  const [drafts, setDrafts] = useState<ConfigEntry[]>(() => solution?.configs.map(clone) ?? []);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [defaultName, setDefaultName] = useState<string | undefined>(solution?.defaultConfig);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const projects = solution?.projects ?? [];
-
+  const inferred = solution?.inferredConfigs ?? [];
+  const allConfigs = [...inferred, ...drafts];
+  const displayEntries = [
+    ...inferred.filter((entry) => !entry.bestFit || entry.kind === "run").map((entry) => ({ key: `i:${entry.name}`, entry })),
+    ...drafts.map((entry, index) => ({ key: `u:${index}`, entry })),
+  ];
   const rows: Row[] = useMemo(() => {
-    const out: Row[] = [];
-    const compositions = configs.filter((c) => c.bestFit && c.kind === "run");
-    for (const c of compositions) {
-      out.push({ kind: "composition", entry: c });
+    const result: Row[] = [];
+    const addGroup = (label: string, entries: typeof displayEntries) => {
+      if (!entries.length) return;
+      result.push({ key: `header:${label}`, label });
+      result.push(...entries);
+    };
+    addGroup("Solution", displayEntries.filter((row) => row.entry.bestFit || row.entry.slots));
+    for (const project of projects) addGroup(project.name, displayEntries.filter((row) => !row.entry.bestFit && !row.entry.slots && row.entry.target === project.path));
+    addGroup("Other", displayEntries.filter((row) => !row.entry.bestFit && !row.entry.slots && !projects.some((p) => p.path === row.entry.target)));
+    return result;
+  }, [solution, drafts]);
+  const selectedRow = displayEntries.find((row) => row.key === selectedKey) ?? displayEntries[0];
+  const selected = selectedRow?.entry;
+  const userIndex = selectedRow?.key.startsWith("u:") ? Number(selectedRow.key.slice(2)) : -1;
+  const editable = userIndex >= 0;
+  const uniqueName = (base: string) => {
+    const names = new Set(allConfigs.map((entry) => entry.name.toLowerCase()));
+    let name = base; let count = 2;
+    while (names.has(name.toLowerCase())) name = `${base} ${count++}`;
+    return name;
+  };
+  const markDirty = () => { setDirty(true); setError(null); };
+  const append = (entry: ConfigEntry) => {
+    setDrafts((previous) => [...previous, entry]);
+    setSelectedKey(`u:${drafts.length}`);
+    markDirty();
+  };
+  const addProject = () => append({ name: uniqueName("New Configuration"), kind: "run", target: projects[0]?.path ?? ".", method: "shell", command: "", origin: "user", profiles: [] });
+  const addComposition = () => append({ name: uniqueName("New Solution Configuration"), kind: "run", target: ".", origin: "user", slots: {}, profiles: [] });
+  const duplicate = () => {
+    if (!selected || !solution) return;
+    if (selected.bestFit) {
+      const slots = choicesForConfig(solution, selected);
+      append({ name: uniqueName(`${selected.name} Custom`), kind: "run", target: ".", origin: "user", slots: { build: slots.build ?? undefined, run: slots.run ?? undefined, debug: slots.debug ?? undefined }, profiles: [] });
+    } else {
+      const copy = clone(selected);
+      copy.name = uniqueName(`${selected.name} Copy`);
+      copy.origin = "user";
+      copy.bestFit = false;
+      copy.relatedProjects = [];
+      append(copy);
     }
-    const byTarget = new Map<string, ConfigEntry[]>();
-    for (const c of configs.filter((c) => !c.bestFit)) {
-      const list = byTarget.get(c.target) ?? [];
-      list.push(c);
-      byTarget.set(c.target, list);
-    }
-    // Projects in solution order.
-    for (const project of projects) {
-      const list = byTarget.get(project.path) ?? [];
-      if (list.length === 0) continue;
-      out.push({ kind: "project-header", project, key: `ph:${project.path}`, label: project.name });
-      for (const c of list) {
-        out.push({ kind: "project-config", entry: c, project });
+  };
+  const change = (next: ConfigEntry) => {
+    if (userIndex < 0) return;
+    const oldName = drafts[userIndex].name;
+    setDrafts((previous) => previous.map((entry, index) => index === userIndex ? next : entry));
+    if (defaultName === oldName) setDefaultName(next.name);
+    markDirty();
+  };
+  const remove = () => {
+    if (userIndex < 0 || !selected) return;
+    setDrafts((previous) => previous.filter((_, index) => index !== userIndex));
+    if (defaultName === selected.name) setDefaultName(undefined);
+    setSelectedKey(null);
+    markDirty();
+  };
+  const close = () => {
+    if (!saving && (!dirty || window.confirm("Discard unsaved configuration changes?"))) onClose();
+  };
+  const validate = (): string | null => {
+    const names = new Set(inferred.map((entry) => entry.name.toLowerCase()));
+    for (const entry of drafts) {
+      const name = entry.name.trim();
+      if (!name) return "Every configuration needs a name.";
+      if (entry.name !== name) return `${name}: remove leading or trailing spaces from the name.`;
+      if (names.has(name.toLowerCase())) return `Duplicate configuration name: ${name}`;
+      names.add(name.toLowerCase());
+      if (!entry.slots && entry.target !== "." && !projects.some((project) => project.path === entry.target)) return `${name}: choose an existing project.`;
+      if (entry.slots) {
+        if (!entry.slots.run && !entry.slots.build && !entry.slots.debug) return `${name}: choose at least one action slot.`;
+        for (const kind of ["run", "build", "debug"] as const) {
+          const ref = entry.slots[kind];
+          if (ref && !allConfigs.some((candidate) => candidate.name === ref && candidate.kind === kind && !candidate.slots)) return `${name}: ${kind} references a missing configuration.`;
+        }
+      } else {
+        const derived = entry.method === "cargo" || entry.method === "dotnet" || (entry.method === "cmake" && entry.kind === "build");
+        if (!entry.command?.trim() && !derived) return `${name}: add an executable command.`;
+        if (entry.kind === "debug" && entry.method !== "cargo") return `${name}: debugging currently requires the Cargo adapter.`;
+        if (entry.cwd && (entry.cwd.startsWith("/") || entry.cwd.split(/[\\/]/).includes(".."))) return `${name}: working directory must stay inside the solution.`;
       }
-    }
-    // Any configs whose target isn't a declared project.
-    for (const c of configs.filter((c) => !c.bestFit)) {
-      if (!projects.some((p) => p.path === c.target)) {
-        out.push({ kind: "project-config", entry: c, project: null });
+      const profileNames = new Set<string>();
+      for (const profile of entry.profiles ?? []) {
+        if (!profile.name.trim() || profile.name !== profile.name.trim() || profileNames.has(profile.name.toLowerCase())) return `${name}: profile names must be trimmed and unique.`;
+        profileNames.add(profile.name.toLowerCase());
+        if (profile.args.some((arg) => !arg.trim())) return `${name}: remove or fill empty arguments.`;
+        if (Object.keys(profile.env).some((key) => !key.trim() || key.includes("="))) return `${name}: environment variable names must be filled in.`;
       }
+      if (entry.defaultProfile && !profileNames.has(entry.defaultProfile.toLowerCase())) return `${name}: default profile is missing.`;
     }
-    return out;
-  }, [configs, projects]);
+    if (defaultName && !allConfigs.some((entry) => entry.name === defaultName)) return "The default configuration no longer exists.";
+    return null;
+  };
+  const save = async () => {
+    const message = validate();
+    if (message) { setError(message); return; }
+    setSaving(true); setError(null);
+    try {
+      await saveConfigurations(drafts.map(clone), defaultName);
+      const nextSolution = useSolution.getState().solution;
+      if (selected && nextSolution && allConfigs.some((entry) => entry.name === selected.name)) selectConfiguration(nextSolution, selected.name);
+      setDirty(false); onClose();
+    } catch (cause) { setError(String(cause)); }
+    finally { setSaving(false); }
+  };
 
-  const effectiveSelected = configs.find((c) => c.name === selectedName)
-    ?? configs.find((c) => c.bestFit)
-    ?? configs[0];
-
-  return (
-    <div
-      className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-[min(1040px,calc(100vw-32px))] h-[min(680px,calc(100vh-32px))] bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden flex flex-col"
-      >
-        <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3 shrink-0">
-          <span className="text-sm text-zinc-100 font-medium">Configurations</span>
-          <span className="text-[11px] text-zinc-500 max-[700px]:hidden">
-            What the IDE sees, and how this solution runs
-          </span>
-          <button
-            onClick={onClose}
-            className="ml-auto text-zinc-500 hover:text-zinc-200 text-lg leading-none px-2"
-            aria-label="Close"
-          >
-            ×
-          </button>
+  return <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60" onClick={close}>
+    <div role="dialog" aria-modal="true" aria-label="Configurations" onClick={(event) => event.stopPropagation()} className="w-[min(980px,calc(100vw-32px))] h-[min(680px,calc(100vh-32px))] bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden flex flex-col">
+      <div className="px-4 py-3 border-b border-zinc-800 flex items-center gap-3 shrink-0"><span className="text-sm text-zinc-100 font-medium">Configurations</span><span className="text-[11px] text-zinc-500 max-[700px]:hidden">Inferred starting points and your saved configurations</span><button type="button" aria-label="Close" className="ml-auto text-zinc-400 hover:text-white" onClick={close}>×</button></div>
+      <div className="flex-1 min-h-0 flex max-[700px]:flex-col">
+        <div className="w-[290px] shrink-0 border-r border-zinc-800 flex flex-col min-h-0 max-[700px]:w-full max-[700px]:h-[35%] max-[700px]:border-r-0 max-[700px]:border-b">
+          <div className="px-2 py-2 border-b border-zinc-800 flex gap-1"><button type="button" className={actionClass} onClick={addProject}>+ Configuration</button><button type="button" className={actionClass} onClick={addComposition}>+ Solution</button></div>
+          <div className="flex-1 overflow-y-auto scroll-thin py-2">{rows.length === 0 && <p className="px-4 text-[12px] text-zinc-500">No configurations yet. Create one above.</p>}{rows.map((row) => row.label ? <div key={row.key} className="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">{row.label}</div> : <button key={row.key} type="button" onClick={() => setSelectedKey(row.key)} className={"w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] border-l-2 " + (selectedRow?.key === row.key ? "border-blue-500 bg-blue-950/40 text-zinc-100" : "border-transparent text-zinc-300 hover:bg-zinc-800")}><span className="truncate flex-1">{row.entry?.name}</span>{row.entry?.origin === "inferred" && <span className="text-[9px] text-zinc-500">auto</span>}{row.entry?.name === defaultName && <span title="Default" className="text-amber-400">★</span>}</button>)}</div>
+          <div className="px-2 py-2 border-t border-zinc-800 flex gap-1 flex-wrap"><button type="button" disabled={!selected} className={actionClass} onClick={duplicate}>{editable ? "Duplicate" : "Customize"}</button><button type="button" disabled={!editable} className={actionClass} onClick={remove}>Delete</button><button type="button" disabled={!selected || selected.name === defaultName} className={actionClass} onClick={() => { setDefaultName(selected?.name); markDirty(); }}>Set default</button></div>
         </div>
-
-        <div className="flex-1 min-h-0 flex max-[700px]:flex-col">
-          <div className="w-[min(340px,40%)] shrink-0 border-r border-zinc-800 overflow-y-auto scroll-thin py-2 max-[700px]:w-full max-[700px]:h-[35%] max-[700px]:border-r-0 max-[700px]:border-b">
-            {rows.length === 0 && (
-              <div className="px-4 py-6 text-[12px] text-zinc-600 italic">
-                No configurations. Inference produced nothing, and the solution has no user-authored entries.
-              </div>
-            )}
-            {rows.map((row, index) => {
-              if (row.kind === "project-header") {
-                return (
-                  <div
-                    key={row.key}
-                    className={
-                      "px-4 pb-1 text-[10px] uppercase tracking-wider text-zinc-600 " +
-                      (index === 0 ? "pt-1" : "pt-4")
-                    }
-                  >
-                    {row.label}
-                  </div>
-                );
-              }
-              const c = row.entry;
-              const isSelected = c.name === effectiveSelected?.name;
-              return (
-                <button
-                  key={`${row.kind}:${c.name}`}
-                  onClick={() => setSelectedName(c.name)}
-                  className={
-                    "w-full flex items-center gap-2 px-4 py-1.5 text-left text-[12.5px] transition-colors " +
-                    (isSelected
-                      ? "bg-blue-950/40 text-zinc-100 border-l-2 border-l-blue-500"
-                      : "text-zinc-300 hover:bg-zinc-800/60 border-l-2 border-l-transparent")
-                  }
-                >
-                  <span className={
-                    "w-2 shrink-0 text-[8px] " +
-                    (row.kind === "composition" ? "text-blue-400" : "text-transparent")
-                  }>●</span>
-                  <span className="truncate flex-1">{c.name}</span>
-                  <span className="text-[10px] text-zinc-600 shrink-0">
-                    {row.kind === "composition" ? "solution" : c.kind}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="flex-1 min-w-0 flex flex-col">
-            {effectiveSelected ? (
-              <ConfigurationForm
-                config={effectiveSelected}
-                projects={projects}
-                allConfigs={configs}
-              />
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-[12px] text-zinc-600 italic">
-                Nothing selected.
-              </div>
-            )}
-          </div>
-        </div>
+        <div className="flex-1 min-w-0 flex flex-col">{selected && solution ? <ConfigurationForm config={selected} projects={projects} allConfigs={allConfigs} solution={solution} editable={editable} onChange={change} /> : <div className="flex-1 flex items-center justify-center text-[12px] text-zinc-500">Select or create a configuration.</div>}</div>
       </div>
+      <div className="px-4 py-2 border-t border-zinc-800 flex items-center gap-2 min-h-11"><span role="alert" className="text-[11px] text-red-400 truncate flex-1" title={error ?? undefined}>{error ?? (dirty ? "Unsaved changes" : "")}</span><button type="button" onClick={close} className={actionClass}>Cancel</button><button type="button" disabled={!dirty || saving} onClick={() => void save()} className="px-3 py-1.5 rounded bg-blue-700 text-white text-[12px] hover:bg-blue-600 disabled:bg-zinc-800 disabled:text-zinc-500">{saving ? "Saving…" : "Save"}</button></div>
     </div>
-  );
+  </div>;
 }

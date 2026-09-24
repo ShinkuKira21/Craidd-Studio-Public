@@ -10,7 +10,7 @@ import type {
   ProjectKind,
 } from "../types/project";
 import { languageFromFilename, monacoLanguageForFilename, projectExtensions, projectWellKnownFiles, languageMeta } from "../lib/languages";
-import { seedMainChoices } from "./buildStore";
+import { seedMainChoices, syncMainChoices } from "./buildStore";
 
 export interface AncestorInfo {
   clnPath: string;
@@ -75,6 +75,7 @@ interface SolutionState {
   redeclareProject: (projectId: string, args: { name: string; language: Language }) => Promise<void>;
   moveProjectTo: (projectId: string, newFolderAbs: string, chosenLanguage?: Language) => Promise<void>;
 
+  saveConfigurations: (configs: ConfigEntry[], defaultConfig?: string) => Promise<void>;
   addConfigHere: (projectId: string) => Promise<void>;
   setConfigDirectory: (projectId: string, directory: string) => Promise<void>;
   saveMembership: (projectId: string, overrides: Pick<CraiddProject, "mainInclude" | "mainExclude" | "configInclude" | "configExclude">) => Promise<void>;
@@ -1234,6 +1235,22 @@ export const useSolution = create<SolutionState>((set, get) => ({
     }
   },
 
+
+  saveConfigurations: async (configs, defaultConfig) => {
+    const state = get();
+    if (!state.solution || !state.clnPath) throw new Error("No solution file is open.");
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_solution_configs", {
+      clnPath: state.clnPath,
+      configs,
+      defaultConfig: defaultConfig ?? null,
+      expectedConfigs: state.solution.configs,
+      expectedDefaultConfig: state.solution.defaultConfig ?? null,
+    });
+    const next = { ...state.solution, configs, defaultConfig };
+    set({ solution: next });
+    syncMainChoices(next);
+  },
 
   addConfigHere: async (projectId) => {
     const state = get();

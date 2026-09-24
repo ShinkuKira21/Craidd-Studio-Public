@@ -236,7 +236,8 @@ function KindButton({
   const candidates = configs.filter((c) => {
     if (c.kind !== kind) return false;
     if (!scopeConfig) return true;
-    if (!scopeConfig.bestFit) return !c.bestFit && c.target === scopeConfig.target;
+    if (scopeConfig.slots) return c.name === scopeConfig.slots[kind];
+    if (!scopeConfig.bestFit) return !c.bestFit && !c.slots && c.target === scopeConfig.target;
     const family = scopeConfig.relatedProjects ?? [];
     return c.bestFit && c.relatedProjects?.length === family.length
       && c.relatedProjects?.every((project) => family.includes(project));
@@ -331,11 +332,11 @@ function ConfigChip({
   const [open, setOpen] = useState(false);
 
   const selected = configs.find((config) => config.name === selectedName);
-  const compositions = configs.filter((c) => c.bestFit && c.kind === "run");
+  const compositions = configs.filter((c) => (c.bestFit && c.kind === "run") || !!c.slots);
 
   // Project configs = anything not best-fit. Sorted by the project order
   // the solution declares, then by name.
-  const projectConfigs = configs.filter((c) => !c.bestFit);
+  const projectConfigs = configs.filter((c) => !c.bestFit && !c.slots);
   const byProject = new Map<string, ConfigEntry[]>();
   for (const c of projectConfigs) {
     const list = byProject.get(c.target) ?? [];
@@ -346,7 +347,7 @@ function ConfigChip({
 
   // Compute the label.
   const label = !hasSolution ? "No solution"
-    : selected?.bestFit ? selected.name
+    : (selected?.bestFit || selected?.slots) ? selected.name
     : projects.find((p) => p.path === selected?.target)?.name ?? selected?.name ?? "No configurations";
 
   // Ordering inside the dropdown:
@@ -385,7 +386,7 @@ function ConfigChip({
                        : "border-zinc-800 text-zinc-600 cursor-default")
         }
       >
-        {selected?.bestFit && <span className="text-blue-400 text-[8px] shrink-0">●</span>}
+        {(selected?.bestFit || selected?.slots) && <span className="text-blue-400 text-[8px] shrink-0">●</span>}
         <span className="truncate max-w-[260px]">{label}</span>
         <svg className={"w-3 h-3 shrink-0 text-zinc-500 transition-transform " + (open ? "rotate-180" : "")}
              fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -413,7 +414,7 @@ function ConfigChip({
               }
               const c = row.entry!;
               const isSelected = c.name === selectedName;
-              const isComposition = c.bestFit === true;
+              const isComposition = c.bestFit === true || !!c.slots;
               const projectName = projects.find((p) => p.path === c.target)?.name;
               return (
                 <button
@@ -441,7 +442,7 @@ function ConfigChip({
             <button
               onClick={() => { onPreview(null); onOpenDialog(); setOpen(false); }}
               className="w-full px-3 py-2 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
-            >View Configurations…</button>
+            >Add / Edit Configurations…</button>
           </div>
         </>
       )}

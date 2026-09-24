@@ -1,147 +1,78 @@
-import type { ConfigEntry, CraiddProject } from "../../../types/project";
+import type { ConfigEntry, ConfigKind, CraiddProject, Profile } from "../../../types/project";
+import { choicesForConfig } from "../../../store/buildStore";
+import type { CraiddSolution } from "../../../types/project";
 
 interface Props {
   config: ConfigEntry;
   projects: CraiddProject[];
   allConfigs: ConfigEntry[];
+  solution: CraiddSolution;
+  editable: boolean;
+  onChange: (next: ConfigEntry) => void;
 }
 
-/**
- * Read-only form. The editing surface lands in the next pass.
- *
- * The form's shape reflects the model:
- *   - Compositions (bestFit) show three slots (Run / Build / Debug), each
- *     a reference to another config in the solution.
- *   - Project configs show name, kind, command, cwd, and profiles.
- */
-export default function ConfigurationForm({ config, projects, allConfigs }: Props) {
-  const isComposition = config.bestFit === true;
+const inputClass = "w-full min-w-0 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-[12px] text-zinc-100 outline-none focus:border-blue-500 disabled:border-zinc-800 disabled:text-zinc-500";
+const kinds: ConfigKind[] = ["run", "build", "debug", "test"];
+const methods = ["cargo", "npm", "shell", "dotnet", "cmake", "python", "composed"];
 
-  const familyMembers = isComposition
-    ? allConfigs.filter((c) =>
-        c.bestFit &&
-        c.relatedProjects?.length === config.relatedProjects?.length &&
-        c.relatedProjects?.every((p) => config.relatedProjects?.includes(p))
-      )
-    : [];
-
-  const findFor = (kind: "build" | "run" | "debug") =>
-    familyMembers.find((c) => c.kind === kind);
-
-  const runSlot = isComposition ? findFor("run") : null;
-  const buildSlot = isComposition ? findFor("build") : null;
-  const debugSlot = isComposition ? findFor("debug") : null;
+export default function ConfigurationForm({ config, projects, allConfigs, solution, editable, onChange }: Props) {
+  const isComposition = !!config.slots || config.bestFit === true;
+  const inferredSlots = config.bestFit ? choicesForConfig(solution, config) : null;
+  const slots = config.slots ?? inferredSlots;
+  const set = (patch: Partial<ConfigEntry>) => onChange({ ...config, ...patch });
+  const profiles = config.profiles ?? [];
+  const updateProfile = (index: number, patch: Partial<Profile>) => {
+    const next = profiles.map((profile, i) => i === index ? { ...profile, ...patch } : profile);
+    set({ profiles: next });
+  };
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto scroll-thin">
-      <div className="px-6 py-5 border-b border-zinc-800">
-        <div className="flex items-baseline gap-3">
-          <h2 className="text-[15px] text-zinc-100 font-medium">{config.name}</h2>
-          {isComposition && (
-            <span className="text-[10px] uppercase tracking-wider text-blue-400 border border-blue-900/60 bg-blue-950/30 rounded px-1.5 py-0.5">
-              solution
-            </span>
-          )}
-          <span className="text-[10px] uppercase tracking-wider text-zinc-500 border border-zinc-800 rounded px-1.5 py-0.5">
-            {config.origin}
-          </span>
-        </div>
-        <p className="text-[11.5px] text-zinc-500 mt-1">
-          {isComposition
-            ? "A solution-level configuration that composes actions from multiple projects."
-            : `Owned by ${projects.find((p) => p.path === config.target)?.name ?? "an external project"}.`}
-        </p>
+      <div className="px-5 py-3 border-b border-zinc-800 flex items-center gap-2">
+        <h2 className="text-sm text-zinc-100 font-medium truncate">{config.name || "New configuration"}</h2>
+        <span className="text-[10px] uppercase text-zinc-500 border border-zinc-700 rounded px-1.5">{isComposition ? "solution" : config.kind}</span>
+        {config.origin === "inferred" && <span className="text-[10px] text-zinc-500 ml-auto">Inferred · customize to edit</span>}
       </div>
-
-      {isComposition ? (
-        <div className="px-6 py-5 space-y-5">
-          <SectionLabel>Slots</SectionLabel>
-          <SlotRow label="Run" config={runSlot} projects={projects} />
-          <SlotRow label="Build" config={buildSlot} projects={projects} />
-          <SlotRow label="Debug" config={debugSlot} projects={projects} />
-          <div className="text-[11px] text-zinc-600 leading-5 pt-2 border-t border-zinc-800">
-            Each slot references a configuration owned by a project. Changing a slot repoints it;
-            it does not copy the command.
-          </div>
-        </div>
-      ) : (
-        <div className="px-6 py-5 space-y-4">
-          <Field label="Project" value={projects.find((p) => p.path === config.target)?.name ?? "(external)"} />
-          <Field label="Kind" value={config.kind} />
-          <Field label="Target" value={config.target} mono />
-          <Field label="Method" value={config.method ?? "(none)"} />
-          <Field label="Command" value={config.command ?? "(derived from method)"} mono />
-          <Field label="Working directory" value={config.cwd ?? "(project root)"} mono />
-          {config.profiles && config.profiles.length > 0 && (
-            <div>
-              <SectionLabel>Profiles</SectionLabel>
-              <div className="space-y-1.5">
-                {config.profiles.map((profile) => (
-                  <div key={profile.name} className="flex items-baseline gap-2 text-[12px]">
-                    <span className="text-zinc-200">{profile.name}</span>
-                    {profile.name === config.defaultProfile && (
-                      <span className="text-[10px] text-zinc-500">default</span>
-                    )}
-                    {profile.args.length > 0 && (
-                      <span className="text-zinc-500 text-[11px] font-mono truncate">
-                        {profile.args.join(" ")}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
+      <div className="px-5 py-4 space-y-3 max-w-[680px]">
+        <Field label="Name"><input className={inputClass} value={config.name} disabled={!editable} onChange={(e) => set({ name: e.target.value })} /></Field>
+        {isComposition ? (
+          <>
+            <p className="text-[11px] text-zinc-500">Choose the configuration each toolbar action uses. Empty slots disable that action.</p>
+            {(["run", "build", "debug"] as const).map((kind) => {
+              const current = slots?.[kind] ?? "";
+              const candidates = allConfigs.filter((candidate) => !candidate.slots && candidate.kind === kind);
+              return <Field key={kind} label={kind[0].toUpperCase() + kind.slice(1)}>
+                <select className={inputClass} value={current} disabled={!editable} onChange={(e) => set({ slots: { ...config.slots, [kind]: e.target.value || undefined } })}>
+                  <option value="">No {kind} action</option>
+                  {candidates.map((candidate) => <option key={candidate.name} value={candidate.name}>{candidate.name} · {projects.find((p) => p.path === candidate.target)?.name ?? "solution"}</option>)}
+                </select>
+              </Field>;
+            })}
+          </>
+        ) : (
+          <>
+            <Field label="Kind"><select className={inputClass} value={config.kind} disabled={!editable} onChange={(e) => set({ kind: e.target.value as ConfigKind })}>{kinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select></Field>
+            <Field label="Project"><select className={inputClass} value={config.target} disabled={!editable} onChange={(e) => set({ target: e.target.value })}><option value=".">Whole solution</option>{projects.map((project) => <option key={project.path} value={project.path}>{project.name}</option>)}</select></Field>
+            <Field label="Method"><select className={inputClass} value={config.method ?? ""} disabled={!editable} onChange={(e) => set({ method: e.target.value || undefined })}><option value="">Automatic</option>{methods.map((method) => <option key={method} value={method}>{method}</option>)}</select></Field>
+            <Field label="Command"><input className={inputClass + " font-mono"} value={config.command ?? ""} disabled={!editable} placeholder="Derived from method when empty" onChange={(e) => set({ command: e.target.value || undefined })} /></Field>
+            <Field label="Working directory"><input className={inputClass + " font-mono"} value={config.cwd ?? ""} disabled={!editable} placeholder="Project folder when empty" onChange={(e) => set({ cwd: e.target.value || undefined })} /></Field>
+            <div className="pt-3 border-t border-zinc-800">
+              <div className="flex items-center gap-2 mb-3"><span className="text-[11px] uppercase tracking-wide text-zinc-500">Profiles</span><button type="button" disabled={!editable} className="ml-auto text-[11px] text-blue-400 disabled:text-zinc-700" onClick={() => set({ profiles: [...profiles, { name: `Profile ${profiles.length + 1}`, args: [], env: {} }] })}>+ Add profile</button></div>
+              {profiles.length === 0 && <p className="text-[11px] text-zinc-600">No profiles. The command runs with its default arguments.</p>}
+              {profiles.map((profile, index) => <div key={index} className="border border-zinc-800 rounded p-3 mb-2 space-y-2">
+                <div className="flex gap-2"><input aria-label="Profile name" className={inputClass} value={profile.name} disabled={!editable} onChange={(e) => { const name = e.target.value; set({ profiles: profiles.map((item, i) => i === index ? { ...item, name } : item), defaultProfile: config.defaultProfile === profile.name ? name : config.defaultProfile }); }} /><button type="button" disabled={!editable} className="text-[11px] text-red-400 disabled:text-zinc-700" onClick={() => set({ profiles: profiles.filter((_, i) => i !== index), defaultProfile: config.defaultProfile === profile.name ? undefined : config.defaultProfile })}>Remove</button></div>
+                <label className="flex items-center gap-2 text-[11px] text-zinc-400"><input type="radio" name="default-profile" checked={config.defaultProfile === profile.name} disabled={!editable} onChange={() => set({ defaultProfile: profile.name })} /> Default profile</label>
+                <div className="space-y-1"><div className="text-[11px] text-zinc-500">Arguments</div>{profile.args.map((arg, argIndex) => <div key={argIndex} className="flex gap-1"><input aria-label={`Argument ${argIndex + 1}`} className={inputClass + " font-mono"} value={arg} disabled={!editable} onChange={(e) => updateProfile(index, { args: profile.args.map((item, i) => i === argIndex ? e.target.value : item) })} /><button type="button" disabled={!editable} className="text-zinc-500 disabled:text-zinc-700" onClick={() => updateProfile(index, { args: profile.args.filter((_, i) => i !== argIndex) })}>×</button></div>)}<button type="button" disabled={!editable} className="text-[11px] text-blue-400 disabled:text-zinc-700" onClick={() => updateProfile(index, { args: [...profile.args, ""] })}>+ Argument</button></div>
+                <div className="space-y-1"><div className="text-[11px] text-zinc-500">Environment</div>{Object.entries(profile.env).map(([key, value], envIndex) => <div key={envIndex} className="flex gap-1"><input aria-label={`Variable name ${envIndex + 1}`} className={inputClass + " font-mono"} value={key} disabled={!editable} placeholder="KEY" onChange={(e) => { const pairs = Object.entries(profile.env); if (pairs.some(([name], i) => i !== envIndex && name === e.target.value)) return; pairs[envIndex] = [e.target.value, value]; updateProfile(index, { env: Object.fromEntries(pairs) }); }} /><input aria-label={`Variable value ${envIndex + 1}`} className={inputClass + " font-mono"} value={value} disabled={!editable} placeholder="Value" onChange={(e) => updateProfile(index, { env: { ...profile.env, [key]: e.target.value } })} /><button type="button" disabled={!editable} className="text-zinc-500 disabled:text-zinc-700" onClick={() => { const pairs = Object.entries(profile.env).filter((_, i) => i !== envIndex); updateProfile(index, { env: Object.fromEntries(pairs) }); }}>×</button></div>)}<button type="button" disabled={!editable || Object.prototype.hasOwnProperty.call(profile.env, "")} className="text-[11px] text-blue-400 disabled:text-zinc-700" onClick={() => updateProfile(index, { env: { ...profile.env, "": "" } })}>+ Variable</button></div>
+              </div>)}
             </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-[10.5px] uppercase tracking-wider text-zinc-500">
-      {children}
-    </div>
-  );
-}
-
-function Field({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="grid grid-cols-[140px_1fr] gap-3 text-[12px] items-baseline">
-      <div className="text-zinc-500">{label}</div>
-      <div className={mono ? "text-zinc-200 font-mono text-[11.5px] break-all" : "text-zinc-200"}>
-        {value}
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-function SlotRow({
-  label, config, projects,
-}: {
-  label: string;
-  config: ConfigEntry | null | undefined;
-  projects: CraiddProject[];
-}) {
-  if (!config) {
-    return (
-      <div className="grid grid-cols-[80px_1fr] gap-3 text-[12px] items-baseline">
-        <div className="text-zinc-500">{label}</div>
-        <div className="text-zinc-600 italic">(no configuration)</div>
-      </div>
-    );
-  }
-  const projectName = projects.find((p) => p.path === config.target)?.name ?? "(external)";
-  return (
-    <div className="grid grid-cols-[80px_1fr] gap-3 text-[12px] items-baseline">
-      <div className="text-zinc-500">{label}</div>
-      <div className="min-w-0">
-        <div className="text-zinc-200 truncate">{config.name}</div>
-        <div className="text-[11px] text-zinc-500 font-mono truncate">
-          {projectName} · {config.command ?? config.method ?? "—"}
-        </div>
-      </div>
-    </div>
-  );
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return <label className="grid grid-cols-[116px_minmax(0,1fr)] max-[500px]:grid-cols-1 gap-2 items-center text-[12px]"><span className="text-zinc-400">{label}</span><div className="min-w-0">{children}</div></label>;
 }
