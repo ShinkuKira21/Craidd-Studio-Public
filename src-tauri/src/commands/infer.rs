@@ -62,8 +62,10 @@ pub fn infer_configs(solution: CraiddSolution) -> Result<Vec<ConfigEntry>, Strin
     let mut out: Vec<ConfigEntry> = Vec::new();
 
     // ── Tier 1: Solution Default ─────────────────────────────
-    if let Some(default) = infer_solution_default(&solution) {
-        out.push(default);
+    // The family (Tauri Dev + its Build/Debug siblings) is emitted
+    // together so all three toolbar buttons resolve from one selection.
+    for entry in infer_solution_default(&solution) {
+        out.push(entry);
     }
 
     // ── Tier 2: Per-project Defaults ─────────────────────────
@@ -99,7 +101,7 @@ pub fn infer_configs(solution: CraiddSolution) -> Result<Vec<ConfigEntry>, Strin
     Ok(out)
 }
 
-fn infer_solution_default(solution: &CraiddSolution) -> Option<ConfigEntry> {
+fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
     // The Tauri signature:
     //   - at least one Rust project with a Cargo.toml declaring a bin
     //   - at least one TS/JS project whose package.json exposes scripts.tauri
@@ -139,26 +141,60 @@ fn infer_solution_default(solution: &CraiddSolution) -> Option<ConfigEntry> {
     }
 
     if rust_candidates == 1 && ts_candidates == 1 {
-        // Both halves present. Propose the composed default.
-        // The target is the TS project, whose folder is where
-        // `npm run tauri dev` should execute.
-        let ts = ts_project?;
-        return Some(ConfigEntry {
-            name: "Tauri Dev".into(),
-            best_fit: true,
-            related_projects: vec![rust_project?.path.clone(), ts.path.clone()],
-            kind: "run".into(),
-            target: ts.path.clone(),
-            method: Some("npm".into()),
-            command: Some(format!("{ts_manager} run tauri dev")),
-            cwd: None, // runner resolves to the target's folder
-            origin: "inferred".into(),
-            profiles: vec![],
-            default_profile: None,
-        });
+        // Both halves present. Propose the composed family: three
+        // entries that share a related_projects list. The toolbar
+        // reads that list to light up Build / Run / Debug together.
+        //
+        // Build and Debug target the Rust project (cargo build / cargo
+        // build + lldb-dap); Run targets the frontend (npm run tauri
+        // dev), because that is the composed dev flow.
+        let Some(rust) = rust_project else { return vec![]; };
+        let Some(ts) = ts_project else { return vec![]; };
+        let shared = vec![rust.path.clone(), ts.path.clone()];
+        return vec![
+            ConfigEntry {
+                name: "Tauri Dev".into(),
+                best_fit: true,
+                related_projects: shared.clone(),
+                kind: "run".into(),
+                target: ts.path.clone(),
+                method: Some("npm".into()),
+                command: Some(format!("{ts_manager} run tauri dev")),
+                cwd: None,
+                origin: "inferred".into(),
+                profiles: vec![],
+                default_profile: None,
+            },
+            ConfigEntry {
+                name: "Tauri Dev — Build".into(),
+                best_fit: true,
+                related_projects: shared.clone(),
+                kind: "build".into(),
+                target: rust.path.clone(),
+                method: Some("cargo".into()),
+                command: Some("cargo build".into()),
+                cwd: None,
+                origin: "inferred".into(),
+                profiles: profiles_for_cargo(rust),
+                default_profile: Some("debug".into()),
+            },
+            ConfigEntry {
+                name: "Tauri Dev — Debug".into(),
+                best_fit: true,
+                related_projects: shared.clone(),
+                kind: "debug".into(),
+                target: rust.path.clone(),
+                method: Some("cargo".into()),
+                command: Some("cargo build".into()),
+                cwd: None,
+                origin: "inferred".into(),
+                profiles: profiles_for_cargo(rust),
+                default_profile: Some("debug".into()),
+            },
+        ];
     }
 
-    None
+    vec![]
 }
 
 fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
@@ -406,6 +442,13 @@ mod tests {
         let inferred = infer_configs(solution.clone()).unwrap();
         assert!(inferred.iter().any(|c| c.name == "Tauri Dev" && c.command.as_deref() == Some("pnpm run tauri dev")
             && c.best_fit && c.related_projects == ["src-tauri/src-tauri.craidd", "src/src.craidd"]));
+        let family: Vec<_> = inferred.iter().filter(|c| c.best_fit).collect();
+        assert_eq!(family.len(), 3);
+        assert!(family.iter().any(|c| c.kind == "run" && c.target == "src/src.craidd"));
+        assert!(family.iter().any(|c| c.kind == "build" && c.target == "src-tauri/src-tauri.craidd"
+            && c.command.as_deref() == Some("cargo build")));
+        assert!(family.iter().any(|c| c.kind == "debug" && c.target == "src-tauri/src-tauri.craidd"
+            && c.command.as_deref() == Some("cargo build")));
 
         let mut ambiguous = solution;
         ambiguous.projects.push(mk_project("other-rust", "rust", "other/other.craidd",

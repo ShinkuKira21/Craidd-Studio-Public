@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import { useSolution } from "../../store/solutionStore";
-import { useBuild, syncMainChoices, selectConfiguration } from "../../store/buildStore";
+import { useBuild, syncMainChoices, selectConfiguration, choicesForConfig } from "../../store/buildStore";
 import type { ConfigEntry, CraiddProject } from "../../types/project";
 import ConfigurationsDialog from "../dialogs/configurations/ConfigurationsDialog";
 import { useLinkedWindows, startLinkedAction, stopLinkedAction, type LinkedSnapshot } from "../../store/linkedWindowsStore";
@@ -25,7 +25,7 @@ function Toolbar() {
   const debugStatus = useDebug((s) => s.status);
   const debugControl = useDebug((s) => s.control);
   const [dialogOpen, setDialogOpen] = useState(false);
-  // Gold owns the group; white owns this window. They never share a control.
+  const [previewName, setPreviewName] = useState<string | null>(null);
 
   const configs: ConfigEntry[] = [
     ...(solution?.inferredConfigs ?? []),
@@ -39,6 +39,8 @@ function Toolbar() {
   const localStatus = ["building", "running", "paused"].includes(debugStatus) ? debugStatus : status;
   const running = localStatus === "starting" || localStatus === "running" || localStatus === "paused";
   const selectedConfig = configs.find((config) => config.name === selectedConfigName);
+  const previewConfig = configs.find((config) => config.name === previewName);
+  const previewChoices = previewConfig && solution ? choicesForConfig(solution, previewConfig) : null;
   const stopLocal = () => ["building", "running", "paused"].includes(debugStatus) ? debugControl("stop") : stop();
 
   const onChipSelect = (name: string) => {
@@ -47,7 +49,7 @@ function Toolbar() {
 
   return (
     <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-1.5 shrink-0 text-xs">
-      <KindButton kind="build" configs={configs} running={running} onFire={(name) => void start("build", name)} />
+      <KindButton kind="build" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices?.build} onFire={(name) => void start("build", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="build" linked={linked} />}
 
       <ConfigChip
@@ -56,6 +58,7 @@ function Toolbar() {
         configs={configs}
         selectedName={selectedConfigName}
         onSelect={onChipSelect}
+        onPreview={setPreviewName}
         onOpenDialog={() => setDialogOpen(true)}
       />
 
@@ -68,7 +71,7 @@ function Toolbar() {
         />
       )}
 
-      <KindButton kind="run" configs={configs} running={running} onFire={(name) => void start("run", name)} />
+      <KindButton kind="run" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices?.run} onFire={(name) => void start("run", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="run" linked={linked} />}
 
       <button
@@ -82,7 +85,7 @@ function Toolbar() {
         }
       >⏹</button>
 
-      <KindButton kind="debug" configs={configs} running={running} onFire={(name) => void start("debug", name)} />
+      <KindButton kind="debug" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices?.debug} onFire={(name) => void start("debug", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="debug" linked={linked} />}
       {(debugStatus === "paused" || debugStatus === "running") && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {debugStatus === "paused" ? <>
@@ -93,7 +96,7 @@ function Toolbar() {
         </> : <DebugTransport label="Pause" icon="⏸" onClick={() => void debugControl("pause")} />}
       </div>}
 
-      <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[180px]">
+      <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[220px]">
         {running && activeConfigName ? (
           <>
             <span className="text-zinc-500">White · </span><span className="text-zinc-400">{activeConfigName}</span>
@@ -101,7 +104,7 @@ function Toolbar() {
             <span>{localStatus}</span>
           </>
         ) : (
-          <><><span className="text-zinc-500">White · </span><span>{localStatus}</span></></>
+          <><span className="text-zinc-500">White · </span><span>{localStatus}</span></>
         )}
       </div>
 
@@ -217,10 +220,11 @@ function ProfileChip({
 }
 
 function KindButton({
-  kind, configs, running, onFire, mainChoiceOverride,
+  kind, configs, scopeConfig, running, onFire, mainChoiceOverride,
 }: {
   kind: Kind;
   configs: ConfigEntry[];
+  scopeConfig?: ConfigEntry;
   running: boolean;
   onFire: (name: string) => void;
   mainChoiceOverride?: string | null;
@@ -229,11 +233,19 @@ function KindButton({
   const mainChoice = mainChoiceOverride === undefined ? localMainChoice : mainChoiceOverride;
   const [open, setOpen] = useState(false);
 
-  const candidates = configs.filter((c) => c.kind === kind);
+  const candidates = configs.filter((c) => {
+    if (c.kind !== kind) return false;
+    if (!scopeConfig) return true;
+    if (!scopeConfig.bestFit) return !c.bestFit && c.target === scopeConfig.target;
+    const family = scopeConfig.relatedProjects ?? [];
+    return c.bestFit && c.relatedProjects?.length === family.length
+      && c.relatedProjects?.every((project) => family.includes(project));
+  });
   const has = candidates.length > 0;
   const multi = candidates.length > 1;
 
   const chosen = candidates.find((c) => c.name === mainChoice) ?? null;
+  const command = chosen?.command ?? chosen?.method ?? "configuration";
   const disabled = !has || running || !chosen;
 
   const disabledReason = !has
@@ -247,7 +259,7 @@ function KindButton({
   return (
     <div className="relative">
       <button
-        title={disabled ? disabledReason : `${KIND_TITLE[kind]} — ${chosen?.name}`}
+        title={disabled ? disabledReason : `${KIND_TITLE[kind]} — ${chosen?.name} (${command})`}
         disabled={disabled}
         onClick={() => chosen && onFire(chosen.name)}
         className={
@@ -296,53 +308,74 @@ function KindButton({
   );
 }
 
+/**
+ * The chip. Flat list. One row per selectable configuration.
+ *
+ * Compositions carry a filled dot marker (●) to distinguish them from
+ * project configs. Hovering a row previews the toolbar; clicking commits.
+ *
+ * Order: compositions first (Tauri Dev, etc.), then projects in solution
+ * order, each project's configs in manifest order.
+ */
 function ConfigChip({
-  hasSolution, projects, configs, selectedName, onSelect, onOpenDialog,
+  hasSolution, projects, configs, selectedName, onSelect, onPreview, onOpenDialog,
 }: {
   hasSolution: boolean;
   projects: CraiddProject[];
   configs: ConfigEntry[];
   selectedName: string | null;
   onSelect: (name: string) => void;
+  onPreview: (name: string | null) => void;
   onOpenDialog: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [previewKey, setPreviewKey] = useState<string | null>(null);
+
   const selected = configs.find((config) => config.name === selectedName);
-  const bestFits = configs.filter((config) => config.bestFit);
-  const projectGroups = projects.map((project) => ({
-    key: `project:${project.path}`,
-    label: project.name,
-    configs: configs.filter((config) => config.target === project.path && !config.bestFit),
-  })).filter((group) => group.configs.length > 0);
-  const solutionConfigs = configs.filter((config) => config.target === "." && !config.bestFit);
-  const groups = [
-    ...bestFits.map((config) => ({ key: `best:${config.name}`, label: config.name, configs: [config] })),
-    ...projectGroups,
-    ...(solutionConfigs.length > 0 ? [{ key: "solution", label: "Solution", configs: solutionConfigs }] : []),
-  ];
-  const selectedKey = selected?.bestFit ? `best:${selected.name}`
-    : selected?.target === "." ? "solution"
-    : selected ? `project:${selected.target}` : null;
-  const preview = groups.find((group) => group.key === previewKey)
-    ?? groups.find((group) => group.key === selectedKey)
-    ?? groups[0];
-  const selectedProject = projects.find((project) => project.path === selected?.target);
+  const compositions = configs.filter((c) => c.bestFit && c.kind === "run");
+
+  // Project configs = anything not best-fit. Sorted by the project order
+  // the solution declares, then by name.
+  const projectConfigs = configs.filter((c) => !c.bestFit);
+  const byProject = new Map<string, ConfigEntry[]>();
+  for (const c of projectConfigs) {
+    const list = byProject.get(c.target) ?? [];
+    list.push(c);
+    byProject.set(c.target, list);
+  }
+
+
+  // Compute the label.
   const label = !hasSolution ? "No solution"
     : selected?.bestFit ? selected.name
-    : selectedProject?.name ?? selected?.name ?? "No configurations";
-  const chooseGroup = (group: typeof groups[number]) => {
-    const preferred = group.configs.find((config) => config.kind === "run" && config.origin === "user")
-      ?? group.configs.find((config) => config.kind === "run")
-      ?? group.configs.find((config) => config.kind === "build" && config.origin === "user")
-      ?? group.configs.find((config) => config.kind === "build")
-      ?? group.configs[0];
-    if (preferred) onSelect(preferred.name);
-    setOpen(false);
-  };
+    : projects.find((p) => p.path === selected?.target)?.name ?? selected?.name ?? "No configurations";
+
+  // Ordering inside the dropdown:
+  //   compositions first (all of them, since they're the "solution" tier)
+  //   then, per project (solution order), that project's configs
+  const rows: { key: string; kind: "composition" | "project"; name: string; entry?: ConfigEntry; project?: CraiddProject }[] = [];
+  for (const c of compositions) {
+    rows.push({ key: `c:${c.name}`, kind: "composition", name: c.name, entry: c });
+  }
+  for (const project of projects) {
+    const list = byProject.get(project.path) ?? [];
+    if (list.length === 0) continue;
+    rows.push({ key: `p:${project.path}`, kind: "project", name: project.name, project });
+    for (const c of list) {
+      rows.push({ key: `pc:${c.name}`, kind: "project", name: c.name, entry: c, project });
+    }
+  }
+  // Any project configs whose target isn't in `projects` (external).
+  for (const c of projectConfigs) {
+    if (!projects.some((p) => p.path === c.target)) {
+      rows.push({ key: `pc:${c.name}`, kind: "project", name: c.name, entry: c });
+    }
+  }
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onMouseLeave={() => onPreview(null)}
+    >
       <button
         onClick={() => hasSolution && configs.length > 0 && setOpen((v) => !v)}
         disabled={!hasSolution}
@@ -352,6 +385,7 @@ function ConfigChip({
                        : "border-zinc-800 text-zinc-600 cursor-default")
         }
       >
+        {selected?.bestFit && <span className="text-blue-400 text-[8px] shrink-0">●</span>}
         <span className="truncate max-w-[260px]">{label}</span>
         <svg className={"w-3 h-3 shrink-0 text-zinc-500 transition-transform " + (open ? "rotate-180" : "")}
              fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -361,73 +395,57 @@ function ConfigChip({
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 w-[min(560px,calc(100vw-24px))] bg-zinc-900 border border-zinc-700 rounded shadow-2xl z-50 text-xs overflow-hidden">
-            {groups.length > 0 && (
-              <div className="flex min-h-[170px] max-h-[min(360px,60vh)]">
-                <div className="w-[42%] min-w-0 overflow-y-auto scroll-thin border-r border-zinc-800 py-1">
-                  {bestFits.length > 0 && <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500">Solution best fit</div>}
-                  {groups.map((group, index) => (
-                    <div key={group.key}>
-                      {index === bestFits.length && projectGroups.length > 0 &&
-                        <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">Projects</div>}
-                      <button
-                        type="button"
-                        onMouseEnter={() => setPreviewKey(group.key)}
-                        onFocus={() => setPreviewKey(group.key)}
-                        onClick={() => chooseGroup(group)}
-                        className={"w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-zinc-800 " +
-                          (group.key === selectedKey ? "border-l-2 border-blue-500 bg-blue-950/25 text-zinc-100" : "border-l-2 border-transparent text-zinc-300")}
-                      >
-                        <span className="truncate flex-1">{group.label}</span>
-                        {group.key === selectedKey && <span className="text-blue-400">✓</span>}
-                        <span className="text-zinc-600">›</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex-1 min-w-0 overflow-y-auto scroll-thin p-3">
-                  <div className="text-zinc-200 font-medium truncate">{preview?.label}</div>
-                  <div className="mt-0.5 text-[10px] text-zinc-500">{preview?.key.startsWith("best:") ? "Inferred from this solution" : "Choose a project or configuration"}</div>
-                  {preview?.configs[0]?.bestFit && (preview.configs[0].relatedProjects?.length ?? 0) > 0 && (
-                    <div className="mt-1 text-[10px] text-zinc-500 truncate">
-                      {preview.configs[0].relatedProjects?.map((path) => projects.find((project) => project.path === path)?.name ?? path).join(" + ")}
-                    </div>
-                  )}
-                  <div className="mt-3 space-y-1">
-                    {preview?.configs.map((config) => (
-                      <button
-                        type="button"
-                        key={`${config.origin}:${config.name}`}
-                        onClick={() => { onSelect(config.name); setOpen(false); }}
-                        className="w-full rounded px-2 py-1.5 text-left hover:bg-zinc-800 flex gap-3"
-                      >
-                        <span className="text-[10px] text-zinc-500 uppercase w-11 shrink-0 pt-0.5">{config.kind}</span>
-                        <span className="min-w-0">
-                          <span className="block text-zinc-200 truncate">{config.name}</span>
-                          <span className="block text-[10px] text-zinc-500 truncate">{config.command ?? config.method ?? "Configured action"}</span>
-                        </span>
-                      </button>
-                    ))}
+          <div className="fixed inset-0 z-40" onClick={() => { onPreview(null); setOpen(false); }} />
+          <div
+            className="absolute top-full left-0 mt-1 w-[360px] max-h-[min(420px,70vh)] overflow-y-auto scroll-thin bg-zinc-900 border border-zinc-700 rounded shadow-2xl z-50 text-xs py-1"
+            onMouseLeave={() => onPreview(null)}
+          >
+            {rows.map((row) => {
+              if (row.kind === "project" && !row.entry) {
+                return (
+                  <div
+                    key={row.key}
+                    className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-600"
+                  >
+                    {row.name}
                   </div>
-                </div>
-              </div>
-            )}
-            {configs.length === 0 && hasSolution && (
-              <div className="px-3 py-2 text-[11.5px] text-zinc-500 italic">
-                No configurations inferred.
-                <br />
-                Open the dialog to add one.
-              </div>
-            )}
-            <div className="h-px bg-zinc-800" />
+                );
+              }
+              const c = row.entry!;
+              const isSelected = c.name === selectedName;
+              const isComposition = c.bestFit === true;
+              const projectName = projects.find((p) => p.path === c.target)?.name;
+              return (
+                <button
+                  key={row.key}
+                  onMouseEnter={() => onPreview(c.name)}
+                  onFocus={() => onPreview(c.name)}
+                  onClick={() => { onPreview(null); onSelect(c.name); setOpen(false); }}
+                  className={
+                    "w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12.5px] " +
+                    (isSelected ? "bg-blue-950/40 text-zinc-100" : "text-zinc-300 hover:bg-zinc-800")
+                  }
+                >
+                  <span className={
+                    "w-2 shrink-0 text-[8px] " +
+                    (isComposition ? "text-blue-400" : "text-transparent")
+                  }>●</span>
+                  <span className="truncate flex-1">{c.name}</span>
+                  <span className="text-[10px] text-zinc-600 shrink-0 truncate max-w-[120px]">
+                    {isComposition ? "solution" : projectName ?? c.kind}
+                  </span>
+                </button>
+              );
+            })}
+            <div className="my-1 h-px bg-zinc-800" />
             <button
-              onClick={() => { onOpenDialog(); setOpen(false); }}
+              onClick={() => { onPreview(null); onOpenDialog(); setOpen(false); }}
               className="w-full px-3 py-2 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
-            >Add / Edit Configurations…</button>
+            >View Configurations…</button>
           </div>
         </>
       )}
+
     </div>
   );
 }
