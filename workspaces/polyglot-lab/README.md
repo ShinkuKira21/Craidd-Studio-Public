@@ -70,8 +70,12 @@ The native .NET solution is `Server/PolyglotLab.sln`.
 
 - **API: Alternate Port** listens on `5088`; the frontend still calls `5087`.
   This makes mismatched run variants visible.
-- The two **Debug Launch (no adapter)** entries start commands under the
-  current runner. They do **not** attach a debugger or stop at breakpoints.
+- **Rust: Cargo Debug (LLDB)** uses Craidd's LLDB DAP integration. Linked
+  Debug requires each linked window to select a Rust Cargo debug configuration
+  and requires `lldb-dap` to be installed or selected in Preferences → Toolchain.
+- **API: Debug Launch (no adapter)** is a capability probe, not a working C#
+  debugger. Craidd does not yet launch C# debugging or stop at its breakpoints;
+  the Debug button should explain that a supported adapter is required.
 - **Tests: Reserved Test Kind** checks how the picker displays a `test`
   configuration. Craidd has no Test toolbar action yet. Use **Tests: Unit**
   to execute the test runner today.

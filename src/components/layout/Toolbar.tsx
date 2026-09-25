@@ -129,13 +129,19 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   const projects = linked.members.map((member) => member.projectName).join(" + ");
   const count = linked.members.length;
   const activeCount = linked.activeCount;
+  const missingDebug = linked.members.filter((member) => !member.canDebug);
+  const debugBlockers = [
+    missingDebug.length > 0 ? `Select a Rust Cargo Debug configuration in ${missingDebug.map((member) => `CS${member.windowId} (${member.projectName})`).join(", ")}` : null,
+    !linked.debugAdapterAvailable ? "Install or select lldb-dap in Preferences → Toolchain, then rescan Rust tools" : null,
+  ].filter(Boolean).join("; ");
   const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
-    : kind === "debug" && !linked.canDebug ? `Debug ${count} instances requires a real debugger adapter in every window`
+    : kind === "debug" && !linked.canDebug ? `Cannot debug ${count} linked windows: ${debugBlockers}`
     : !available ? `Cannot ${kind} all ${count} linked instances: a configuration is missing`
     : linked.busy ? "A linked action is active"
     : `${KIND_TITLE[kind]} ${count} linked instances: ${projects}`;
   return (
-    <button type="button" title={title} aria-label={isStop ? `Stop ${activeCount} active linked ${activeCount === 1 ? "instance" : "instances"} of ${count}` : `${KIND_TITLE[kind]} ${count} linked instances`}
+    <span className="inline-flex" title={title} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? title : undefined}>
+      <button type="button" aria-label={isStop ? `Stop ${activeCount} active linked ${activeCount === 1 ? "instance" : "instances"} of ${count}` : `${KIND_TITLE[kind]} ${count} linked instances`}
       disabled={disabled}
       onClick={() => void (isStop ? stopLinkedAction() : startLinkedAction(kind)).catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
       onContextMenu={(event) => {
@@ -151,7 +157,8 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
       <GoldActionIcon kind={kind} stop={isStop} />
       <sup aria-hidden="true" className="absolute top-0 right-0 text-[9px] leading-none font-semibold tabular-nums">{count}</sup>
       {isStop && <sub aria-hidden="true" className="absolute bottom-0 right-0 text-[9px] leading-none font-semibold tabular-nums text-zinc-100">{activeCount}</sub>}
-    </button>
+      </button>
+    </span>
   );
 }
 
@@ -309,15 +316,6 @@ function KindButton({
   );
 }
 
-/**
- * The chip. Flat list. One row per selectable configuration.
- *
- * Compositions carry a filled dot marker (●) to distinguish them from
- * project configs. Hovering a row previews the toolbar; clicking commits.
- *
- * Order: compositions first (Tauri Dev, etc.), then projects in solution
- * order, each project's configs in manifest order.
- */
 function ConfigChip({
   hasSolution, projects, configs, selectedName, onSelect, onPreview, onOpenDialog,
 }: {
@@ -330,55 +328,47 @@ function ConfigChip({
   onOpenDialog: () => void;
 }) {
   const [open, setOpen] = useState(false);
-
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const closePicker = () => { onPreview(null); setOpen(false); };
   const selected = configs.find((config) => config.name === selectedName);
-  const compositions = configs.filter((c) => (c.bestFit && c.kind === "run") || !!c.slots);
-
-  // Project configs = anything not best-fit. Sorted by the project order
-  // the solution declares, then by name.
-  const projectConfigs = configs.filter((c) => !c.bestFit && !c.slots);
-  const byProject = new Map<string, ConfigEntry[]>();
-  for (const c of projectConfigs) {
-    const list = byProject.get(c.target) ?? [];
-    list.push(c);
-    byProject.set(c.target, list);
-  }
-
-
-  // Compute the label.
+  const powerConfigs = configs.filter((config) => (config.bestFit && config.kind === "run") || !!config.slots);
+  const projectGroups = projects.map((project) => ({
+    key: `project:${project.path}`,
+    label: project.name,
+    configs: configs.filter((config) => config.target === project.path && !config.bestFit && !config.slots),
+  })).filter((group) => group.configs.length > 0);
+  const workspaceCommands = configs.filter((config) => config.target === "." && !config.bestFit && !config.slots);
+  const groups = [
+    ...powerConfigs.map((config) => ({ key: `best:${config.name}`, label: config.name, configs: [config] })),
+    ...projectGroups,
+    ...(workspaceCommands.length > 0 ? [{ key: "workspace-commands", label: "Workspace commands", configs: workspaceCommands }] : []),
+  ];
+  const selectedKey = selected?.bestFit || selected?.slots ? `best:${selected.name}`
+    : selected?.target === "." ? "workspace-commands"
+    : selected ? `project:${selected.target}` : null;
+  const preview = groups.find((group) => group.key === previewKey)
+    ?? groups.find((group) => group.key === selectedKey)
+    ?? groups[0];
+  const selectedProject = projects.find((project) => project.path === selected?.target);
   const label = !hasSolution ? "No solution"
     : (selected?.bestFit || selected?.slots) ? selected.name
-    : projects.find((p) => p.path === selected?.target)?.name ?? selected?.name ?? "No configurations";
-
-  // Ordering inside the dropdown:
-  //   compositions first (all of them, since they're the "solution" tier)
-  //   then, per project (solution order), that project's configs
-  const rows: { key: string; kind: "composition" | "project"; name: string; entry?: ConfigEntry; project?: CraiddProject }[] = [];
-  for (const c of compositions) {
-    rows.push({ key: `c:${c.name}`, kind: "composition", name: c.name, entry: c });
-  }
-  for (const project of projects) {
-    const list = byProject.get(project.path) ?? [];
-    if (list.length === 0) continue;
-    rows.push({ key: `p:${project.path}`, kind: "project", name: project.name, project });
-    for (const c of list) {
-      rows.push({ key: `pc:${c.name}`, kind: "project", name: c.name, entry: c, project });
-    }
-  }
-  // Any project configs whose target isn't in `projects` (external).
-  for (const c of projectConfigs) {
-    if (!projects.some((p) => p.path === c.target)) {
-      rows.push({ key: `pc:${c.name}`, kind: "project", name: c.name, entry: c });
-    }
-  }
+    : selectedProject?.name ?? selected?.name ?? "No configurations";
+  const preferredForGroup = (group: typeof groups[number]) =>
+    group.configs.find((config) => config.kind === "run" && config.origin === "user")
+      ?? group.configs.find((config) => config.kind === "run")
+      ?? group.configs.find((config) => config.kind === "build" && config.origin === "user")
+      ?? group.configs.find((config) => config.kind === "build")
+      ?? group.configs[0];
+  const chooseGroup = (group: typeof groups[number]) => {
+    const preferred = preferredForGroup(group);
+    if (preferred) onSelect(preferred.name);
+    closePicker();
+  };
 
   return (
-    <div
-      className="relative"
-      onMouseLeave={() => onPreview(null)}
-    >
+    <div className="relative" onMouseLeave={() => onPreview(null)}>
       <button
-        onClick={() => hasSolution && configs.length > 0 && setOpen((v) => !v)}
+        onClick={() => { if (open) closePicker(); else if (hasSolution && configs.length > 0) setOpen(true); }}
         disabled={!hasSolution}
         className={
           "h-8 px-3 rounded flex items-center gap-2 border text-[12px] transition-colors " +
@@ -386,7 +376,6 @@ function ConfigChip({
                        : "border-zinc-800 text-zinc-600 cursor-default")
         }
       >
-        {(selected?.bestFit || selected?.slots) && <span className="text-blue-400 text-[8px] shrink-0">●</span>}
         <span className="truncate max-w-[260px]">{label}</span>
         <svg className={"w-3 h-3 shrink-0 text-zinc-500 transition-transform " + (open ? "rotate-180" : "")}
              fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -396,57 +385,75 @@ function ConfigChip({
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => { onPreview(null); setOpen(false); }} />
-          <div
-            className="absolute top-full left-0 mt-1 w-[360px] max-h-[min(420px,70vh)] overflow-y-auto scroll-thin bg-zinc-900 border border-zinc-700 rounded shadow-2xl z-50 text-xs py-1"
-            onMouseLeave={() => onPreview(null)}
-          >
-            {rows.map((row) => {
-              if (row.kind === "project" && !row.entry) {
-                return (
-                  <div
-                    key={row.key}
-                    className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-600"
-                  >
-                    {row.name}
+          <div className="fixed inset-0 z-40" onClick={closePicker} />
+          <div className="absolute top-full left-0 mt-1 w-[min(620px,calc(100vw-24px))] bg-zinc-900 border border-zinc-700 rounded shadow-2xl z-50 text-xs overflow-hidden">
+            {groups.length > 0 && (
+              <div className="flex min-h-[170px] max-h-[min(430px,70vh)]">
+                <div className="w-[42%] min-w-0 overflow-y-auto scroll-thin border-r border-zinc-800 py-1">
+                  {powerConfigs.length > 0 && <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500">Power configurations</div>}
+                  {groups.map((group, index) => (
+                    <div key={group.key}>
+                      {index === powerConfigs.length && projectGroups.length > 0 &&
+                        <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">Projects</div>}
+                      <button
+                        type="button"
+                        onMouseEnter={() => { setPreviewKey(group.key); onPreview(preferredForGroup(group)?.name ?? null); }}
+                        onFocus={() => { setPreviewKey(group.key); onPreview(preferredForGroup(group)?.name ?? null); }}
+                        onClick={() => chooseGroup(group)}
+                        className={"w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-zinc-800 " +
+                          (group.key === selectedKey ? "border-l-2 border-blue-500 bg-blue-950/25 text-zinc-100" : "border-l-2 border-transparent text-zinc-300")}
+                      >
+                        <span className="truncate flex-1">{group.label}</span>
+                        {group.key === selectedKey && <span className="text-blue-400">✓</span>}
+                        <span className="text-zinc-600">›</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex-1 min-w-0 overflow-y-auto scroll-thin p-3">
+                  <div className="text-zinc-200 font-medium truncate">{preview?.label}</div>
+                  <div className="mt-0.5 text-[10px] text-zinc-500">{preview?.key.startsWith("best:") ? (preview.configs[0]?.bestFit ? "Inferred from this solution" : "Power configuration") : preview?.key === "workspace-commands" ? "Commands run from the solution root" : "Choose a project or configuration"}</div>
+                  {preview?.configs[0]?.bestFit && (preview.configs[0].relatedProjects?.length ?? 0) > 0 && (
+                    <div className="mt-1 text-[10px] text-zinc-500 truncate">
+                      {preview.configs[0].relatedProjects?.map((path) => projects.find((project) => project.path === path)?.name ?? path).join(" + ")}
+                    </div>
+                  )}
+                  <div className="mt-3 space-y-1">
+                    {preview?.configs.map((config) => (
+                      <button
+                        type="button"
+                        key={`${config.origin}:${config.name}`}
+                        onMouseEnter={() => onPreview(config.name)}
+                        onFocus={() => onPreview(config.name)}
+                        onClick={() => { onSelect(config.name); closePicker(); }}
+                        className="w-full rounded px-2 py-1.5 text-left hover:bg-zinc-800 flex gap-3"
+                      >
+                        <span className="text-[10px] text-zinc-500 uppercase w-11 shrink-0 pt-0.5">{config.kind}</span>
+                        <span className="min-w-0">
+                          <span className="block text-zinc-200 truncate">{config.name}</span>
+                          <span className="block text-[10px] text-zinc-500 truncate">{config.command ?? config.method ?? "Configured action"}</span>
+                        </span>
+                      </button>
+                    ))}
                   </div>
-                );
-              }
-              const c = row.entry!;
-              const isSelected = c.name === selectedName;
-              const isComposition = c.bestFit === true || !!c.slots;
-              const projectName = projects.find((p) => p.path === c.target)?.name;
-              return (
-                <button
-                  key={row.key}
-                  onMouseEnter={() => onPreview(c.name)}
-                  onFocus={() => onPreview(c.name)}
-                  onClick={() => { onPreview(null); onSelect(c.name); setOpen(false); }}
-                  className={
-                    "w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12.5px] " +
-                    (isSelected ? "bg-blue-950/40 text-zinc-100" : "text-zinc-300 hover:bg-zinc-800")
-                  }
-                >
-                  <span className={
-                    "w-2 shrink-0 text-[8px] " +
-                    (isComposition ? "text-blue-400" : "text-transparent")
-                  }>●</span>
-                  <span className="truncate flex-1">{c.name}</span>
-                  <span className="text-[10px] text-zinc-600 shrink-0 truncate max-w-[120px]">
-                    {isComposition ? "solution" : projectName ?? c.kind}
-                  </span>
-                </button>
-              );
-            })}
-            <div className="my-1 h-px bg-zinc-800" />
+                </div>
+              </div>
+            )}
+            {configs.length === 0 && hasSolution && (
+              <div className="px-3 py-2 text-[11.5px] text-zinc-500 italic">
+                No configurations inferred.
+                <br />
+                Open the dialog to add one.
+              </div>
+            )}
+            <div className="h-px bg-zinc-800" />
             <button
-              onClick={() => { onPreview(null); onOpenDialog(); setOpen(false); }}
+              onClick={() => { onOpenDialog(); closePicker(); }}
               className="w-full px-3 py-2 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
             >Add / Edit Configurations…</button>
           </div>
         </>
       )}
-
     </div>
   );
 }

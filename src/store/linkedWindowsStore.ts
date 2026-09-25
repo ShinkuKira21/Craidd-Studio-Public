@@ -15,6 +15,7 @@ export interface LinkedSnapshot {
   canBuild: boolean;
   canRun: boolean;
   canDebug: boolean;
+  debugAdapterAvailable: boolean;
   busy: boolean;
   activeAction: Action | null;
   activeCount: number;
@@ -31,6 +32,7 @@ export interface LinkedMember {
   restoring: boolean;
   selectedConfigName: string | null;
   selectedProfileName: string | null;
+  canDebug: boolean;
   activeFile: { path: string; name: string; language: string; content: string; dirty: boolean; truncated: boolean } | null;
   tabs: { path: string; name: string; dirty: boolean }[];
   output: string;
@@ -51,7 +53,7 @@ interface LinkedView {
 
 const empty: LinkedSnapshot = {
   sequence: 0, linked: false, members: [], windows: [], canBuild: false,
-  canRun: false, canDebug: false, busy: false, activeAction: null, activeCount: 0,
+  canRun: false, canDebug: false, debugAdapterAvailable: false, busy: false, activeAction: null, activeCount: 0,
   problems: [],
 };
 

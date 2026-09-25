@@ -171,6 +171,7 @@ pub struct LinkedMember {
     pub restoring: bool,
     pub selected_config_name: Option<String>,
     pub selected_profile_name: Option<String>,
+    pub can_debug: bool,
     pub active_file: Option<LinkedFile>,
     pub tabs: Vec<LinkedTab>,
     pub output: String,
@@ -192,6 +193,7 @@ pub struct LinkedSnapshot {
     pub can_build: bool,
     pub can_run: bool,
     pub can_debug: bool,
+    pub debug_adapter_available: bool,
     pub busy: bool,
     pub active_action: Option<String>,
     pub active_count: usize,
@@ -273,7 +275,7 @@ fn group_members(registry: &Registry, solution: &str) -> Vec<String> {
 fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let Some(window) = registry.windows.get(label) else {
         return LinkedSnapshot { sequence: registry.sequence, linked: false, members: vec![], windows: vec![],
-            can_build: false, can_run: false, can_debug: false, busy: false, active_action: None, active_count: 0,
+            can_build: false, can_run: false, can_debug: false, debug_adapter_available: false, busy: false, active_action: None, active_count: 0,
             problems: vec![] };
     };
     let members = group_members(registry, &window.solution_path);
@@ -283,6 +285,7 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let all = members.iter().filter_map(|member| registry.windows.get(member));
     let can_build = linked && all.clone().all(|participant| participant.can_build);
     let can_run = linked && all.clone().all(|participant| participant.can_run);
+    let debug_adapter_available = super::debug::adapter_available();
     let busy = action.is_some() || (linked && all.clone().any(|participant| is_busy(&participant.status)));
     // Once an action starts, its count describes the launched windows even if
     // another window opens or changes its project while the action is active.
@@ -301,7 +304,8 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
             .map(|item| member(label, item, false))).collect() } else { vec![] },
         can_build, can_run,
         can_debug: linked && all.clone().all(|participant| participant.can_debug)
-            && super::debug::adapter_available(),
+            && debug_adapter_available,
+        debug_adapter_available,
         busy,
         active_action: action.map(|action| action.action.clone()),
         active_count: action.map_or(0, |action| action.unfinished.len()),
@@ -323,6 +327,7 @@ fn member(label: &str, item: &Participant, include_context: bool) -> LinkedMembe
         status: item.status.clone(), visible: item.visible, restoring: item.restoring,
         selected_config_name: item.selected_config_name.clone(),
         selected_profile_name: item.selected_profile_name.clone(),
+        can_debug: item.can_debug,
         active_file: item.active_file.as_ref().map(|file| LinkedFile {
             path: file.path.clone(), name: file.name.clone(), language: file.language.clone(),
             content: if include_context { file.content.clone() } else { String::new() },
@@ -1283,6 +1288,19 @@ mod tests {
         registry.windows.get_mut("b").unwrap().project_kind = Some("application".into());
         registry.windows.get_mut("b").unwrap().solution_path = "/other.cln".into();
         assert!(group_members(&registry, "/one.cln").is_empty());
+    }
+
+    #[test]
+    fn linked_snapshot_identifies_which_window_cannot_debug() {
+        let mut registry = Registry::default();
+        registry.windows.insert("rust".into(), participant("/one.cln", "rust", "application"));
+        let mut api = participant("/one.cln", "api", "service");
+        api.can_debug = false;
+        registry.windows.insert("api".into(), api);
+        let view = snapshot(&registry, "rust");
+        assert!(!view.can_debug);
+        assert!(view.members.iter().any(|member| member.window_label == "rust" && member.can_debug));
+        assert!(view.members.iter().any(|member| member.window_label == "api" && !member.can_debug));
     }
 
     #[test]

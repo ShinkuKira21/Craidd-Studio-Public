@@ -39,9 +39,10 @@ export default function ConfigurationsDialog({ onClose }: Props) {
       result.push({ key: `header:${label}`, label });
       result.push(...entries);
     };
-    addGroup("Solution", displayEntries.filter((row) => row.entry.bestFit || row.entry.slots));
+    addGroup("Power configurations", displayEntries.filter((row) => row.entry.bestFit || row.entry.slots));
     for (const project of projects) addGroup(project.name, displayEntries.filter((row) => !row.entry.bestFit && !row.entry.slots && row.entry.target === project.path));
-    addGroup("Other", displayEntries.filter((row) => !row.entry.bestFit && !row.entry.slots && !projects.some((p) => p.path === row.entry.target)));
+    addGroup("Workspace commands", displayEntries.filter((row) => !row.entry.bestFit && !row.entry.slots && row.entry.target === "."));
+    addGroup("Unmatched targets", displayEntries.filter((row) => !row.entry.bestFit && !row.entry.slots && row.entry.target !== "." && !projects.some((p) => p.path === row.entry.target)));
     return result;
   }, [solution, drafts]);
   const selectedRow = displayEntries.find((row) => row.key === selectedKey) ?? displayEntries[0];
@@ -61,7 +62,7 @@ export default function ConfigurationsDialog({ onClose }: Props) {
     markDirty();
   };
   const addProject = () => append({ name: uniqueName("New Configuration"), kind: "run", target: projects[0]?.path ?? ".", method: "shell", command: "", origin: "user", profiles: [] });
-  const addComposition = () => append({ name: uniqueName("New Solution Configuration"), kind: "run", target: ".", origin: "user", slots: {}, profiles: [] });
+  const addComposition = () => append({ name: uniqueName("New Power Configuration"), kind: "run", target: ".", origin: "user", slots: {}, profiles: [] });
   const duplicate = () => {
     if (!selected || !solution) return;
     if (selected.bestFit) {
@@ -158,7 +159,7 @@ export default function ConfigurationsDialog({ onClose }: Props) {
         <SectionRail active={section} onSelect={selectSection} buildDirty={dirty} />
         {section === "build" ? <div className="flex-1 min-w-0 min-h-0 flex max-[700px]:flex-col">
         <div className="w-[260px] shrink-0 border-r border-zinc-800 flex flex-col min-h-0 max-[700px]:w-full max-[700px]:h-[35%] max-[700px]:border-r-0 max-[700px]:border-b">
-          <div className="px-2 py-2 border-b border-zinc-800 flex gap-1"><button type="button" className={actionClass} onClick={addProject}>+ Configuration</button><button type="button" className={actionClass} onClick={addComposition}>+ Solution</button></div>
+          <div className="px-2 py-2 border-b border-zinc-800 flex gap-1"><button type="button" className={actionClass} onClick={addProject}>+ Configuration</button><button type="button" className={actionClass} onClick={addComposition} title="Choose Build, Run, and Debug configurations for one toolbar preset">+ Power</button></div>
           <div className="flex-1 overflow-y-auto scroll-thin py-2">{rows.length === 0 && <p className="px-4 text-[12px] text-zinc-500">No configurations yet. Create one above.</p>}{rows.map((row) => row.label ? <div key={row.key} className="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">{row.label}</div> : <button key={row.key} type="button" onClick={() => setSelectedKey(row.key)} className={"w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] border-l-2 " + (selectedRow?.key === row.key ? "border-blue-500 bg-blue-950/40 text-zinc-100" : "border-transparent text-zinc-300 hover:bg-zinc-800")}><span className="truncate flex-1">{row.entry?.name}</span>{row.entry?.origin === "inferred" && <span className="text-[9px] text-zinc-500">auto</span>}{row.entry?.name === defaultName && <span title="Default" className="text-amber-400">★</span>}</button>)}</div>
           <div className="px-2 py-2 border-t border-zinc-800 flex gap-1 flex-wrap"><button type="button" disabled={!selected} className={actionClass} onClick={duplicate}>{editable ? "Duplicate" : "Customize"}</button><button type="button" disabled={!editable} className={actionClass} onClick={remove}>Delete</button><button type="button" disabled={!selected || selected.name === defaultName} className={actionClass} onClick={() => { setDefaultName(selected?.name); markDirty(); }}>Set default</button></div>
         </div>

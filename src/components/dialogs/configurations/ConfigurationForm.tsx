@@ -30,7 +30,7 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
     <div className="flex-1 min-h-0 overflow-y-auto scroll-thin">
       <div className="px-5 py-3 border-b border-zinc-800 flex items-center gap-2">
         <h2 className="text-sm text-zinc-100 font-medium truncate">{config.name || "New configuration"}</h2>
-        <span className="text-[10px] uppercase text-zinc-500 border border-zinc-700 rounded px-1.5">{isComposition ? "solution" : config.kind}</span>
+        <span className="text-[10px] uppercase text-zinc-500 border border-zinc-700 rounded px-1.5">{isComposition ? "power" : config.kind}</span>
         {config.origin === "inferred" && <span className="text-[10px] text-zinc-500 ml-auto">Inferred · customize to edit</span>}
       </div>
       <div className="px-5 py-4 space-y-3 max-w-[680px]">
@@ -44,7 +44,7 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
               return <Field key={kind} label={kind[0].toUpperCase() + kind.slice(1)}>
                 <select className={inputClass} value={current} disabled={!editable} onChange={(e) => set({ slots: { ...config.slots, [kind]: e.target.value || undefined } })}>
                   <option value="">No {kind} action</option>
-                  {candidates.map((candidate) => <option key={candidate.name} value={candidate.name}>{candidate.name} · {projects.find((p) => p.path === candidate.target)?.name ?? "solution"}</option>)}
+                  {candidates.map((candidate) => <option key={candidate.name} value={candidate.name}>{candidate.name} · {projects.find((p) => p.path === candidate.target)?.name ?? "workspace"}</option>)}
                 </select>
               </Field>;
             })}
