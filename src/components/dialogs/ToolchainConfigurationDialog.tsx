@@ -24,15 +24,24 @@ const ROLES_BY_LANGUAGE: Record<string, string[]> = {
 export default function ToolchainConfigurationDialog({
   project,
   onClose,
+  embedded = false,
+  onDirtyChange,
+  onSaved,
 }: {
   project: CraiddProject;
   onClose: () => void;
+  embedded?: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
+  onSaved?: () => void;
 }) {
   const rootPath = useSolution((s) => s.rootPath);
   const [snapshot, setSnapshot] = useState<ToolchainSnapshot | null>(null);
   const [override, setOverride] = useState<Record<string, string | null>>({});
+  const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const markDirty = () => { setDirty(true); onDirtyChange?.(true); };
 
   const language = project.language ?? "config";
   const roles = ROLES_BY_LANGUAGE[language] ?? [];
@@ -73,10 +82,12 @@ export default function ToolchainConfigurationDialog({
       const chosen = await open({ multiple: false });
       if (typeof chosen !== "string") return;
       setOverride((o) => ({ ...o, [role]: chosen }));
+      markDirty();
     } catch (err) { setError(String(err)); }
   };
 
   const clear = (role: string) => {
+    markDirty();
     setOverride((o) => {
       const next = { ...o };
       delete next[role];
@@ -94,19 +105,22 @@ export default function ToolchainConfigurationDialog({
         projectPath: project.path,
         override_: override,
       });
-      onClose();
+      setDirty(false);
+      onDirtyChange?.(false);
+      if (embedded) onSaved?.();
+      else onClose();
     } catch (err) { setError(String(err)); }
     finally { setBusy(false); }
   };
 
-  return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50" onClick={busy ? undefined : onClose}>
+  const panel = (
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-[620px] max-h-[85vh] flex flex-col bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"
+        className={embedded ? "flex-1 min-h-0 flex flex-col overflow-hidden" : "w-[620px] max-h-[85vh] flex flex-col bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl overflow-hidden"}
       >
         <div className="px-4 py-3 border-b border-zinc-800 text-sm text-zinc-200 font-medium shrink-0">
           Toolchain — {project.name}
+          {dirty && <span className="ml-2 text-[10px] text-amber-400">Unsaved</span>}
           <span className="ml-3 text-[11px] text-zinc-500 font-normal">{language}</span>
         </div>
 
@@ -145,7 +159,7 @@ export default function ToolchainConfigurationDialog({
                     onChange={(e) => {
                       const v = e.target.value;
                       if (!v) clear(role);
-                      else setOverride((o) => ({ ...o, [role]: v }));
+                      else { setOverride((o) => ({ ...o, [role]: v })); markDirty(); }
                     }}
                     disabled={busy}
                     className="flex-1 min-w-0 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-zinc-200"
@@ -206,6 +220,7 @@ export default function ToolchainConfigurationDialog({
           </div>
         </div>
       </div>
-    </div>
   );
+  if (embedded) return panel;
+  return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50" onClick={busy ? undefined : onClose}>{panel}</div>;
 }
