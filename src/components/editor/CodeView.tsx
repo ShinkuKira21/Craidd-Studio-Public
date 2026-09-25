@@ -43,10 +43,16 @@ export default function CodeView() {
   const activeFileId = useSolution((s) => s.activeFileId);
   const points = useBreakpoints((s) => s.points);
   const ownLabel = useLinkedWindows((s) => s.ownInstanceId);
+  const remoteEditContext = useLinkedWindows((s) => s.remoteEditing
+    ? s.windows.find((item) => item.windowLabel === s.viewedWindowLabel && item.windowLabel !== s.ownWindowLabel)
+    : undefined);
+  const breakpointInstanceId = remoteEditContext?.instanceId ?? ownLabel;
   const debugStatus = useDebug((s) => s.status);
   const debugFile = useDebug((s) => s.file);
   const debugLine = useDebug((s) => s.line);
-  const pausedLine = debugStatus === "paused" && debugFile === activeFileId ? debugLine : null;
+  const pausedLine = remoteEditContext
+    ? remoteEditContext.status === "paused" && remoteEditContext.activeFile?.path === activeFileId ? remoteEditContext.pausedLine : null
+    : debugStatus === "paused" && debugFile === activeFileId ? debugLine : null;
   const navigation = useSolution((s) => s.navigation);
   // Monaco owns the live text while typing. The store still receives every
   // change for Save, but React only needs to rerender on a tab switch or a
@@ -87,13 +93,29 @@ export default function CodeView() {
     return () => cancelAnimationFrame(frame);
   }, [navigation, activeFileId]);
 
-  useEffect(() => {
+  // Monaco can mount after React has already run the effect for a newly
+  // opened file. Read the latest stores at mount time, not render-time props,
+  // so adopting a hidden session never paints its marker as another window.
+  const refreshBreakpoints = useCallback(() => {
     const decorations = decorationsRef.current;
-    if (!decorations || !monacoRef.current) return;
-    trackedPointsRef.current = points.filter((point) => point.file === activeFileId)
+    const monaco = monacoRef.current;
+    if (!decorations || !monaco) return;
+    const file = useSolution.getState().activeFileId;
+    const currentPoints = useBreakpoints.getState().points;
+    const linked = useLinkedWindows.getState();
+    const target = linked.remoteEditing ? linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
+      && item.windowLabel !== linked.ownWindowLabel) : null;
+    const instanceId = target?.instanceId ?? linked.ownInstanceId;
+    const debug = useDebug.getState();
+    const currentPausedLine = target
+      ? target.status === "paused" && target.activeFile?.path === file ? target.pausedLine : null
+      : debug.status === "paused" && debug.file === file ? debug.line : null;
+    trackedPointsRef.current = currentPoints.filter((point) => point.file === file)
       .filter((point, index, all) => all.findIndex((item) => item.line === point.line) === index);
-    decorations.set(breakpointDecorations(monacoRef.current, points, activeFileId, ownLabel, pausedLine));
-  }, [points, activeFileId, ownLabel, pausedLine]);
+    decorations.set(breakpointDecorations(monaco, currentPoints, file, instanceId, currentPausedLine));
+  }, []);
+
+  useEffect(() => { refreshBreakpoints(); }, [refreshBreakpoints, points, activeFileId, breakpointInstanceId, pausedLine]);
 
   useEffect(() => {
     const onSaved = (event: Event) => {
@@ -133,22 +155,24 @@ export default function CodeView() {
           editorRef.current = instance;
           monacoRef.current = monaco;
           decorationsRef.current = instance.createDecorationsCollection();
-          trackedPointsRef.current = points.filter((point) => point.file === activeFileId)
-            .filter((point, index, all) => all.findIndex((item) => item.line === point.line) === index);
-          decorationsRef.current.set(breakpointDecorations(monaco, points, activeFileId, ownLabel, pausedLine));
+          refreshBreakpoints();
           revealCurrentNavigation(instance);
-          instance.onDidChangeModel(() => revealCurrentNavigation(instance));
+          instance.onDidChangeModel(() => { revealCurrentNavigation(instance); refreshBreakpoints(); });
           instance.onMouseDown((event) => {
             if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !event.event.leftButton) return;
             const file = useSolution.getState().activeFileId;
             const line = event.target.position?.lineNumber;
             const state = useLinkedWindows.getState();
-            if (file && line && state.ownInstanceId) void useBreakpoints.getState()
-              .toggleForInstance(file, line, state.ownInstanceId, state.windows.map((item) => item.instanceId))
+            const target = state.remoteEditing ? state.windows.find((item) => item.windowLabel === state.viewedWindowLabel
+              && item.windowLabel !== state.ownWindowLabel) : null;
+            const instanceId = target?.instanceId ?? state.ownInstanceId;
+            if (file && line && instanceId) void useBreakpoints.getState()
+              .toggleForInstance(file, line, instanceId, state.windows.map((item) => item.instanceId))
               .catch((error) => alert(`Breakpoint failed: ${String(error)}`));
           });
           instance.onContextMenu((event) => {
-            if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+            if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
+              && event.target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) return;
             const line = event.target.position?.lineNumber;
             if (!line) return;
             event.event.preventDefault();
@@ -157,8 +181,8 @@ export default function CodeView() {
         }}
         options={options}
       />
-      {breakpointMenu && activeFileId && ownLabel && <BreakpointMenu file={activeFileId}
-        line={breakpointMenu.line} instanceId={ownLabel} x={breakpointMenu.x} y={breakpointMenu.y}
+      {breakpointMenu && activeFileId && breakpointInstanceId && <BreakpointMenu file={activeFileId}
+        line={breakpointMenu.line} instanceId={breakpointInstanceId} x={breakpointMenu.x} y={breakpointMenu.y}
         onClose={() => setBreakpointMenu(null)} />}
     </div>
   );

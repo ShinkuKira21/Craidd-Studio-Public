@@ -33,6 +33,7 @@ export interface LinkedMember {
   selectedConfigName: string | null;
   selectedProfileName: string | null;
   canDebug: boolean;
+  debugging: boolean;
   activeFile: { path: string; name: string; language: string; content: string; dirty: boolean; truncated: boolean } | null;
   tabs: { path: string; name: string; dirty: boolean }[];
   output: string;
@@ -48,6 +49,8 @@ interface LinkedView {
   ownWindowLabel: string | null;
   ownInstanceId: string | null;
   viewedWindowLabel: string | null;
+  remoteEditing: boolean;
+  setRemoteEditing: (editing: boolean) => void;
   selectWindow: (label: string) => Promise<void>;
 }
 
@@ -58,7 +61,8 @@ const empty: LinkedSnapshot = {
 };
 
 export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
-  ...empty, ownWindowLabel: null, ownInstanceId: null, viewedWindowLabel: null,
+  ...empty, ownWindowLabel: null, ownInstanceId: null, viewedWindowLabel: null, remoteEditing: false,
+  setRemoteEditing: (remoteEditing) => set({ remoteEditing }),
   selectWindow: async (label) => {
     const { invoke } = await import("@tauri-apps/api/core");
     const state = useLinkedWindows.getState();
@@ -78,7 +82,7 @@ export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
     }
     try {
       const snapshot = await invoke<LinkedSnapshot>("view_linked_window", { targetLabel: label });
-      set({ viewedWindowLabel: label });
+      set({ viewedWindowLabel: label, remoteEditing: false });
       applySnapshot(snapshot);
     } catch (cause) {
       const message = String(cause);
@@ -99,9 +103,13 @@ export function setWindowInstanceId(id: string): void {
 function applySnapshot(snapshot: LinkedSnapshot) {
   if (snapshot.sequence >= useLinkedWindows.getState().sequence) {
     const state = useLinkedWindows.getState();
-    const viewedWindowLabel = state.viewedWindowLabel && snapshot.windows.some((item) => item.windowLabel === state.viewedWindowLabel)
-      ? state.viewedWindowLabel : state.ownWindowLabel;
-    useLinkedWindows.setState({ ...snapshot, viewedWindowLabel });
+    const viewed = snapshot.windows.find((item) => item.windowLabel === state.viewedWindowLabel);
+    // A hidden session becomes its own editable window again when shown.
+    const viewedWindowLabel = viewed && (!viewed.visible || viewed.windowLabel === state.ownWindowLabel)
+      ? viewed.windowLabel : state.ownWindowLabel;
+    useLinkedWindows.setState({ ...snapshot, viewedWindowLabel,
+      remoteEditing: viewedWindowLabel === state.viewedWindowLabel && viewedWindowLabel !== state.ownWindowLabel
+        ? state.remoteEditing : false });
   }
 }
 
@@ -144,6 +152,7 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     canBuild: Boolean(build.mainChoices.build),
     canRun: Boolean(build.mainChoices.run),
     canDebug: debugChoice?.kind === "debug" && debugChoice.method === "cargo",
+    debugging: ["building", "running", "paused"].includes(debug.status),
     status: ["building", "running", "paused"].includes(debug.status) ? debug.status : build.status,
     selectedConfigName: build.selectedConfigName,
     selectedProfileName: build.selectedProfileName,

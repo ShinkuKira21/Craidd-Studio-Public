@@ -2,12 +2,18 @@ import { create } from "zustand";
 
 export interface Breakpoint { file: string; line: number; scope: string }
 
+export function activeForAllLinked(points: Breakpoint[], file: string, line: number, instanceIds: string[]): boolean {
+  return instanceIds.length > 0 && instanceIds.every((id) => points.some((point) =>
+    point.file === file && point.line === line && (point.scope === "all" || point.scope === id)));
+}
+
 interface BreakpointState {
   solutionPath: string | null;
   points: Breakpoint[];
   load: (solutionPath: string | null) => Promise<void>;
   toggle: (file: string, line: number, scope?: string) => Promise<void>;
   toggleForInstance: (file: string, line: number, instanceId: string, linkedIds: string[]) => Promise<void>;
+  toggleForAllLinked: (file: string, line: number, linkedIds: string[]) => Promise<void>;
   setScope: (file: string, line: number, scope: string) => Promise<void>;
   remove: (file: string, line: number, scope?: string) => Promise<void>;
   moveLines: (file: string, moves: { from: number; to: number }[]) => Promise<void>;
@@ -53,6 +59,15 @@ export const useBreakpoints = create<BreakpointState>((set, get) => ({
     } else if (!own) {
       next.push({ file, line, scope: instanceId });
     }
+    set({ points: next });
+    try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
+  },
+  toggleForAllLinked: async (file, line, linkedIds) => {
+    const { solutionPath, points } = get();
+    if (!solutionPath || linkedIds.length === 0) return;
+    const active = activeForAllLinked(points, file, line, linkedIds);
+    const next = points.filter((point) => point.file !== file || point.line !== line);
+    if (!active) next.push({ file, line, scope: "all" });
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FileNode } from "../../types/project";
 import { useSolution, type TreeSource } from "../../store/solutionStore";
+import { dispatchLinkedWindowCommand, useLinkedWindows } from "../../store/linkedWindowsStore";
 
 interface Props {
   node: FileNode;
@@ -88,8 +89,24 @@ export default function FileTree({
   const handleClick = () => {
     setFocusedTreeTarget({ path: absPath, source });
     if (renaming) return;
-    if (isFolder) setOpen((v) => !v);
-    else openFile(absPath, node.name);
+    if (isFolder) { setOpen((v) => !v); return; }
+    const linked = useLinkedWindows.getState();
+    const hidden = linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
+      && item.windowLabel !== linked.ownWindowLabel && !item.visible && !item.restoring);
+    if (hidden && (hidden.tabs.some((tab) => tab.path === absPath && tab.dirty)
+      || (hidden.activeFile?.path === absPath && hidden.activeFile.dirty))) {
+      alert("Save this file in its owning window before editing it here.");
+      return;
+    }
+    void (async () => {
+      await openFile(absPath, node.name);
+      if (hidden && useSolution.getState().tabs.some((tab) => tab.fileId === absPath)) {
+        // A owns the editable tab; the parked session remembers the file
+        // to show again when its window is restored.
+        linked.setRemoteEditing(true);
+        await dispatchLinkedWindowCommand(hidden.windowLabel, "reveal_file", JSON.stringify({ file: absPath, line: 1 }));
+      }
+    })().catch((error) => console.error("[craidd] Could not open hidden file:", error));
   };
 
   const handleDoubleClick = (e: React.MouseEvent) => {
