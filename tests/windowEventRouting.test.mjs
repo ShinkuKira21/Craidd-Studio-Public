@@ -20,3 +20,11 @@ test("per-window runtime and linked events use WebviewWindow-scoped listeners", 
   assert.doesNotMatch(debug, /@tauri-apps\/api\/event/);
   assert.doesNotMatch(linked, /\{ listen, emitTo \}/);
 });
+
+test("dirty close flows select a prompt target and close the initiator last", async () => {
+  const manager = await read("../src/components/layout/WindowManager.tsx");
+
+  assert.equal((manager.match(/await promptNext\(/g) ?? []).length, 5);
+  assert.match(manager, /Number\(a === args\.initiator\) - Number\(b === args\.initiator\)/);
+  assert.doesNotMatch(manager, /Number\(b === args\.initiator\) - Number\(a === args\.initiator\)/);
+});

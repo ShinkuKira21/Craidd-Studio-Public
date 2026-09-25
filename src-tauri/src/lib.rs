@@ -9,7 +9,7 @@ use commands::toolchain::{get_toolchain, scan_toolchain, ensure_project_toolchai
 use commands::build::{BuildManager, start_cargo, stop_cargo, cancel_window_build};
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
-    save_project, save_solution, scan_craidd_files, remove_project, delete_project,
+    save_project, save_solution, save_solution_configs, scan_craidd_files, remove_project, delete_project,
     edit_cln_repoint_entry,
     plan_craidd_filename,
     scan_craidd_in_folder_cmd,
@@ -91,6 +91,7 @@ pub fn run() {
             load_solution_named,
             save_project,
             save_solution,
+            save_solution_configs,
             create_project_folder,
             remove_project,
             delete_project,

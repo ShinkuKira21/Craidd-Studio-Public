@@ -108,6 +108,8 @@ export interface ConfigEntry {
   bestFit?: boolean;
   /** Project markers whose manifests established this suggestion. */
   relatedProjects?: string[];
+  /** Explicit action references for a saved solution composition. */
+  slots?: { build?: string; run?: string; debug?: string };
   method?: string;             // "cargo" | "npm" | "dotnet" | "cmake" | "shell" | "composed" | "python"
   command?: string;            // literal command; overrides method+manifest
   cwd?: string;                // relative to solution root

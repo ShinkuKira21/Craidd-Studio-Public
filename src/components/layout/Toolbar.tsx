@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import { useSolution } from "../../store/solutionStore";
-import { useBuild, syncMainChoices, selectConfiguration } from "../../store/buildStore";
+import { useBuild, syncMainChoices, selectConfiguration, choicesForConfig } from "../../store/buildStore";
 import type { ConfigEntry, CraiddProject } from "../../types/project";
 import ConfigurationsDialog from "../dialogs/configurations/ConfigurationsDialog";
 import { useLinkedWindows, startLinkedAction, stopLinkedAction, type LinkedSnapshot } from "../../store/linkedWindowsStore";
@@ -25,7 +25,7 @@ function Toolbar() {
   const debugStatus = useDebug((s) => s.status);
   const debugControl = useDebug((s) => s.control);
   const [dialogOpen, setDialogOpen] = useState(false);
-  // Gold owns the group; white owns this window. They never share a control.
+  const [previewName, setPreviewName] = useState<string | null>(null);
 
   const configs: ConfigEntry[] = [
     ...(solution?.inferredConfigs ?? []),
@@ -39,6 +39,8 @@ function Toolbar() {
   const localStatus = ["building", "running", "paused"].includes(debugStatus) ? debugStatus : status;
   const running = localStatus === "starting" || localStatus === "running" || localStatus === "paused";
   const selectedConfig = configs.find((config) => config.name === selectedConfigName);
+  const previewConfig = configs.find((config) => config.name === previewName);
+  const previewChoices = previewConfig && solution ? choicesForConfig(solution, previewConfig) : null;
   const stopLocal = () => ["building", "running", "paused"].includes(debugStatus) ? debugControl("stop") : stop();
 
   const onChipSelect = (name: string) => {
@@ -47,7 +49,7 @@ function Toolbar() {
 
   return (
     <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-1.5 shrink-0 text-xs">
-      <KindButton kind="build" configs={configs} running={running} onFire={(name) => void start("build", name)} />
+      <KindButton kind="build" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices?.build} onFire={(name) => void start("build", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="build" linked={linked} />}
 
       <ConfigChip
@@ -56,6 +58,7 @@ function Toolbar() {
         configs={configs}
         selectedName={selectedConfigName}
         onSelect={onChipSelect}
+        onPreview={setPreviewName}
         onOpenDialog={() => setDialogOpen(true)}
       />
 
@@ -68,7 +71,7 @@ function Toolbar() {
         />
       )}
 
-      <KindButton kind="run" configs={configs} running={running} onFire={(name) => void start("run", name)} />
+      <KindButton kind="run" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices?.run} onFire={(name) => void start("run", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="run" linked={linked} />}
 
       <button
@@ -82,7 +85,7 @@ function Toolbar() {
         }
       >⏹</button>
 
-      <KindButton kind="debug" configs={configs} running={running} onFire={(name) => void start("debug", name)} />
+      <KindButton kind="debug" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices?.debug} onFire={(name) => void start("debug", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="debug" linked={linked} />}
       {(debugStatus === "paused" || debugStatus === "running") && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {debugStatus === "paused" ? <>
@@ -93,7 +96,7 @@ function Toolbar() {
         </> : <DebugTransport label="Pause" icon="⏸" onClick={() => void debugControl("pause")} />}
       </div>}
 
-      <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[180px]">
+      <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[220px]">
         {running && activeConfigName ? (
           <>
             <span className="text-zinc-500">White · </span><span className="text-zinc-400">{activeConfigName}</span>
@@ -101,7 +104,7 @@ function Toolbar() {
             <span>{localStatus}</span>
           </>
         ) : (
-          <><><span className="text-zinc-500">White · </span><span>{localStatus}</span></></>
+          <><span className="text-zinc-500">White · </span><span>{localStatus}</span></>
         )}
       </div>
 
@@ -125,13 +128,20 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   const disabled = !isStop && (!linked.linked || linked.busy || !available);
   const projects = linked.members.map((member) => member.projectName).join(" + ");
   const count = linked.members.length;
-  const title = isStop ? `Stop ${count} linked ${count === 1 ? "instance" : "instances"}`
-    : kind === "debug" && !linked.canDebug ? `Debug ${count} instances requires a real debugger adapter in every window`
+  const activeCount = linked.activeCount;
+  const missingDebug = linked.members.filter((member) => !member.canDebug);
+  const debugBlockers = [
+    missingDebug.length > 0 ? `Select a Rust Cargo Debug configuration in ${missingDebug.map((member) => `CS${member.windowId} (${member.projectName})`).join(", ")}` : null,
+    !linked.debugAdapterAvailable ? "Install or select lldb-dap in Preferences → Toolchain, then rescan Rust tools" : null,
+  ].filter(Boolean).join("; ");
+  const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
+    : kind === "debug" && !linked.canDebug ? `Cannot debug ${count} linked windows: ${debugBlockers}`
     : !available ? `Cannot ${kind} all ${count} linked instances: a configuration is missing`
     : linked.busy ? "A linked action is active"
     : `${KIND_TITLE[kind]} ${count} linked instances: ${projects}`;
   return (
-    <button type="button" title={title} aria-label={isStop ? `Stop ${count} linked instances` : `${KIND_TITLE[kind]} ${count} linked instances`}
+    <span className="inline-flex" title={title} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? title : undefined}>
+      <button type="button" aria-label={isStop ? `Stop ${activeCount} active linked ${activeCount === 1 ? "instance" : "instances"} of ${count}` : `${KIND_TITLE[kind]} ${count} linked instances`}
       disabled={disabled}
       onClick={() => void (isStop ? stopLinkedAction() : startLinkedAction(kind)).catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
       onContextMenu={(event) => {
@@ -146,7 +156,9 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     >
       <GoldActionIcon kind={kind} stop={isStop} />
       <sup aria-hidden="true" className="absolute top-0 right-0 text-[9px] leading-none font-semibold tabular-nums">{count}</sup>
-    </button>
+      {isStop && <sub aria-hidden="true" className="absolute bottom-0 right-0 text-[9px] leading-none font-semibold tabular-nums text-zinc-100">{activeCount}</sub>}
+      </button>
+    </span>
   );
 }
 
@@ -215,10 +227,11 @@ function ProfileChip({
 }
 
 function KindButton({
-  kind, configs, running, onFire, mainChoiceOverride,
+  kind, configs, scopeConfig, running, onFire, mainChoiceOverride,
 }: {
   kind: Kind;
   configs: ConfigEntry[];
+  scopeConfig?: ConfigEntry;
   running: boolean;
   onFire: (name: string) => void;
   mainChoiceOverride?: string | null;
@@ -227,11 +240,20 @@ function KindButton({
   const mainChoice = mainChoiceOverride === undefined ? localMainChoice : mainChoiceOverride;
   const [open, setOpen] = useState(false);
 
-  const candidates = configs.filter((c) => c.kind === kind);
+  const candidates = configs.filter((c) => {
+    if (c.kind !== kind) return false;
+    if (!scopeConfig) return true;
+    if (scopeConfig.slots) return c.name === scopeConfig.slots[kind];
+    if (!scopeConfig.bestFit) return !c.bestFit && !c.slots && c.target === scopeConfig.target;
+    const family = scopeConfig.relatedProjects ?? [];
+    return c.bestFit && c.relatedProjects?.length === family.length
+      && c.relatedProjects?.every((project) => family.includes(project));
+  });
   const has = candidates.length > 0;
   const multi = candidates.length > 1;
 
   const chosen = candidates.find((c) => c.name === mainChoice) ?? null;
+  const command = chosen?.command ?? chosen?.method ?? "configuration";
   const disabled = !has || running || !chosen;
 
   const disabledReason = !has
@@ -245,7 +267,7 @@ function KindButton({
   return (
     <div className="relative">
       <button
-        title={disabled ? disabledReason : `${KIND_TITLE[kind]} — ${chosen?.name}`}
+        title={disabled ? disabledReason : `${KIND_TITLE[kind]} — ${chosen?.name} (${command})`}
         disabled={disabled}
         onClick={() => chosen && onFire(chosen.name)}
         className={
@@ -295,54 +317,58 @@ function KindButton({
 }
 
 function ConfigChip({
-  hasSolution, projects, configs, selectedName, onSelect, onOpenDialog,
+  hasSolution, projects, configs, selectedName, onSelect, onPreview, onOpenDialog,
 }: {
   hasSolution: boolean;
   projects: CraiddProject[];
   configs: ConfigEntry[];
   selectedName: string | null;
   onSelect: (name: string) => void;
+  onPreview: (name: string | null) => void;
   onOpenDialog: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const closePicker = () => { onPreview(null); setOpen(false); };
   const selected = configs.find((config) => config.name === selectedName);
-  const bestFits = configs.filter((config) => config.bestFit);
+  const powerConfigs = configs.filter((config) => (config.bestFit && config.kind === "run") || !!config.slots);
   const projectGroups = projects.map((project) => ({
     key: `project:${project.path}`,
     label: project.name,
-    configs: configs.filter((config) => config.target === project.path && !config.bestFit),
+    configs: configs.filter((config) => config.target === project.path && !config.bestFit && !config.slots),
   })).filter((group) => group.configs.length > 0);
-  const solutionConfigs = configs.filter((config) => config.target === "." && !config.bestFit);
+  const workspaceCommands = configs.filter((config) => config.target === "." && !config.bestFit && !config.slots);
   const groups = [
-    ...bestFits.map((config) => ({ key: `best:${config.name}`, label: config.name, configs: [config] })),
+    ...powerConfigs.map((config) => ({ key: `best:${config.name}`, label: config.name, configs: [config] })),
     ...projectGroups,
-    ...(solutionConfigs.length > 0 ? [{ key: "solution", label: "Solution", configs: solutionConfigs }] : []),
+    ...(workspaceCommands.length > 0 ? [{ key: "workspace-commands", label: "Workspace commands", configs: workspaceCommands }] : []),
   ];
-  const selectedKey = selected?.bestFit ? `best:${selected.name}`
-    : selected?.target === "." ? "solution"
+  const selectedKey = selected?.bestFit || selected?.slots ? `best:${selected.name}`
+    : selected?.target === "." ? "workspace-commands"
     : selected ? `project:${selected.target}` : null;
   const preview = groups.find((group) => group.key === previewKey)
     ?? groups.find((group) => group.key === selectedKey)
     ?? groups[0];
   const selectedProject = projects.find((project) => project.path === selected?.target);
   const label = !hasSolution ? "No solution"
-    : selected?.bestFit ? selected.name
+    : (selected?.bestFit || selected?.slots) ? selected.name
     : selectedProject?.name ?? selected?.name ?? "No configurations";
-  const chooseGroup = (group: typeof groups[number]) => {
-    const preferred = group.configs.find((config) => config.kind === "run" && config.origin === "user")
+  const preferredForGroup = (group: typeof groups[number]) =>
+    group.configs.find((config) => config.kind === "run" && config.origin === "user")
       ?? group.configs.find((config) => config.kind === "run")
       ?? group.configs.find((config) => config.kind === "build" && config.origin === "user")
       ?? group.configs.find((config) => config.kind === "build")
       ?? group.configs[0];
+  const chooseGroup = (group: typeof groups[number]) => {
+    const preferred = preferredForGroup(group);
     if (preferred) onSelect(preferred.name);
-    setOpen(false);
+    closePicker();
   };
 
   return (
-    <div className="relative">
+    <div className="relative" onMouseLeave={() => onPreview(null)}>
       <button
-        onClick={() => hasSolution && configs.length > 0 && setOpen((v) => !v)}
+        onClick={() => { if (open) closePicker(); else if (hasSolution && configs.length > 0) setOpen(true); }}
         disabled={!hasSolution}
         className={
           "h-8 px-3 rounded flex items-center gap-2 border text-[12px] transition-colors " +
@@ -359,20 +385,20 @@ function ConfigChip({
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 w-[min(560px,calc(100vw-24px))] bg-zinc-900 border border-zinc-700 rounded shadow-2xl z-50 text-xs overflow-hidden">
+          <div className="fixed inset-0 z-40" onClick={closePicker} />
+          <div className="absolute top-full left-0 mt-1 w-[min(620px,calc(100vw-24px))] bg-zinc-900 border border-zinc-700 rounded shadow-2xl z-50 text-xs overflow-hidden">
             {groups.length > 0 && (
-              <div className="flex min-h-[170px] max-h-[min(360px,60vh)]">
+              <div className="flex min-h-[170px] max-h-[min(430px,70vh)]">
                 <div className="w-[42%] min-w-0 overflow-y-auto scroll-thin border-r border-zinc-800 py-1">
-                  {bestFits.length > 0 && <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500">Solution best fit</div>}
+                  {powerConfigs.length > 0 && <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500">Power configurations</div>}
                   {groups.map((group, index) => (
                     <div key={group.key}>
-                      {index === bestFits.length && projectGroups.length > 0 &&
+                      {index === powerConfigs.length && projectGroups.length > 0 &&
                         <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">Projects</div>}
                       <button
                         type="button"
-                        onMouseEnter={() => setPreviewKey(group.key)}
-                        onFocus={() => setPreviewKey(group.key)}
+                        onMouseEnter={() => { setPreviewKey(group.key); onPreview(preferredForGroup(group)?.name ?? null); }}
+                        onFocus={() => { setPreviewKey(group.key); onPreview(preferredForGroup(group)?.name ?? null); }}
                         onClick={() => chooseGroup(group)}
                         className={"w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-zinc-800 " +
                           (group.key === selectedKey ? "border-l-2 border-blue-500 bg-blue-950/25 text-zinc-100" : "border-l-2 border-transparent text-zinc-300")}
@@ -386,7 +412,7 @@ function ConfigChip({
                 </div>
                 <div className="flex-1 min-w-0 overflow-y-auto scroll-thin p-3">
                   <div className="text-zinc-200 font-medium truncate">{preview?.label}</div>
-                  <div className="mt-0.5 text-[10px] text-zinc-500">{preview?.key.startsWith("best:") ? "Inferred from this solution" : "Choose a project or configuration"}</div>
+                  <div className="mt-0.5 text-[10px] text-zinc-500">{preview?.key.startsWith("best:") ? (preview.configs[0]?.bestFit ? "Inferred from this solution" : "Power configuration") : preview?.key === "workspace-commands" ? "Commands run from the solution root" : "Choose a project or configuration"}</div>
                   {preview?.configs[0]?.bestFit && (preview.configs[0].relatedProjects?.length ?? 0) > 0 && (
                     <div className="mt-1 text-[10px] text-zinc-500 truncate">
                       {preview.configs[0].relatedProjects?.map((path) => projects.find((project) => project.path === path)?.name ?? path).join(" + ")}
@@ -397,7 +423,9 @@ function ConfigChip({
                       <button
                         type="button"
                         key={`${config.origin}:${config.name}`}
-                        onClick={() => { onSelect(config.name); setOpen(false); }}
+                        onMouseEnter={() => onPreview(config.name)}
+                        onFocus={() => onPreview(config.name)}
+                        onClick={() => { onSelect(config.name); closePicker(); }}
                         className="w-full rounded px-2 py-1.5 text-left hover:bg-zinc-800 flex gap-3"
                       >
                         <span className="text-[10px] text-zinc-500 uppercase w-11 shrink-0 pt-0.5">{config.kind}</span>
@@ -420,7 +448,7 @@ function ConfigChip({
             )}
             <div className="h-px bg-zinc-800" />
             <button
-              onClick={() => { onOpenDialog(); setOpen(false); }}
+              onClick={() => { onOpenDialog(); closePicker(); }}
               className="w-full px-3 py-2 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"
             >Add / Edit Configurations…</button>
           </div>

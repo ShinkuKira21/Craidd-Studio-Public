@@ -10,7 +10,7 @@ import type {
   ProjectKind,
 } from "../types/project";
 import { languageFromFilename, monacoLanguageForFilename, projectExtensions, projectWellKnownFiles, languageMeta } from "../lib/languages";
-import { seedMainChoices } from "./buildStore";
+import { seedMainChoices, syncMainChoices } from "./buildStore";
 
 export interface AncestorInfo {
   clnPath: string;
@@ -75,6 +75,7 @@ interface SolutionState {
   redeclareProject: (projectId: string, args: { name: string; language: Language }) => Promise<void>;
   moveProjectTo: (projectId: string, newFolderAbs: string, chosenLanguage?: Language) => Promise<void>;
 
+  saveConfigurations: (configs: ConfigEntry[], defaultConfig?: string) => Promise<void>;
   addConfigHere: (projectId: string) => Promise<void>;
   setConfigDirectory: (projectId: string, directory: string) => Promise<void>;
   saveMembership: (projectId: string, overrides: Pick<CraiddProject, "mainInclude" | "mainExclude" | "configInclude" | "configExclude">) => Promise<void>;
@@ -1235,6 +1236,22 @@ export const useSolution = create<SolutionState>((set, get) => ({
   },
 
 
+  saveConfigurations: async (configs, defaultConfig) => {
+    const state = get();
+    if (!state.solution || !state.clnPath) throw new Error("No solution file is open.");
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_solution_configs", {
+      clnPath: state.clnPath,
+      configs,
+      defaultConfig: defaultConfig ?? null,
+      expectedConfigs: state.solution.configs,
+      expectedDefaultConfig: state.solution.defaultConfig ?? null,
+    });
+    const next = { ...state.solution, configs, defaultConfig };
+    set({ solution: next });
+    syncMainChoices(next);
+  },
+
   addConfigHere: async (projectId) => {
     const state = get();
     if (!state.rootPath || !state.solution) return;
@@ -1564,7 +1581,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const { invoke } = await import("@tauri-apps/api/core");
 
     try {
-      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+      const stats = await invoke<{ path: string; exists: boolean; readable: boolean; mtimeMs: number; size: number }[]>(
         "stat_files",
         { paths: [fileId] }
       );
@@ -1642,7 +1659,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       const paths = state.tabs.map((t) => t.fileId);
-      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+      const stats = await invoke<{ path: string; exists: boolean; readable: boolean; mtimeMs: number; size: number }[]>(
         "stat_files",
         { paths }
       );
@@ -1653,7 +1670,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
           if (!st) return t;
           let diskState: "inSync" | "deleted" | "newer" = "inSync";
           if (!st.exists) diskState = "deleted";
-          else if (st.mtimeMs > t.mtimeAtLastSync + 1) diskState = "newer";
+          // A file that exists but cannot be read is not deleted. Treating
+          // it as in-sync avoids showing a red dot for a permission issue.
+          else if (st.readable !== false && st.mtimeMs > t.mtimeAtLastSync + 1) diskState = "newer";
           return t.diskState === diskState ? t : { ...t, diskState };
         }),
       }));
@@ -1668,7 +1687,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
     if (!tab) return;
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      const stats = await invoke<{ path: string; exists: boolean; mtimeMs: number; size: number }[]>(
+      const stats = await invoke<{ path: string; exists: boolean; readable: boolean; mtimeMs: number; size: number }[]>(
         "stat_files",
         { paths: [fileId] }
       );
@@ -1676,7 +1695,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
       if (!st) return;
       let diskState: "inSync" | "deleted" | "newer" = "inSync";
       if (!st.exists) diskState = "deleted";
-      else if (st.mtimeMs > tab.mtimeAtLastSync + 1) diskState = "newer";
+      else if (st.readable !== false && st.mtimeMs > tab.mtimeAtLastSync + 1) diskState = "newer";
       if (diskState === tab.diskState) return;
       set((s) => ({
         tabs: s.tabs.map((t) => (t.fileId === fileId ? { ...t, diskState } : t)),

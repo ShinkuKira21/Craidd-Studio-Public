@@ -112,7 +112,7 @@ method = "cargo"
 command = "cargo test"
 
 [[config]]
-name = "Rust: Debug Launch (no adapter)"
+name = "Rust: Cargo Debug (LLDB)"
 kind = "debug"
 target = "Client/src-tauri/src-tauri.craidd"
 method = "cargo"

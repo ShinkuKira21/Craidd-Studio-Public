@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{AncestorInfo, BuildEntry, ConfigEntry, CraiddProject, CraiddSolution, SolutionWithPath};
+use crate::types::{AncestorInfo, BuildEntry, ConfigEntry, ConfigSlots, CraiddProject, CraiddSolution, SolutionWithPath};
 
 const IGNORE_DIRS: &[&str] = &[
     ".git", "node_modules", "target", "dist", "build", "bin", "obj",
@@ -229,6 +229,7 @@ fn parse_config_entry(v: &toml::Value) -> Option<ConfigEntry> {
         name,
         best_fit: false,
         related_projects: vec![],
+        slots: parse_config_slots(t.get("slots")),
         kind: t.get("kind").and_then(|x| x.as_str()).unwrap_or("run").to_string(),
         target: t.get("target").and_then(|x| x.as_str()).unwrap_or(".").to_string(),
         method: t.get("method").and_then(|x| x.as_str()).map(String::from),
@@ -237,6 +238,15 @@ fn parse_config_entry(v: &toml::Value) -> Option<ConfigEntry> {
         origin: t.get("origin").and_then(|x| x.as_str()).unwrap_or("user").to_string(),
         profiles: parse_profiles(t.get("profile")),
         default_profile: t.get("default_profile").and_then(|x| x.as_str()).map(String::from),
+    })
+}
+
+fn parse_config_slots(v: Option<&toml::Value>) -> Option<ConfigSlots> {
+    let table = v?.as_table()?;
+    Some(ConfigSlots {
+        build: table.get("build").and_then(|x| x.as_str()).map(String::from),
+        run: table.get("run").and_then(|x| x.as_str()).map(String::from),
+        debug: table.get("debug").and_then(|x| x.as_str()).map(String::from),
     })
 }
 
@@ -604,6 +614,12 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
         if let Some(c) = &cfg.command { text.push_str(&format!("command = \"{}\"\n", escape(c))); }
         if let Some(c) = &cfg.cwd { text.push_str(&format!("cwd = \"{}\"\n", escape(c))); }
         if let Some(p) = &cfg.default_profile { text.push_str(&format!("default_profile = \"{}\"\n", escape(p))); }
+        if let Some(slots) = &cfg.slots {
+            text.push_str("\n[config.slots]\n");
+            if let Some(v) = &slots.build { text.push_str(&format!("build = \"{}\"\n", escape(v))); }
+            if let Some(v) = &slots.run { text.push_str(&format!("run = \"{}\"\n", escape(v))); }
+            if let Some(v) = &slots.debug { text.push_str(&format!("debug = \"{}\"\n", escape(v))); }
+        }
 
         for prof in &cfg.profiles {
             text.push_str("\n[[config.profile]]\n");
@@ -638,6 +654,141 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
 
     fs::write(&file_path, text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Change only configuration entries in an existing .cln. `toml_edit` keeps
+/// unrelated tables, ordering and comments intact; inferred entries stay
+/// session-only and are never written here.
+#[tauri::command]
+pub fn save_solution_configs(cln_path: String, configs: Vec<ConfigEntry>, default_config: Option<String>, expected_configs: Vec<ConfigEntry>, expected_default_config: Option<String>) -> Result<(), String> {
+    use toml_edit::{value, Array, ArrayOfTables, Document, Item, Table};
+    let path = Path::new(&cln_path);
+    if path.extension().and_then(|s| s.to_str()) != Some("cln") || !path.is_file() {
+        return Err("Expected an existing .cln file".into());
+    }
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let current: toml::Value = text.parse().map_err(|e| format!("Invalid .cln: {e}"))?;
+    let raw_configs = current.get("config").and_then(|v| v.as_array());
+    let on_disk: Vec<ConfigEntry> = raw_configs
+        .map(|entries| entries.iter().filter_map(parse_config_entry).collect()).unwrap_or_default();
+    if raw_configs.is_some_and(|entries| entries.len() != on_disk.len()) {
+        return Err("Invalid configuration entry in .cln; refusing to overwrite it".into());
+    }
+    let disk_default = current.get("solution").and_then(|v| v.get("default_config"))
+        .and_then(|v| v.as_str());
+    if disk_default != expected_default_config.as_deref() {
+        return Err("Default configuration changed on disk. Reload the solution before saving.".into());
+    }
+    if serde_json::to_value(&on_disk).map_err(|e| e.to_string())?
+        != serde_json::to_value(&expected_configs).map_err(|e| e.to_string())? {
+        return Err("Configurations changed on disk. Reload the solution before saving.".into());
+    }
+    let mut doc: Document = text.parse().map_err(|e| format!("Invalid .cln: {e}"))?;
+    if !doc["solution"].is_table() { return Err("Missing [solution] table".into()); }
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = ArrayOfTables::new();
+    for cfg in &configs {
+        let name = cfg.name.trim();
+        if name.is_empty() || !seen.insert(name.to_string()) {
+            return Err(format!("Configuration names must be non-empty and unique: {name}"));
+        }
+        if cfg.origin != "user" { return Err("Only user configurations may be saved".into()); }
+        if !["run", "build", "debug", "test"].contains(&cfg.kind.as_str()) {
+            return Err(format!("Unsupported configuration kind: {}", cfg.kind));
+        }
+        let mut item = Table::new();
+        item.insert("name", value(name));
+        item.insert("kind", value(&cfg.kind));
+        item.insert("target", value(&cfg.target));
+        if let Some(v) = &cfg.method { item.insert("method", value(v)); }
+        if let Some(v) = &cfg.command { item.insert("command", value(v)); }
+        if let Some(v) = &cfg.cwd { item.insert("cwd", value(v)); }
+        if let Some(v) = &cfg.default_profile { item.insert("default_profile", value(v)); }
+        if let Some(slots) = &cfg.slots {
+            let mut table = Table::new();
+            if let Some(v) = &slots.build { table.insert("build", value(v)); }
+            if let Some(v) = &slots.run { table.insert("run", value(v)); }
+            if let Some(v) = &slots.debug { table.insert("debug", value(v)); }
+            item.insert("slots", Item::Table(table));
+        }
+        if !cfg.profiles.is_empty() {
+            let mut profiles = ArrayOfTables::new();
+            for profile in &cfg.profiles {
+                let mut row = Table::new();
+                row.insert("name", value(&profile.name));
+                let mut args = Array::new();
+                for arg in &profile.args { args.push(arg.as_str()); }
+                row.insert("args", value(args));
+                if !profile.env.is_empty() {
+                    let mut env = Table::new();
+                    for (key, val) in &profile.env { env.insert(key, value(val)); }
+                    row.insert("env", Item::Table(env));
+                }
+                if let Some(v) = &profile.description { row.insert("description", value(v)); }
+                profiles.push(row);
+            }
+            item.insert("profile", Item::ArrayOfTables(profiles));
+        }
+        entries.push(item);
+    }
+    if let Some(default) = &default_config {
+        doc["solution"]["default_config"] = value(default);
+    } else if let Some(table) = doc["solution"].as_table_mut() {
+        table.remove("default_config");
+    }
+    if entries.is_empty() { doc.remove("config"); }
+    else { doc["config"] = Item::ArrayOfTables(entries); }
+    let temp = path.with_extension(format!("cln.{}.{}.tmp", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos()));
+    fs::write(&temp, doc.to_string()).map_err(|e| e.to_string())?;
+    if let Ok(meta) = fs::metadata(path) { let _ = fs::set_permissions(&temp, meta.permissions()); }
+    fs::rename(&temp, path).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod config_editor_tests {
+    use super::*;
+
+    #[test]
+    fn config_save_preserves_other_solution_data_and_reloads_slots() {
+        let dir = std::env::temp_dir().join(format!("craidd-config-editor-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.cln");
+        fs::write(&file, "# keep this comment\n[solution]\nname = \"sample\"\nprojects = []\n\n[extra]\nflag = true\n").unwrap();
+        let config = ConfigEntry {
+            name: "My solution".into(), kind: "run".into(), target: ".".into(),
+            origin: "user".into(), best_fit: false, related_projects: vec![],
+            slots: Some(ConfigSlots { run: Some("Run app".into()), build: None, debug: None }),
+            method: None, command: None, cwd: None, profiles: vec![], default_profile: None,
+        };
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("MODE".into(), "test".into());
+        let run = ConfigEntry {
+            name: "Run app".into(), kind: "run".into(), target: ".".into(),
+            origin: "user".into(), best_fit: false, related_projects: vec![], slots: None,
+            method: Some("shell".into()), command: Some("echo hello".into()), cwd: None,
+            profiles: vec![crate::types::Profile { name: "dev".into(), args: vec!["--watch".into()], env, description: None }],
+            default_profile: Some("dev".into()),
+        };
+        save_solution_configs(file.to_string_lossy().into_owned(), vec![config, run], Some("My solution".into()), vec![], None).unwrap();
+        let saved = fs::read_to_string(&file).unwrap();
+        assert!(saved.contains("# keep this comment"));
+        assert!(saved.contains("[extra]\nflag = true"));
+        let loaded = load_solution(dir.to_string_lossy().into_owned()).unwrap().unwrap().solution;
+        assert_eq!(loaded.default_config.as_deref(), Some("My solution"));
+        assert_eq!(loaded.configs.len(), 2);
+        assert_eq!(loaded.configs[1].profiles[0].args, ["--watch"]);
+        assert_eq!(loaded.configs[1].profiles[0].env.get("MODE").map(String::as_str), Some("test"));
+        assert_eq!(loaded.configs[0].slots.as_ref().unwrap().run.as_deref(), Some("Run app"));
+        let conflict = save_solution_configs(file.to_string_lossy().into_owned(), vec![], None, vec![], None);
+        assert!(conflict.unwrap_err().contains("changed on disk"));
+        let default_conflict = save_solution_configs(file.to_string_lossy().into_owned(),
+            loaded.configs.clone(), None, loaded.configs.clone(), None);
+        assert!(default_conflict.unwrap_err().contains("Default configuration changed"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), saved);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tauri::command]

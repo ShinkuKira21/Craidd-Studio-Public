@@ -70,7 +70,12 @@ export function useKeyboardShortcuts(
         e.preventDefault();
         const s = useSolution.getState();
         if (s.focusedTreeTarget) {
-          s.requestRename(s.focusedTreeTarget.path, s.focusedTreeTarget.source);
+          const target = s.focusedTreeTarget;
+          // Clear before firing so a second F2 does not re-trigger the
+          // same node. The user must click a tree row again to rename
+          // another item; this matches Visual Studio's explorer behaviour.
+          s.setFocusedTreeTarget(null);
+          s.requestRename(target.path, target.source);
         }
         return;
       }

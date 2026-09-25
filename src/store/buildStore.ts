@@ -205,8 +205,47 @@ function parseCommandLine(line: string): string[] {
 }
 
 
+/**
+ * Resolve which configuration each toolbar button should fire when
+ * `selected` is the current chip choice.
+ *
+ * Two cases:
+ *
+ *   1. best_fit entries carry `relatedProjects` — the list of project
+ *      paths whose configs form this family. Look up siblings by
+ *      related_projects, not by target. This is why "Tauri Dev"
+ *      lights up Build, Run, and Debug at once even though its own
+ *      target is only the frontend.
+ *
+ *   2. A project config has no related_projects. Its siblings are the
+ *      other configs of the same target (the existing lookup).
+ */
 export function choicesForConfig(solution: CraiddSolution, selected: ConfigEntry): MainChoices {
   const all = [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])];
+
+  if (selected.slots) {
+    const resolve = (kind: keyof MainChoices) => {
+      const name = selected.slots?.[kind];
+      return all.find((candidate) => candidate.name === name && candidate.kind === kind && !candidate.slots)?.name ?? null;
+    };
+    return { build: resolve("build"), run: resolve("run"), debug: resolve("debug") };
+  }
+
+  if (selected.bestFit && (selected.relatedProjects?.length ?? 0) > 0) {
+    const family = new Set(selected.relatedProjects);
+    const inFamily = all.filter((c) =>
+      c.bestFit &&
+      c.relatedProjects?.length === family.size &&
+      c.relatedProjects.every((project) => family.has(project))
+    );
+    const choose = (kind: keyof MainChoices) => {
+      if (selected.kind === kind) return selected.name;
+      const hit = inFamily.find((c) => c.kind === kind);
+      return hit?.name ?? null;
+    };
+    return { build: choose("build"), run: choose("run"), debug: choose("debug") };
+  }
+
   const forTarget = all.filter((candidate) => candidate.target === selected.target && !candidate.bestFit);
   const choose = (kind: keyof MainChoices) => {
     if (selected.kind === kind) return selected.name;
@@ -337,8 +376,14 @@ export const useBuild = create<BuildState>((set, get) => ({
       const { useDebug } = await import("./debugStore");
       const { useLinkedWindows } = await import("./linkedWindowsStore");
       set({ action: "debug", activeConfigName: chosen.name, output: "Rust debug session starting…\n" });
-      await useDebug.getState().start(spec.cwd, state.selectedProfileName === "release",
-        useLinkedWindows.getState().ownInstanceId ?? crypto.randomUUID());
+      // Rust separates Cargo's command/profile arguments from any program
+      // arguments after `--` before launching the resulting executable.
+      await useDebug.getState().start(
+        spec.cwd,
+        state.selectedProfileName === "release",
+        useLinkedWindows.getState().ownInstanceId ?? crypto.randomUUID(),
+        spec.args,
+      );
       return;
     }
 

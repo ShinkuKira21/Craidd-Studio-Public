@@ -171,6 +171,7 @@ pub struct LinkedMember {
     pub restoring: bool,
     pub selected_config_name: Option<String>,
     pub selected_profile_name: Option<String>,
+    pub can_debug: bool,
     pub active_file: Option<LinkedFile>,
     pub tabs: Vec<LinkedTab>,
     pub output: String,
@@ -192,8 +193,10 @@ pub struct LinkedSnapshot {
     pub can_build: bool,
     pub can_run: bool,
     pub can_debug: bool,
+    pub debug_adapter_available: bool,
     pub busy: bool,
     pub active_action: Option<String>,
+    pub active_count: usize,
     pub problems: Vec<LinkedProblem>,
 }
 
@@ -272,7 +275,7 @@ fn group_members(registry: &Registry, solution: &str) -> Vec<String> {
 fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let Some(window) = registry.windows.get(label) else {
         return LinkedSnapshot { sequence: registry.sequence, linked: false, members: vec![], windows: vec![],
-            can_build: false, can_run: false, can_debug: false, busy: false, active_action: None,
+            can_build: false, can_run: false, can_debug: false, debug_adapter_available: false, busy: false, active_action: None, active_count: 0,
             problems: vec![] };
     };
     let members = group_members(registry, &window.solution_path);
@@ -282,6 +285,7 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let all = members.iter().filter_map(|member| registry.windows.get(member));
     let can_build = linked && all.clone().all(|participant| participant.can_build);
     let can_run = linked && all.clone().all(|participant| participant.can_run);
+    let debug_adapter_available = super::debug::adapter_available();
     let busy = action.is_some() || (linked && all.clone().any(|participant| is_busy(&participant.status)));
     // Once an action starts, its count describes the launched windows even if
     // another window opens or changes its project while the action is active.
@@ -300,9 +304,11 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
             .map(|item| member(label, item, false))).collect() } else { vec![] },
         can_build, can_run,
         can_debug: linked && all.clone().all(|participant| participant.can_debug)
-            && super::debug::adapter_available(),
+            && debug_adapter_available,
+        debug_adapter_available,
         busy,
         active_action: action.map(|action| action.action.clone()),
+        active_count: action.map_or(0, |action| action.unfinished.len()),
         problems: if linked || action.is_some() { displayed_members.iter().filter_map(|member| registry.windows.get(member).map(|participant| (member, participant)))
             .flat_map(|(member, participant)| participant.problems.iter().map(|problem| LinkedProblem {
                 window_label: member.clone(),
@@ -321,6 +327,7 @@ fn member(label: &str, item: &Participant, include_context: bool) -> LinkedMembe
         status: item.status.clone(), visible: item.visible, restoring: item.restoring,
         selected_config_name: item.selected_config_name.clone(),
         selected_profile_name: item.selected_profile_name.clone(),
+        can_debug: item.can_debug,
         active_file: item.active_file.as_ref().map(|file| LinkedFile {
             path: file.path.clone(), name: file.name.clone(), language: file.language.clone(),
             content: if include_context { file.content.clone() } else { String::new() },
@@ -760,7 +767,7 @@ async fn launch_parked(app: AppHandle, label: String, participant: Participant, 
         let request = super::debug::RustDebugRequest {
             cwd: spec.cwd, instance_id: participant.instance_id,
             release: participant.selected_profile_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("release")),
-            args: vec![], breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
+            command_args: spec.args, breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
         super::debug::start_rust_debug_for_label(app, label, request).await
     } else {
@@ -929,10 +936,31 @@ pub fn close_linked_window(
     }
     registry.allowed_closes.insert(target_label.clone());
     registry.close_in_flight.remove(&target_label);
+    // destroy() bypasses the CloseRequested handler entirely. The
+    // on_window_event cleanup in lib.rs therefore never runs for this
+    // path, so we do the full teardown here, before the window is gone.
+    // Skipping any of these leaves a ghost window in the tray (Bug 1) or
+    // leaks its process group (Bug D).
+    registry.windows.remove(&target_label);
+    registry.parked_entries.remove(&target_label);
+    registry.view_targets.retain(|viewer, viewed| viewer != &target_label && viewed != &target_label);
+    registry.last_titles.remove(&target_label);
+    for action in registry.actions.values_mut() {
+        action.pending.remove(&target_label);
+        action.unfinished.remove(&target_label);
+    }
+    reconcile(&mut registry);
+    registry.sequence += 1;
+    broadcast(&app, &registry);
     drop(registry);
+
+    // Cancel the window's live processes. This must happen even if the
+    // window itself is destroyed without firing CloseRequested.
+    super::build::cancel_build_by_label(&app, &target_label);
+    super::runner::cancel_run_by_label(&app, &target_label);
+    super::debug::cancel_debug_by_label(&app, &target_label);
+
     let Some(window) = app.get_webview_window(&target_label) else { return Ok(()); };
-    // destroy() bypasses the CloseRequested handler entirely. That's what
-    // we want here: the user already consented through the flow dialog.
     window.destroy().map_err(|e| e.to_string())
 }
 
@@ -1263,6 +1291,19 @@ mod tests {
     }
 
     #[test]
+    fn linked_snapshot_identifies_which_window_cannot_debug() {
+        let mut registry = Registry::default();
+        registry.windows.insert("rust".into(), participant("/one.cln", "rust", "application"));
+        let mut api = participant("/one.cln", "api", "service");
+        api.can_debug = false;
+        registry.windows.insert("api".into(), api);
+        let view = snapshot(&registry, "rust");
+        assert!(!view.can_debug);
+        assert!(view.members.iter().any(|member| member.window_label == "rust" && member.can_debug));
+        assert!(view.members.iter().any(|member| member.window_label == "api" && !member.can_debug));
+    }
+
+    #[test]
     fn parked_window_stays_in_tray_and_linked_group() {
         let mut registry = Registry::default();
         registry.windows.insert("visible".into(), participant("/one.cln", "client", "application"));
@@ -1287,6 +1328,7 @@ mod tests {
             unfinished: HashSet::from(["a".into(), "b".into(), "c".into()]), id: 1,
         });
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
+        assert_eq!(snapshot(&registry, "a").active_count, 3);
         registry.windows.get_mut("a").unwrap().status = "failed".into();
         // Published window status may be stale while its backend runner lives.
         registry.windows.get_mut("b").unwrap().status = "idle".into();
@@ -1295,12 +1337,15 @@ mod tests {
         finish_group_member(&mut registry, "a");
         reconcile(&mut registry);
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
+        assert_eq!(snapshot(&registry, "a").active_count, 2);
         finish_group_member(&mut registry, "b");
         reconcile(&mut registry);
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
+        assert_eq!(snapshot(&registry, "a").active_count, 1);
         finish_group_member(&mut registry, "c");
         reconcile(&mut registry);
         assert!(snapshot(&registry, "a").active_action.is_none());
+        assert_eq!(snapshot(&registry, "a").active_count, 0);
     }
 
     #[test]

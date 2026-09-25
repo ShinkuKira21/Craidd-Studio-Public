@@ -22,7 +22,7 @@ pub struct RustDebugRequest {
     pub instance_id: String,
     pub release: bool,
     #[serde(default)]
-    pub args: Vec<String>,
+    pub command_args: Vec<String>,
     #[serde(default)]
     pub breakpoints: Vec<Breakpoint>,
 }
@@ -119,12 +119,43 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
     serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string())
 }
 
-fn executable_from_cargo(app: &AppHandle, label: &str, cwd: &Path, release: bool) -> Result<PathBuf, String> {
+fn split_cargo_debug_args(mut command_args: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let program_args = match command_args.iter().position(|arg| arg == "--") {
+        Some(index) => {
+            let program_args = command_args.split_off(index + 1);
+            command_args.pop();
+            program_args
+        }
+        None => vec![],
+    };
+    if command_args.first().is_some_and(|arg| matches!(arg.as_str(), "build" | "run" | "check")) {
+        command_args.remove(0);
+    }
+    let mut cargo_args = Vec::with_capacity(command_args.len());
+    let mut skip_value = false;
+    for arg in command_args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if arg == "--message-format" {
+            skip_value = true;
+            continue;
+        }
+        if arg.starts_with("--message-format=") {
+            continue;
+        }
+        cargo_args.push(arg);
+    }
+    (cargo_args, program_args)
+}
+
+fn executable_from_cargo(app: &AppHandle, label: &str, cwd: &Path, release: bool, cargo_args: &[String]) -> Result<PathBuf, String> {
     let cargo = resolve_known_program("cargo")?.unwrap_or_else(|| PathBuf::from("cargo"));
     let mut command = Command::new(cargo);
-    command.current_dir(cwd).args(["build", "--message-format=json"])
+    command.current_dir(cwd).args(["build", "--message-format=json"]).args(cargo_args)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if release { command.arg("--release"); }
+    if release && !cargo_args.iter().any(|arg| arg == "--release") { command.arg("--release"); }
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
     let mut child = command.spawn().map_err(|e| format!("Could not run cargo build: {e}"))?;
     let pgid = child.id() as i32;
@@ -233,7 +264,9 @@ pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_s
     if app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window is already building a debug session".into());
     }
-    let cwd = PathBuf::from(&request_spec.cwd).canonicalize().map_err(|e| e.to_string())?;
+    let RustDebugRequest { cwd: request_cwd, instance_id, release, command_args, breakpoints } = request_spec;
+    let cwd = PathBuf::from(&request_cwd).canonicalize().map_err(|e| e.to_string())?;
+    let (cargo_args, args) = split_cargo_debug_args(command_args);
     if !cwd.is_dir() { return Err("Debug working directory is missing".into()); }
     let adapter = adapter_path()?;
     emit(&app, &label, json!({"status":"building", "text":"Building a debuggable Rust executable…"}));
@@ -241,7 +274,7 @@ pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_s
         let cwd = cwd.clone();
         let app = app.clone();
         let label = label.clone();
-        move || executable_from_cargo(&app, &label, &cwd, request_spec.release)
+        move || executable_from_cargo(&app, &label, &cwd, release, &cargo_args)
     }).await.map_err(|e| e.to_string())?;
     let executable = match executable {
         Ok(path) => path,
@@ -261,15 +294,13 @@ pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_s
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
         transport_busy: AtomicBool::new(false), pgid,
         breakpoint_files: Mutex::new(HashSet::new()),
-        instance_id: request_spec.instance_id,
+        instance_id,
     });
     let stdout = child.stdout.take().ok_or("Debugger output unavailable")?;
     let stderr = child.stderr.take().ok_or("Debugger errors unavailable")?;
     app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.insert(label.clone(), session.clone());
     let app_reader = app.clone();
     let label_reader = label.clone();
-    let args = request_spec.args;
-    let breakpoints = request_spec.breakpoints;
     let initialized = Arc::new(AtomicBool::new(false));
     let initialized_reader = initialized.clone();
     let ready = Arc::new(AtomicBool::new(false));
@@ -502,6 +533,25 @@ pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separates_cargo_and_program_args_for_debug_launch() {
+        let (cargo, program) = split_cargo_debug_args(vec![
+            "run".into(), "--release".into(), "--message-format=json".into(),
+            "--bin".into(), "server".into(), "--".into(), "--port".into(), "3000".into(),
+        ]);
+        assert_eq!(cargo, vec!["--release", "--bin", "server"]);
+        assert_eq!(program, vec!["--port", "3000"]);
+    }
+
+    #[test]
+    fn strips_paired_cargo_message_format_for_debug_launch() {
+        let (cargo, program) = split_cargo_debug_args(vec![
+            "build".into(), "--message-format".into(), "json".into(), "--features".into(), "demo".into(),
+        ]);
+        assert_eq!(cargo, vec!["--features", "demo"]);
+        assert!(program.is_empty());
+    }
 
     #[test]
     fn parses_dap_frames_with_utf8_byte_lengths() {

@@ -139,6 +139,8 @@ pub struct ConfigEntry {
     pub best_fit: bool,
     #[serde(default)]
     pub related_projects: Vec<String>,
+    #[serde(default)]
+    pub slots: Option<ConfigSlots>,
     /// "run" | "build" | "debug" | "test"
     #[serde(default = "default_config_kind")]
     pub kind: String,
@@ -172,6 +174,14 @@ pub struct ConfigEntry {
     /// The default profile's name. Must match one of `profiles`, if any.
     #[serde(default)]
     pub default_profile: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigSlots {
+    pub build: Option<String>,
+    pub run: Option<String>,
+    pub debug: Option<String>,
 }
 
 fn default_config_kind() -> String { "run".into() }

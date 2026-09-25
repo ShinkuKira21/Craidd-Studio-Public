@@ -23,6 +23,7 @@ import { useSolution } from "../../store/solutionStore";
 import { useBuild } from "../../store/buildStore";
 import { listenToLinkedWindows, publishLinkedWindow, useLinkedWindows } from "../../store/linkedWindowsStore";
 import { listenForBreakpointFocus } from "../../lib/breakpointFocus";
+import { RemoteEditorPane } from "./RemoteContext";
 import { listenForBreakpointChanges, useBreakpoints } from "../../store/breakpointStore";
 import { listenToDebug, useDebug } from "../../store/debugStore";
 
@@ -63,7 +64,6 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   const ownInstanceId = useLinkedWindows((s) => s.ownInstanceId);
   const buildProblems = useBuild((s) => s.problems);
   const remoteContext = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.viewedWindowLabel && item.windowLabel !== state.ownWindowLabel));
-  const titleContext = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.ownWindowLabel));
   const bannerState = useSolution((s) => s.bannerState);
   const isSolutionLoading = useSolution((s) => s.isSolutionLoading);
   const projectLanguages = [...new Set((solution?.projects ?? [])

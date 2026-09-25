@@ -15,8 +15,10 @@ export interface LinkedSnapshot {
   canBuild: boolean;
   canRun: boolean;
   canDebug: boolean;
+  debugAdapterAvailable: boolean;
   busy: boolean;
   activeAction: Action | null;
+  activeCount: number;
   problems: (BuildProblem & { windowLabel: string; projectName: string })[];
 }
 
@@ -30,6 +32,7 @@ export interface LinkedMember {
   restoring: boolean;
   selectedConfigName: string | null;
   selectedProfileName: string | null;
+  canDebug: boolean;
   activeFile: { path: string; name: string; language: string; content: string; dirty: boolean; truncated: boolean } | null;
   tabs: { path: string; name: string; dirty: boolean }[];
   output: string;
@@ -50,7 +53,7 @@ interface LinkedView {
 
 const empty: LinkedSnapshot = {
   sequence: 0, linked: false, members: [], windows: [], canBuild: false,
-  canRun: false, canDebug: false, busy: false, activeAction: null,
+  canRun: false, canDebug: false, debugAdapterAvailable: false, busy: false, activeAction: null, activeCount: 0,
   problems: [],
 };
 
@@ -61,10 +64,15 @@ export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
     const state = useLinkedWindows.getState();
     const target = state.windows.find((item) => item.windowLabel === label);
     if (target && target.visible && !target.restoring && label !== state.ownWindowLabel) {
+      // A visible sibling on another monitor should be focused, not
+      // adopted. If focusing fails, the user sees nothing happen when
+      // they clicked the row; surface the failure instead of swallowing it.
       try {
         await invoke("focus_linked_window", { targetLabel: label });
       } catch (cause) {
+        const message = String(cause);
         console.error("[craidd] Could not focus linked window:", cause);
+        throw new Error(`Could not focus that IDE window: ${message}`);
       }
       return;
     }
