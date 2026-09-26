@@ -10,8 +10,16 @@
 //! nothing for that tier — the toolbar falls to State 0, and the user
 //! writes their own Configuration.
 
+use std::path::Path;
+
 use crate::types::{ConfigEntry, CraiddProject, CraiddSolution, Profile};
 use super::manifests::Manifest;
+
+fn cwd_for_manifest(solution: &CraiddSolution, manifest: &Manifest) -> Option<String> {
+    let relative = Path::new(&manifest.folder).strip_prefix(&solution.root).ok()?;
+    let path = relative.to_string_lossy().replace('\\', "/");
+    Some(if path.is_empty() { ".".into() } else { path })
+}
 
 fn package_manager(manifest: &Manifest) -> &'static str {
     if let Some(declared) = manifest.values.get("packageManager").and_then(|value| value.as_str()) {
@@ -71,7 +79,16 @@ pub fn infer_configs(solution: CraiddSolution) -> Result<Vec<ConfigEntry>, Strin
     // ── Tier 2: Per-project Defaults ─────────────────────────
     for project in &solution.projects {
         if project.missing { continue; }
-        if let Some(entry) = infer_project_default(project) {
+        if let Some(mut entry) = infer_project_default(project) {
+            let manifest_kind = match entry.method.as_deref() {
+                Some("cargo") => "cargo",
+                Some("npm") => "npm",
+                Some("dotnet") => "dotnet",
+                Some("cmake") => "cmake",
+                _ => "",
+            };
+            entry.cwd = project.manifests.iter().find(|m| m.kind == manifest_kind)
+                .and_then(|m| cwd_for_manifest(&solution, m));
             if entry.method.as_deref() == Some("cargo") && entry.kind == "build"
                 && project.manifests.iter().any(|manifest| manifest.kind == "cargo"
                     && (array_at(&manifest.values, "bins").is_some_and(|bins| bins.len() == 1)
@@ -110,18 +127,20 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
     let mut rust_candidates = 0;
     let mut ts_candidates = 0;
     let mut ts_manager = "npm";
+    let mut rust_cwd = None;
+    let mut ts_cwd = None;
 
     for p in &solution.projects {
         if p.missing { continue; }
         let lang = p.language.as_deref().unwrap_or("");
 
         if lang == "rust" {
-            let has_bin = p.manifests.iter().any(|m| {
+            if let Some(manifest) = p.manifests.iter().find(|m| {
                 m.kind == "cargo"
                     && array_at(&m.values, "bins").map(|b| !b.is_empty()).unwrap_or(false)
-            });
-            if has_bin {
+            }) {
                 rust_project = Some(p);
+                rust_cwd = cwd_for_manifest(solution, manifest);
                 rust_candidates += 1;
             }
         }
@@ -133,6 +152,7 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
                     if scripts.get("tauri").is_some() {
                         ts_project = Some(p);
                         ts_manager = package_manager(m);
+                        ts_cwd = cwd_for_manifest(solution, m);
                         ts_candidates += 1;
                     }
                 }
@@ -161,7 +181,7 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
                 target: ts.path.clone(),
                 method: Some("npm".into()),
                 command: Some(format!("{ts_manager} run tauri dev")),
-                cwd: None,
+                cwd: ts_cwd,
                 origin: "inferred".into(),
                 profiles: vec![],
                 default_profile: None,
@@ -175,7 +195,7 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
                 target: rust.path.clone(),
                 method: Some("cargo".into()),
                 command: Some("cargo build".into()),
-                cwd: None,
+                cwd: rust_cwd.clone(),
                 origin: "inferred".into(),
                 profiles: profiles_for_cargo(rust),
                 default_profile: Some("debug".into()),
@@ -189,7 +209,7 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
                 target: rust.path.clone(),
                 method: Some("cargo".into()),
                 command: Some("cargo build".into()),
-                cwd: None,
+                cwd: rust_cwd,
                 origin: "inferred".into(),
                 profiles: profiles_for_cargo(rust),
                 default_profile: Some("debug".into()),
@@ -529,6 +549,35 @@ mod tests {
         let config = infer_project_default(&project).unwrap();
         assert_eq!(config.default_profile.as_deref(), Some("Staging"));
         assert_eq!(config.profiles[1].args, vec!["--configuration", "Release"]);
+    }
+
+    #[test]
+    fn nested_tauri_frontend_runs_from_root_manifest_folder() {
+        let root = "/tmp/craidd-tauri-manifest-case";
+        let mut rust = mk_project("src-tauri", "rust", "src-tauri/src-tauri.craidd",
+            vec![mk_manifest("cargo", serde_json::json!({ "bins": ["tauri-app"] }))]);
+        rust.folder = "src-tauri".into();
+        rust.manifests[0].folder = format!("{root}/src-tauri");
+
+        let mut ts = mk_project("src", "typescript", "src/src.craidd",
+            vec![mk_manifest("npm", serde_json::json!({
+                "scripts": { "dev": "vite", "tauri": "tauri" }
+            }))]);
+        ts.folder = "src".into();
+        ts.config_enabled = true;
+        ts.config_directory = Some("..".into());
+        ts.manifests[0].folder = root.into();
+
+        let solution = CraiddSolution {
+            name: "tauri-app".into(), root: root.into(), projects: vec![rust, ts],
+            build: vec![], run_default: None, debug_default: None, autostart: vec![],
+            default_project: None, default_build: None, configs: vec![],
+            default_config: None, inferred_configs: vec![],
+        };
+        let inferred = infer_configs(solution).unwrap();
+        assert_eq!(inferred.iter().find(|c| c.name == "Tauri Dev").unwrap().cwd.as_deref(), Some("."));
+        assert_eq!(inferred.iter().find(|c| c.name == "Tauri Dev — Build").unwrap().cwd.as_deref(), Some("src-tauri"));
+        assert_eq!(inferred.iter().find(|c| c.name == "src: npm run dev").unwrap().cwd.as_deref(), Some("."));
     }
 
     #[test]

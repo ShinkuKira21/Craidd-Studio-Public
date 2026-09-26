@@ -357,6 +357,7 @@ function ConfigChip({
     ?? groups[0];
   const selectedProject = projects.find((project) => project.path === selected?.target);
   const label = !hasSolution ? "No solution"
+    : configs.length === 0 ? "Add configuration…"
     : (selected?.bestFit || selected?.slots) ? selected.name
     : selectedProject?.name ?? selected?.name ?? "No configurations";
   const preferredForGroup = (group: typeof groups[number]) =>
@@ -374,7 +375,11 @@ function ConfigChip({
   return (
     <div className="relative" onMouseLeave={() => onPreview(null)}>
       <button
-        onClick={() => { if (open) closePicker(); else if (hasSolution && configs.length > 0) setOpen(true); }}
+        onClick={() => {
+          if (open) closePicker();
+          else if (hasSolution && configs.length === 0) onOpenDialog();
+          else if (hasSolution) setOpen(true);
+        }}
         disabled={!hasSolution}
         className={
           "h-8 px-3 rounded flex items-center gap-2 border text-[12px] transition-colors " +
