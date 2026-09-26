@@ -1,6 +1,44 @@
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { usePreferences } from "../../store/preferencesStore";
+import type { EditorTheme, IdeTheme } from "../../store/preferencesStore";
+
+interface ThemeChoice<T extends string> {
+  value: T;
+  label: string;
+  detail: string;
+  background: string;
+  panel: string;
+  foreground: string;
+  accent: string;
+}
+
+const editorThemes: ThemeChoice<EditorTheme>[] = [
+  { value: "craidd-dark", label: "Dark", detail: "Craidd's original dark editor", background: "#0e1117", panel: "#171b23", foreground: "#d4dbe5", accent: "#80bcff" },
+  { value: "vs-dark", label: "Traditional", detail: "Familiar VS Code-style editor", background: "#1e1e1e", panel: "#252526", foreground: "#d4d4d4", accent: "#569cd6" },
+  { value: "vs-light", label: "Light", detail: "Bright editor canvas", background: "#ffffff", panel: "#f4f5f7", foreground: "#344255", accent: "#176eaf" },
+];
+
+const ideThemes: ThemeChoice<IdeTheme>[] = [
+  { value: "craidd-dark", label: "Craidd Dark", detail: "Current high-contrast workspace", background: "#0e1117", panel: "#171b23", foreground: "#d4dbe5", accent: "#429eed" },
+  { value: "classic-dark", label: "Classic Dark", detail: "Softer charcoal workspace", background: "#1e1e1e", panel: "#252526", foreground: "#d4d4d4", accent: "#429eed" },
+  { value: "light", label: "Light", detail: "Bright workspace and dialogs", background: "#ffffff", panel: "#f4f5f7", foreground: "#253346", accent: "#176eaf" },
+];
+
+function ThemeCard<T extends string>({ choice, selected, onSelect }: { choice: ThemeChoice<T>; selected: boolean; onSelect: (value: T) => void }) {
+  return <button type="button" onClick={() => onSelect(choice.value)} aria-pressed={selected}
+    className={"rounded-md border p-2.5 text-left min-w-0 transition-colors focus-visible:outline-2 focus-visible:outline-blue-400 " +
+      (selected ? "border-blue-500 ring-1 ring-blue-500/40" : "border-zinc-700 hover:border-zinc-500")}>
+    <span className="h-12 rounded border border-zinc-700/50 flex overflow-hidden mb-2" style={{ backgroundColor: choice.background }}>
+      <span className="w-5 shrink-0" style={{ backgroundColor: choice.panel }} />
+      <span className="flex-1 px-2 py-1 font-mono text-[10px]" style={{ color: choice.foreground }}>
+        <span style={{ color: choice.accent }}>Aa</span> 01<br />const theme
+      </span>
+    </span>
+    <span className="block text-xs font-medium text-zinc-100">{choice.label}{selected && <span className="text-blue-400 ml-1">✓</span>}</span>
+    <span className="block text-[10.5px] text-zinc-500 mt-0.5 leading-snug">{choice.detail}</span>
+  </button>;
+}
 
 interface ToolEntry { role: string; name: string; path: string; version: string }
 interface ToolchainSnapshot {
@@ -36,10 +74,12 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
     toggleWordWrap: state.toggleWordWrap,
     theme: state.theme,
     setTheme: state.setTheme,
+    ideTheme: state.ideTheme,
+    setIdeTheme: state.setIdeTheme,
     breakpointFocusMode: state.breakpointFocusMode,
     setBreakpointFocusMode: state.setBreakpointFocusMode,
   })));
-  const [area, setArea] = useState<"editor" | "toolchains" | "debugging">(initialArea);
+  const [area, setArea] = useState<"editor" | "ide" | "toolchains" | "debugging">(initialArea);
   const [language, setLanguage] = useState<string>(initialLanguage);
   const [snapshot, setSnapshot] = useState<ToolchainSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -104,18 +144,18 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
       >
         <div className="px-5 py-3 border-b border-zinc-800 flex items-center gap-3 shrink-0">
           <span className="text-sm text-zinc-100 font-medium">User Preferences</span>
-          <span className="text-[11px] text-zinc-500">Settings for your editor and installed tools</span>
+          <span className="text-[11px] text-zinc-500">Settings for your editor, workspace, and installed tools</span>
           <button onClick={onClose} className="ml-auto text-zinc-500 hover:text-zinc-200 text-lg leading-none px-2" aria-label="Close preferences">×</button>
         </div>
         <div className="flex-1 min-h-0 flex">
           <nav aria-label="Preference sections" className="w-44 shrink-0 border-r border-zinc-800 py-3">
-            {(["editor", "toolchains", "debugging"] as const).map((item) => (
+            {(["editor", "ide", "toolchains", "debugging"] as const).map((item) => (
               <button key={item} onClick={() => setArea(item)} aria-current={area === item ? "page" : undefined}
                 className={"w-full text-left px-4 py-2 text-[12.5px] transition-colors border-l-2 " +
                   (area === item
                     ? "bg-zinc-800 text-zinc-100 border-l-blue-500"
                     : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200 border-l-transparent")}
-              >{item === "editor" ? "Text Editor" : item === "toolchains" ? "Toolchain" : "Debugging"}</button>
+              >{item === "editor" ? "Text Editor" : item === "ide" ? "IDE Style" : item === "toolchains" ? "Toolchain" : "Debugging"}</button>
             ))}
           </nav>
 
@@ -127,16 +167,13 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
               </div>
               <div className="flex-1 min-h-0 overflow-y-auto scroll-thin">
                 <div className="px-6 py-5 border-b border-zinc-800">
-                  <h3 className="text-[10.5px] uppercase tracking-wider text-zinc-500 mb-2">Appearance</h3>
+                  <h3 className="text-[10.5px] uppercase tracking-wider text-zinc-500 mb-2">Themes</h3>
+                  <p className="text-[11px] text-zinc-500 mb-3">Only the code editor and its tabs change. IDE Style is separate.</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
+                    {editorThemes.map((choice) => <ThemeCard key={choice.value} choice={choice}
+                      selected={prefs.theme === choice.value} onSelect={prefs.setTheme} />)}
+                  </div>
                   <div className="divide-y divide-zinc-800/80">
-                    <label className="flex items-center justify-between gap-6 py-3 text-xs">
-                      <span className="text-zinc-300">Theme</span>
-                      <select value={prefs.theme} onChange={(e) => prefs.setTheme(e.target.value as "vs-dark" | "vs-light")}
-                        className="w-48 max-w-[55%] bg-zinc-950 border border-zinc-700 rounded px-2.5 py-1.5 text-zinc-200 focus:outline-none focus:border-blue-500">
-                        <option value="vs-dark">Dark</option>
-                        <option value="vs-light">Light</option>
-                      </select>
-                    </label>
                     <label className="flex items-center justify-between gap-6 py-3 text-xs">
                       <span className="text-zinc-300">Font size</span>
                       <span className="flex items-center gap-3 min-w-0">
@@ -162,6 +199,19 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                       <input type="checkbox" checked={prefs.wordWrap} onChange={prefs.toggleWordWrap} className="accent-blue-500" />
                     </label>
                   </div>
+                </div>
+              </div>
+            </> : area === "ide" ? <>
+              <div className="px-6 py-4 border-b border-zinc-800 shrink-0">
+                <h2 className="text-[13px] text-zinc-100 font-medium">IDE Style</h2>
+                <p className="text-[11px] text-zinc-500 mt-1">Change the workspace chrome, panels, menus, and dialogs without changing code colours.</p>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto scroll-thin px-6 py-5">
+                <h3 className="text-[10.5px] uppercase tracking-wider text-zinc-500 mb-2">Themes</h3>
+                <p className="text-[11px] text-zinc-500 mb-3">The text editor keeps its own theme, including in linked-window previews.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {ideThemes.map((choice) => <ThemeCard key={choice.value} choice={choice}
+                    selected={prefs.ideTheme === choice.value} onSelect={prefs.setIdeTheme} />)}
                 </div>
               </div>
             </> : area === "debugging" ? <>

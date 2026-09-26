@@ -71,7 +71,7 @@ export default function EditorTabs({
             className={
               "group flex items-center gap-2 px-3 border-r border-zinc-800 cursor-pointer select-none " +
               (isActive
-                ? "bg-zinc-950 text-zinc-100 border-t-2 border-t-blue-500"
+                ? "bg-editor-bg text-zinc-100 border-t-2 border-t-blue-500"
                 : "text-zinc-400 hover:bg-zinc-800 border-t-2 border-t-transparent")
             }
           >

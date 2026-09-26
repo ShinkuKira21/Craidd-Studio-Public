@@ -1,7 +1,25 @@
 import { create } from "zustand";
 
 export type BreakpointFocusMode = "always" | "idle" | "never";
+export type EditorTheme = "craidd-dark" | "vs-dark" | "vs-light";
+export type IdeTheme = "craidd-dark" | "classic-dark" | "light";
 const FOCUS_KEY = "craidd:breakpoint-focus-mode";
+const EDITOR_THEME_KEY = "craidd:editor-theme";
+const IDE_THEME_KEY = "craidd:ide-theme";
+
+function readEditorTheme(): EditorTheme {
+  try {
+    const value = localStorage.getItem(EDITOR_THEME_KEY);
+    return value === "vs-dark" || value === "vs-light" ? value : "craidd-dark";
+  } catch { return "craidd-dark"; }
+}
+
+function readIdeTheme(): IdeTheme {
+  try {
+    const value = localStorage.getItem(IDE_THEME_KEY);
+    return value === "classic-dark" || value === "light" ? value : "craidd-dark";
+  } catch { return "craidd-dark"; }
+}
 
 export function readBreakpointFocusMode(): BreakpointFocusMode {
   try {
@@ -23,8 +41,10 @@ interface PreferencesState {
   tabSize: number;
   setTabSize: (n: number) => void;
 
-  theme: "vs-dark" | "vs-light";
-  setTheme: (t: "vs-dark" | "vs-light") => void;
+  theme: EditorTheme;
+  setTheme: (theme: EditorTheme) => void;
+  ideTheme: IdeTheme;
+  setIdeTheme: (theme: IdeTheme) => void;
 
   sidebarVisible: boolean;
   toggleSidebar: () => void;
@@ -56,8 +76,16 @@ export const usePreferences = create<PreferencesState>((set) => ({
   tabSize: 2,
   setTabSize: (n) => set({ tabSize: Math.max(1, Math.min(8, n)) }),
 
-  theme: "vs-dark",
-  setTheme: (t) => set({ theme: t }),
+  theme: readEditorTheme(),
+  setTheme: (theme) => {
+    try { localStorage.setItem(EDITOR_THEME_KEY, theme); } catch { /* Keep the choice in this window. */ }
+    set({ theme });
+  },
+  ideTheme: readIdeTheme(),
+  setIdeTheme: (ideTheme) => {
+    try { localStorage.setItem(IDE_THEME_KEY, ideTheme); } catch { /* Keep the choice in this window. */ }
+    set({ ideTheme });
+  },
 
   sidebarVisible: true,
   toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
@@ -77,5 +105,7 @@ export const usePreferences = create<PreferencesState>((set) => ({
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === FOCUS_KEY) usePreferences.setState({ breakpointFocusMode: readBreakpointFocusMode() });
+    if (event.key === EDITOR_THEME_KEY) usePreferences.setState({ theme: readEditorTheme() });
+    if (event.key === IDE_THEME_KEY) usePreferences.setState({ ideTheme: readIdeTheme() });
   });
 }

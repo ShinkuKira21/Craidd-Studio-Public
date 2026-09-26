@@ -55,7 +55,7 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
     }
   };
 
-  return <div className="flex-1 flex flex-col min-h-0 bg-zinc-950">
+  return <div className="flex-1 flex flex-col min-h-0 editor-surface bg-editor-bg">
     <div className="h-7 shrink-0 flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 text-[11px]">
       <span className="text-blue-300 truncate">Viewing {context.projectName}</span>
       <span className="text-zinc-500 shrink-0" title="Breakpoints are shared by every debug session in this solution">Shared breakpoints</span>
@@ -72,7 +72,7 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
         onDoubleClick={() => void editHere(tab.path).catch((error) => alert(`Could not open file: ${String(error)}`))}
         title={`${tab.path} · double-click to edit here`}
         className={"px-3 shrink-0 border-r border-zinc-800 hover:bg-zinc-800 " +
-          (tab.path === file?.path ? "bg-zinc-950 text-zinc-100 border-t-2 border-t-blue-500" : "text-zinc-400")}
+          (tab.path === file?.path ? "bg-editor-bg text-zinc-100 border-t-2 border-t-blue-500" : "text-zinc-400")}
       >{tab.name}{tab.dirty && <span className="text-amber-400 ml-2">●</span>}</button>)}
       {context.tabs.length === 0 && <span className="self-center px-3 text-zinc-500">No tabs open</span>}
     </div>
@@ -91,7 +91,7 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
               onClick={() => void useBreakpoints.getState().toggle(file.path, lineNumber)
                 .catch((error) => alert(`Breakpoint failed: ${String(error)}`))}
               onContextMenu={(event) => { event.preventDefault(); setBreakpointMenu({ x: event.clientX, y: event.clientY, line: lineNumber }); }}
-              className="sticky left-0 z-10 w-14 shrink-0 bg-zinc-950/95 pr-2 text-right text-zinc-600 hover:text-zinc-300"
+              className="sticky left-0 z-10 w-14 shrink-0 bg-editor-bg/95 pr-2 text-right text-zinc-600 hover:text-zinc-300"
             >{marker && <span className="inline-block mr-2 h-2.5 w-2.5 rounded-full bg-red-500" />}{lineNumber}</button>
             <code className="block pr-5 text-zinc-300">{line || " "}</code>
           </div>;
