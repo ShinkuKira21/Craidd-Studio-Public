@@ -72,17 +72,14 @@ select {
   -webkit-appearance: none;
   appearance: none;
 }
-.craidd-breakpoint,
-.craidd-breakpoint-inactive {
+.craidd-breakpoint {
   width: 12px !important;
   height: 12px !important;
   margin-left: 3px;
   margin-top: 3px;
   border-radius: 50%;
+  background: #ef4444;
 }
-
-.craidd-breakpoint { background: #ef4444; }
-.craidd-breakpoint-inactive { border: 2px solid #ef4444; opacity: 0.55; }
 .craidd-paused-line { background: rgba(245, 158, 11, 0.18); }
 
 /* Soft amber pulse for hidden sessions that hit a breakpoint.

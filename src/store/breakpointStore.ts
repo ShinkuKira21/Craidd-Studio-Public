@@ -2,20 +2,24 @@ import { create } from "zustand";
 
 export interface Breakpoint { file: string; line: number; scope: string }
 
-export function activeForAllLinked(points: Breakpoint[], file: string, line: number, instanceIds: string[]): boolean {
-  return instanceIds.length > 0 && instanceIds.every((id) => points.some((point) =>
-    point.file === file && point.line === line && (point.scope === "all" || point.scope === id)));
+// Older versions saved one record per linked window. A breakpoint now belongs
+// to the solution, so preserve each location once when reading legacy data.
+export function normalizeBreakpoints(points: Breakpoint[]): Breakpoint[] {
+  const seen = new Set<string>();
+  return points.filter((point) => {
+    const key = point.file + "\0" + point.line;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map((point) => ({ file: point.file, line: point.line, scope: "all" }));
 }
 
 interface BreakpointState {
   solutionPath: string | null;
   points: Breakpoint[];
   load: (solutionPath: string | null) => Promise<void>;
-  toggle: (file: string, line: number, scope?: string) => Promise<void>;
-  toggleForInstance: (file: string, line: number, instanceId: string, linkedIds: string[]) => Promise<void>;
-  toggleForAllLinked: (file: string, line: number, linkedIds: string[]) => Promise<void>;
-  setScope: (file: string, line: number, scope: string) => Promise<void>;
-  remove: (file: string, line: number, scope?: string) => Promise<void>;
+  toggle: (file: string, line: number) => Promise<void>;
+  remove: (file: string, line: number) => Promise<void>;
   moveLines: (file: string, moves: { from: number; to: number }[]) => Promise<void>;
   movePath: (oldPath: string, newPath: string) => Promise<void>;
 }
@@ -31,57 +35,22 @@ export const useBreakpoints = create<BreakpointState>((set, get) => ({
   load: async (solutionPath) => {
     if (!solutionPath) { set({ solutionPath: null, points: [] }); return; }
     const { invoke } = await import("@tauri-apps/api/core");
-    const points = await invoke<Breakpoint[]>("load_breakpoints", { solutionPath });
+    const points = normalizeBreakpoints(await invoke<Breakpoint[]>("load_breakpoints", { solutionPath }));
     set({ solutionPath, points });
   },
-  toggle: async (file, line, scope = "all") => {
+  toggle: async (file, line) => {
     const { solutionPath, points } = get();
     if (!solutionPath) return;
-    const next = points.some((point) => point.file === file && point.line === line && point.scope === scope)
-      ? points.filter((point) => point.file !== file || point.line !== line || point.scope !== scope)
-      : [...points, { file, line, scope }];
+    const next = points.some((point) => point.file === file && point.line === line)
+      ? points.filter((point) => point.file !== file || point.line !== line)
+      : [...points, { file, line, scope: "all" }];
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },
-  toggleForInstance: async (file, line, instanceId, linkedIds) => {
+  remove: async (file, line) => {
     const { solutionPath, points } = get();
     if (!solutionPath) return;
-    const own = points.some((point) => point.file === file && point.line === line && point.scope === instanceId);
-    const shared = points.some((point) => point.file === file && point.line === line && point.scope === "all");
-    let next = points.filter((point) => point.file !== file || point.line !== line ||
-      (point.scope !== instanceId && point.scope !== "all"));
-    if (shared) {
-      // Keep legacy all-instance markers active for the other current sessions.
-      const others = [...new Set(linkedIds.filter((id) => id !== instanceId))]
-        .filter((id) => !next.some((point) => point.file === file && point.line === line && point.scope === id))
-        .map((scope) => ({ file, line, scope }));
-      next = [...next, ...others];
-    } else if (!own) {
-      next.push({ file, line, scope: instanceId });
-    }
-    set({ points: next });
-    try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
-  },
-  toggleForAllLinked: async (file, line, linkedIds) => {
-    const { solutionPath, points } = get();
-    if (!solutionPath || linkedIds.length === 0) return;
-    const active = activeForAllLinked(points, file, line, linkedIds);
     const next = points.filter((point) => point.file !== file || point.line !== line);
-    if (!active) next.push({ file, line, scope: "all" });
-    set({ points: next });
-    try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
-  },
-  setScope: async (file, line, scope) => {
-    const { solutionPath, points } = get();
-    if (!solutionPath) return;
-    const next = points.map((point) => point.file === file && point.line === line ? { ...point, scope } : point);
-    set({ points: next });
-    try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
-  },
-  remove: async (file, line, scope) => {
-    const { solutionPath, points } = get();
-    if (!solutionPath) return;
-    const next = points.filter((point) => point.file !== file || point.line !== line || (scope !== undefined && point.scope !== scope));
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },
@@ -89,18 +58,18 @@ export const useBreakpoints = create<BreakpointState>((set, get) => ({
     const { solutionPath, points } = get();
     if (!solutionPath || moves.length === 0) return;
     const byLine = new Map(moves.map((move) => [move.from, move.to]));
-    const next = points.map((point) => point.file === file && byLine.has(point.line)
-      ? { ...point, line: byLine.get(point.line)! } : point);
-    if (next.every((point, index) => point.line === points[index].line)) return;
+    const next = normalizeBreakpoints(points.map((point) => point.file === file && byLine.has(point.line)
+      ? { ...point, line: byLine.get(point.line)! } : point));
+    if (next.length === points.length && next.every((point, index) => point.line === points[index].line)) return;
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },
   movePath: async (oldPath, newPath) => {
     const { solutionPath, points } = get();
     if (!solutionPath) return;
-    const next = points.map((point) => point.file === oldPath || point.file.startsWith(`${oldPath}/`)
-      ? { ...point, file: newPath + point.file.slice(oldPath.length) } : point);
-    if (next.every((point, index) => point.file === points[index].file)) return;
+    const next = normalizeBreakpoints(points.map((point) => point.file === oldPath || point.file.startsWith(oldPath + "/")
+      ? { ...point, file: newPath + point.file.slice(oldPath.length) } : point));
+    if (next.length === points.length && next.every((point, index) => point.file === points[index].file)) return;
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },
@@ -111,10 +80,7 @@ export async function listenForBreakpointChanges(): Promise<() => void> {
   return listen<{ solutionPath: string; breakpoints: Breakpoint[] }>("craidd:breakpoints-changed", (event) => {
     const current = useBreakpoints.getState().solutionPath;
     if (current === event.payload.solutionPath) {
-      useBreakpoints.setState({ points: event.payload.breakpoints });
-      void import("@tauri-apps/api/core").then(({ invoke }) =>
-        invoke("update_debug_breakpoints", { breakpoints: event.payload.breakpoints })
-      ).catch((error) => console.error("[craidd] Could not update live breakpoints:", error));
+      useBreakpoints.setState({ points: normalizeBreakpoints(event.payload.breakpoints) });
     }
   });
 }

@@ -1,14 +1,12 @@
 import { useDebug } from "../../store/debugStore";
-import { activeForAllLinked, useBreakpoints } from "../../store/breakpointStore";
+import { useBreakpoints } from "../../store/breakpointStore";
 import { useSolution } from "../../store/solutionStore";
 import { useLinkedWindows, dispatchLinkedWindowCommand } from "../../store/linkedWindowsStore";
 
 export default function DebugSidebar() {
   const debug = useDebug();
   const points = useBreakpoints((state) => state.points);
-  const own = useLinkedWindows((state) => state.ownInstanceId);
   const windows = useLinkedWindows((state) => state.windows);
-  const linkedIds = [...new Set(windows.map((item) => item.instanceId))];
   const remote = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.viewedWindowLabel && item.windowLabel !== state.ownWindowLabel));
   const reveal = useSolution((state) => state.revealFile);
   const revealBreakpoint = async (file: string, line: number) => {
@@ -22,18 +20,10 @@ export default function DebugSidebar() {
   const pausedLine = remote ? remote.pausedLine : debug.line;
   const frames = remote?.debugFrames ?? debug.frames;
   const variables = remote?.debugVariables ?? debug.variables;
-  const targetId = remote?.instanceId ?? own;
-  const targetName = remote ? `${remote.projectName} (CS${remote.windowId})` : "this window";
   const listedPoints = points.filter((point, index, all) =>
     all.findIndex((item) => item.file === point.file && item.line === point.line) === index);
-  const activeCount = listedPoints.filter((point) => points.some((item) =>
-    item.file === point.file && item.line === point.line && (item.scope === "all" || item.scope === targetId))).length;
-  const toggleBreakpoint = async (file: string, line: number) => {
-    if (!targetId) return;
-    await useBreakpoints.getState().toggleForInstance(file, line, targetId, linkedIds);
-  };
-  const toggleAll = async (file: string, line: number) => {
-    await useBreakpoints.getState().toggleForAllLinked(file, line, linkedIds);
+  const removeBreakpoint = async (file: string, line: number) => {
+    await useBreakpoints.getState().remove(file, line);
   };
   return <div className="w-72 bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden shrink-0 text-xs">
     <div className="h-9 px-3 flex items-center border-b border-zinc-800 shrink-0 font-semibold text-zinc-300 uppercase tracking-wide">Debug</div>
@@ -41,13 +31,23 @@ export default function DebugSidebar() {
       <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Session</div>
         <div className={remote?.status === "paused" || (!remote && debug.status === "paused") ? "text-amber-300" : "text-zinc-300"}>
-          {remote ? `${remote.projectName} · ${remote.status}` : debug.status}
+          {remote ? `${remote.projectName} · ${remote.debugging ? remote.status : "not debugging"}` : debug.status}
         </div>
         {pausedLine && <div className="mt-1 text-zinc-400 truncate" title={remote?.activeFile?.path ?? debug.file ?? ""}>
           {(remote?.activeFile?.name ?? debug.file?.split("/").pop()) || "Source"}:{pausedLine}
         </div>}
-        {!remote && debug.reason && <div className="mt-1 text-zinc-500">{debug.reason}</div>}
+        {(remote?.pauseReason ?? (!remote ? debug.reason : null)) &&
+          <div className="mt-1 text-zinc-500">{remote?.pauseReason ?? debug.reason}</div>}
       </section>
+      {windows.length > 1 && <section className="p-3 border-b border-zinc-800">
+        <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Linked debug sessions</div>
+        {windows.map((item) => <div key={item.windowLabel} className="flex gap-2 py-0.5 text-zinc-400">
+          <span className="min-w-0 flex-1 truncate" title={item.projectName}>{item.projectName} · CS{item.windowId}</span>
+          <span className={item.debugging && item.status === "paused" ? "text-amber-300" : "text-zinc-500"}>
+            {item.debugging ? item.status : "not debugging"}
+          </span>
+        </div>)}
+      </section>}
       {frames.length > 0 && <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Call stack</div>
         {frames.map((frame) => <button key={frame.id} type="button" onClick={() => frame.source?.path && void revealBreakpoint(frame.source.path, frame.line)
@@ -62,35 +62,26 @@ export default function DebugSidebar() {
           <span className="text-blue-300 truncate">{variable.name}</span><span className="text-zinc-300 truncate" title={variable.value}>{variable.value}</span>
         </div>)}
       </section>}
+
       <section className="p-3">
-        <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Breakpoints · {activeCount}/{listedPoints.length}</div>
-        <div className="text-zinc-500 mb-2">Filled = {targetName}; outline = another window. Click a marker for this session, or right-click the editor gutter for all linked windows.</div>
-        {listedPoints.length ? listedPoints.map((point) => {
-          const active = points.some((item) => item.file === point.file && item.line === point.line
-            && (item.scope === "all" || item.scope === targetId));
-          const allActive = activeForAllLinked(points, point.file, point.line, linkedIds);
-          return <div key={`${point.file}:${point.line}`} className="flex items-center gap-1 rounded hover:bg-zinc-800">
-            <button type="button" onClick={() => void toggleBreakpoint(point.file, point.line)
-              .catch((error) => alert(`Could not change breakpoint: ${String(error)}`))}
-              disabled={!targetId}
-              aria-label={`${active ? "Disable" : "Enable"} breakpoint in ${targetName} at ${point.file}:${point.line}`}
-              title={`${active ? "Disable in" : "Enable for"} ${targetName}`}
-              className="w-6 h-6 shrink-0 flex items-center justify-center text-red-400 disabled:opacity-50">
-              <span aria-hidden="true" className={active ? "w-2.5 h-2.5 rounded-full bg-red-500" : "w-2.5 h-2.5 rounded-full border-2 border-red-500 opacity-60"} />
-            </button>
-            <button type="button" onClick={() => void revealBreakpoint(point.file, point.line)
-              .catch((error) => alert(`Could not open breakpoint: ${String(error)}`))}
-              className="min-w-0 flex-1 text-left py-1 pr-1 truncate" title={`Open ${point.file}:${point.line}`}>
-              {point.file.split("/").pop()}:{point.line}
-            </button>
-            {linkedIds.length > 1 && <button type="button" onClick={() => void toggleAll(point.file, point.line)
-              .catch((error) => alert(`Could not change linked breakpoint: ${String(error)}`))}
-              aria-label={`${allActive ? "Remove" : "Set"} breakpoint in all ${linkedIds.length} linked windows at ${point.file}:${point.line}`}
-              title={`${allActive ? "Remove from" : "Set for"} all ${linkedIds.length} linked windows`}
-              className={"shrink-0 px-1.5 py-0.5 text-[10px] rounded " + (allActive
-                ? "bg-amber-900/40 text-amber-300" : "text-zinc-500 hover:bg-amber-900/30 hover:text-amber-300")}>All</button>}
-          </div>;
-        }) : <div className="text-zinc-600">Click the editor gutter to add one.</div>}
+        <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Breakpoints · {listedPoints.length}</div>
+        <div className="text-zinc-500 mb-2">Shared by all debug sessions in this solution. Click a red marker to remove it, or the filename to open it.</div>
+        {listedPoints.length ? listedPoints.map((point) => <div key={point.file + ":" + point.line}
+          className="flex items-center gap-1 rounded hover:bg-zinc-800">
+          <button type="button" onClick={() => void removeBreakpoint(point.file, point.line)
+            .catch((error) => alert("Could not remove breakpoint: " + String(error)))}
+            aria-label={"Remove breakpoint at " + point.file + ":" + point.line}
+            title="Remove breakpoint"
+            className="w-6 h-6 shrink-0 flex items-center justify-center">
+            <span aria-hidden="true" className="w-2.5 h-2.5 rounded-full bg-red-500" />
+          </button>
+          <button type="button" onClick={() => void revealBreakpoint(point.file, point.line)
+            .catch((error) => alert("Could not open breakpoint: " + String(error)))}
+            className="min-w-0 flex-1 text-left py-1 pr-1 truncate text-zinc-300"
+            title={"Open " + point.file + ":" + point.line}>
+            {point.file.split("/").pop()}:{point.line}
+          </button>
+        </div>) : <div className="text-zinc-600">Click the editor gutter to add one.</div>}
       </section>
     </div>
   </div>;

@@ -562,13 +562,6 @@ pub fn note_debug_details(app: &AppHandle, label: &str, value: &serde_json::Valu
     }
 }
 
-pub fn parked_labels_for_solution(app: &AppHandle, solution_path: &str) -> Vec<String> {
-    let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return vec![]; };
-    let Ok(registry) = state.0.lock() else { return vec![]; };
-    registry.windows.iter().filter(|(_, item)| item.solution_path == solution_path && (!item.visible || item.restoring))
-        .map(|(label, _)| label.clone()).collect()
-}
-
 fn parked_entry(window: &WebviewWindow, item: &Participant) -> WorkspaceEntry {
     let scale = window.scale_factor().unwrap_or(1.0);
     let position = window.outer_position().ok();
@@ -772,9 +765,10 @@ async fn launch_parked(app: AppHandle, label: String, participant: Participant, 
     let spec = participant.specs.get(&action).ok_or(format!("The hidden window has no {action} configuration"))?.clone();
     if action == "debug" {
         let request = super::debug::RustDebugRequest {
-            cwd: spec.cwd, instance_id: participant.instance_id,
+            cwd: spec.cwd,
             release: participant.selected_profile_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("release")),
-            command_args: spec.args, breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
+            command_args: spec.args, solution_path: participant.solution_path.clone(),
+            breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
         super::debug::start_rust_debug_for_label(app, label, request).await
     } else {

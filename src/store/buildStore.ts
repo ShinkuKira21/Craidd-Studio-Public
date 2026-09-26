@@ -374,14 +374,12 @@ export const useBuild = create<BuildState>((set, get) => ({
         return;
       }
       const { useDebug } = await import("./debugStore");
-      const { useLinkedWindows } = await import("./linkedWindowsStore");
       set({ action: "debug", activeConfigName: chosen.name, output: "Rust debug session starting…\n" });
       // Rust separates Cargo's command/profile arguments from any program
       // arguments after `--` before launching the resulting executable.
       await useDebug.getState().start(
         spec.cwd,
         state.selectedProfileName === "release",
-        useLinkedWindows.getState().ownInstanceId ?? crypto.randomUUID(),
         spec.args,
       );
       return;

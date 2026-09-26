@@ -10,17 +10,14 @@ import type { Breakpoint } from "../../store/breakpointStore";
 import { useDebug } from "../../store/debugStore";
 import BreakpointMenu from "./BreakpointMenu";
 
-function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: string | null, instanceId: string | null, pausedLine: number | null) {
+function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: string | null, pausedLine: number | null) {
   const lines = [...new Set(points.filter((point) => point.file === file).map((point) => point.line))];
   return [...lines.map((line) => ({
     range: new monaco.Range(line, 1, line, 1),
     options: {
       isWholeLine: false,
-      glyphMarginClassName: points.some((point) => point.file === file && point.line === line && (point.scope === "all" || point.scope === instanceId))
-        ? "craidd-breakpoint" : "craidd-breakpoint-inactive",
-      glyphMarginHoverMessage: { value: points.some((point) => point.file === file && point.line === line &&
-        (point.scope === "all" || point.scope === instanceId))
-        ? `Breakpoint active in this session · line ${line}` : `Breakpoint in another linked session · line ${line}` },
+      glyphMarginClassName: "craidd-breakpoint",
+      glyphMarginHoverMessage: { value: "Breakpoint · line " + line },
     },
   })), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }
@@ -42,11 +39,9 @@ export default function CodeView() {
   const [breakpointMenu, setBreakpointMenu] = useState<{ x: number; y: number; line: number } | null>(null);
   const activeFileId = useSolution((s) => s.activeFileId);
   const points = useBreakpoints((s) => s.points);
-  const ownLabel = useLinkedWindows((s) => s.ownInstanceId);
   const remoteEditContext = useLinkedWindows((s) => s.remoteEditing
     ? s.windows.find((item) => item.windowLabel === s.viewedWindowLabel && item.windowLabel !== s.ownWindowLabel)
     : undefined);
-  const breakpointInstanceId = remoteEditContext?.instanceId ?? ownLabel;
   const debugStatus = useDebug((s) => s.status);
   const debugFile = useDebug((s) => s.file);
   const debugLine = useDebug((s) => s.line);
@@ -105,17 +100,16 @@ export default function CodeView() {
     const linked = useLinkedWindows.getState();
     const target = linked.remoteEditing ? linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
       && item.windowLabel !== linked.ownWindowLabel) : null;
-    const instanceId = target?.instanceId ?? linked.ownInstanceId;
     const debug = useDebug.getState();
     const currentPausedLine = target
       ? target.status === "paused" && target.activeFile?.path === file ? target.pausedLine : null
       : debug.status === "paused" && debug.file === file ? debug.line : null;
     trackedPointsRef.current = currentPoints.filter((point) => point.file === file)
       .filter((point, index, all) => all.findIndex((item) => item.line === point.line) === index);
-    decorations.set(breakpointDecorations(monaco, currentPoints, file, instanceId, currentPausedLine));
+    decorations.set(breakpointDecorations(monaco, currentPoints, file, currentPausedLine));
   }, []);
 
-  useEffect(() => { refreshBreakpoints(); }, [refreshBreakpoints, points, activeFileId, breakpointInstanceId, pausedLine]);
+  useEffect(() => { refreshBreakpoints(); }, [refreshBreakpoints, points, activeFileId, remoteEditContext?.windowLabel, pausedLine]);
 
   useEffect(() => {
     const onSaved = (event: Event) => {
@@ -162,12 +156,7 @@ export default function CodeView() {
             if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !event.event.leftButton) return;
             const file = useSolution.getState().activeFileId;
             const line = event.target.position?.lineNumber;
-            const state = useLinkedWindows.getState();
-            const target = state.remoteEditing ? state.windows.find((item) => item.windowLabel === state.viewedWindowLabel
-              && item.windowLabel !== state.ownWindowLabel) : null;
-            const instanceId = target?.instanceId ?? state.ownInstanceId;
-            if (file && line && instanceId) void useBreakpoints.getState()
-              .toggleForInstance(file, line, instanceId, state.windows.map((item) => item.instanceId))
+            if (file && line) void useBreakpoints.getState().toggle(file, line)
               .catch((error) => alert(`Breakpoint failed: ${String(error)}`));
           });
           instance.onContextMenu((event) => {
@@ -181,8 +170,8 @@ export default function CodeView() {
         }}
         options={options}
       />
-      {breakpointMenu && activeFileId && breakpointInstanceId && <BreakpointMenu file={activeFileId}
-        line={breakpointMenu.line} instanceId={breakpointInstanceId} x={breakpointMenu.x} y={breakpointMenu.y}
+      {breakpointMenu && activeFileId && <BreakpointMenu file={activeFileId}
+        line={breakpointMenu.line} x={breakpointMenu.x} y={breakpointMenu.y}
         onClose={() => setBreakpointMenu(null)} />}
     </div>
   );

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -13,6 +13,15 @@ pub struct Breakpoint {
     pub file: String,
     pub line: u32,
     pub scope: String,
+}
+
+fn normalize_breakpoints(mut points: Vec<Breakpoint>) -> Vec<Breakpoint> {
+    let mut seen = HashSet::new();
+    points.retain_mut(|point| {
+        point.scope = "all".into();
+        seen.insert((point.file.clone(), point.line))
+    });
+    points
 }
 
 fn store_path() -> Result<PathBuf, String> {
@@ -31,7 +40,7 @@ fn read_all() -> Result<HashMap<String, Vec<Breakpoint>>, String> {
 pub fn load_breakpoints(solution_path: String) -> Result<Vec<Breakpoint>, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let key = fs::canonicalize(solution_path).map_err(|e| e.to_string())?.to_string_lossy().into_owned();
-    Ok(read_all()?.remove(&key).unwrap_or_default())
+    Ok(normalize_breakpoints(read_all()?.remove(&key).unwrap_or_default()))
 }
 
 #[tauri::command]
@@ -39,6 +48,7 @@ pub fn save_breakpoints(app: AppHandle, solution_path: String, breakpoints: Vec<
     if breakpoints.len() > 2_000 || breakpoints.iter().any(|point| point.line == 0 || point.file.is_empty() || point.scope.len() > 120) {
         return Err("Invalid breakpoint list".into());
     }
+    let breakpoints = normalize_breakpoints(breakpoints);
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let key = fs::canonicalize(solution_path).map_err(|e| e.to_string())?.to_string_lossy().into_owned();
     let mut all = read_all()?;
@@ -50,9 +60,27 @@ pub fn save_breakpoints(app: AppHandle, solution_path: String, breakpoints: Vec<
         .map_err(|e| e.to_string())?;
     fs::rename(temp, path).map_err(|e| e.to_string())?;
     drop(_guard);
-    super::debug::update_parked_breakpoints(&app, &key, &breakpoints);
+    super::debug::update_solution_breakpoints(&app, &key, &breakpoints);
     let _ = app.emit("craidd:breakpoints-changed", serde_json::json!({
         "solutionPath": key, "breakpoints": breakpoints,
     }));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_window_scopes_become_one_solution_breakpoint() {
+        let points = normalize_breakpoints(vec![
+            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-a".into() },
+            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into() },
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into() },
+        ]);
+        assert_eq!(points.len(), 2);
+        assert!(points.iter().all(|point| point.scope == "all"));
+        assert_eq!(points[0].line, 8);
+        assert_eq!(points[1].line, 10);
+    }
 }
