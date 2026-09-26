@@ -78,7 +78,7 @@ function TextareaValue({
       rows={3}
       placeholder={placeholder}
       className={
-        "w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-[12px] font-mono resize-none scroll-thin placeholder:text-zinc-700 " +
+        "w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-[12px] font-mono resize-none scroll-thin placeholder:text-zinc-500 " +
         (dim ? "text-zinc-500" : "text-zinc-300")
       }
     />

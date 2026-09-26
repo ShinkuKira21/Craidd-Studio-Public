@@ -493,7 +493,7 @@ export default function WindowManager() {
             <button
               onClick={() => void resolveDirty("save")}
               disabled={preparing}
-              className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
+              className="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-white"
             >
               {preparing ? "Saving…" : "Save All"}
             </button>
@@ -522,7 +522,7 @@ export default function WindowManager() {
             <button
               onClick={() => void runFinalize()}
               disabled={preparing}
-              className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white"
+              className="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-white"
             >
               {preparing ? "Closing…" : "Close"}
             </button>

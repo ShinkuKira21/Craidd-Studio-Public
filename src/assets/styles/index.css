@@ -1,12 +1,33 @@
 @import "tailwindcss";
 
 @theme {
-  --color-portico-bg: #09090b;
-  --color-portico-panel: #18181b;
-  --color-portico-border: #27272a;
-  --color-portico-text: #d4d4d8;
-  --color-portico-text-dim: #71717a;
-  --color-portico-accent: #3b82f6;
+  /* Cool neutrals keep chrome distinct from the editor without heavy boxes. */
+  --color-zinc-950: #0e1117;
+  --color-zinc-900: #171b23;
+  --color-zinc-800: #2a3140;
+  --color-zinc-700: #404a5a;
+  --color-zinc-600: #798697;
+  --color-zinc-500: #939eae;
+  --color-zinc-400: #b7c0cd;
+  --color-zinc-300: #d4dbe5;
+  --color-zinc-200: #e4e9f1;
+  --color-zinc-100: #f4f6fa;
+
+  --color-blue-950: #11243a;
+  --color-blue-900: #183858;
+  --color-blue-800: #20517a;
+  --color-blue-700: #2773ae;
+  --color-blue-600: #2879b9;
+  --color-blue-500: #429eed;
+  --color-blue-400: #80bcff;
+  --color-blue-300: #b3d8ff;
+
+  --color-portico-bg: #0e1117;
+  --color-portico-panel: #171b23;
+  --color-portico-border: #2a3140;
+  --color-portico-text: #d4dbe5;
+  --color-portico-text-dim: #939eae;
+  --color-portico-accent: #429eed;
 
   --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
 }
@@ -33,7 +54,7 @@ body {
   height: 6px;
 }
 .scroll-thin::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: var(--color-zinc-700);
   border-radius: 3px;
 }
 .scroll-thin::-webkit-scrollbar-track {
@@ -45,26 +66,46 @@ body {
    Force dark everywhere in the app. */
 
 select {
-  background-color: #09090b;
-  color: #f4f4f5;
-  border: 1px solid #3f3f46;
+  background-color: var(--color-zinc-950);
+  color: var(--color-zinc-200);
+  border: 1px solid var(--color-zinc-700);
   color-scheme: dark;
 }
 
 select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--color-blue-500);
 }
 
 select option {
-  background-color: #18181b;
-  color: #f4f4f5;
+  background-color: var(--color-zinc-900);
+  color: var(--color-zinc-200);
 }
 
 select option:checked,
 select option:hover {
-  background-color: #1d4ed8;
+  background-color: var(--color-blue-700);
   color: #ffffff;
+}
+
+::selection {
+  background: #244668;
+  color: var(--color-zinc-100);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-zinc-500);
+  opacity: 1;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="menuitem"]:focus-visible {
+  outline: 2px solid var(--color-blue-400);
+  outline-offset: 2px;
 }
 
 /* Firefox dropdown caret color (WebKit ignores this, harmless) */

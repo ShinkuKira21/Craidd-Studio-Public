@@ -68,7 +68,7 @@ export default function CommandPalette({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Type a command…"
-          className="w-full bg-zinc-900 text-zinc-100 px-4 py-3 text-sm outline-none border-b border-zinc-800 placeholder:text-zinc-600"
+          className="w-full bg-zinc-900 text-zinc-100 px-4 py-3 text-sm outline-none border-b border-zinc-800 placeholder:text-zinc-500"
         />
         <div className="max-h-[400px] overflow-y-auto scroll-thin py-1">
           {filtered.length === 0 ? (
