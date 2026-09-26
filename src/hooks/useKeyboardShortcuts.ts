@@ -3,8 +3,7 @@ import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
 import { useLinkedWindows } from "../store/linkedWindowsStore";
-import { useBuild } from "../store/buildStore";
-import { useDebug } from "../store/debugStore";
+import { startViewedAction, stopViewedAction } from "../lib/viewedActions";
 
 export function useKeyboardShortcuts(
   openCommandPalette: () => void,
@@ -16,26 +15,22 @@ export function useKeyboardShortcuts(
 
       if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        await useBuild.getState().start("build");
+        try { await startViewedAction("build"); } catch (error) { alert(`Build failed: ${String(error)}`); }
         return;
       }
       if (mod && e.key === "F5") {
         e.preventDefault();
-        await useBuild.getState().start("run");
+        try { await startViewedAction("run"); } catch (error) { alert(`Run failed: ${String(error)}`); }
         return;
       }
       if (!mod && !e.shiftKey && e.key === "F5") {
         e.preventDefault();
-        await useBuild.getState().start("debug");
+        try { await startViewedAction("debug"); } catch (error) { alert(`Debug failed: ${String(error)}`); }
         return;
       }
       if (e.shiftKey && e.key === "F5") {
         e.preventDefault();
-        if (["building", "running", "paused"].includes(useDebug.getState().status)) {
-          await useDebug.getState().control("stop");
-        } else {
-          await useBuild.getState().stop();
-        }
+        try { await stopViewedAction(); } catch (error) { alert(`Stop failed: ${String(error)}`); }
         return;
       }
 
@@ -43,7 +38,7 @@ export function useKeyboardShortcuts(
       if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
         const linked = useLinkedWindows.getState();
-        if (linked.viewedWindowLabel !== linked.ownWindowLabel) return;
+        if (linked.viewedWindowLabel !== linked.ownWindowLabel && !linked.remoteEditing) return;
         try { await saveActiveFile(); }
         catch (err) { alert(`Save failed: ${String(err)}`); }
         return;
@@ -53,7 +48,7 @@ export function useKeyboardShortcuts(
       if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
         const linked = useLinkedWindows.getState();
-        if (linked.viewedWindowLabel !== linked.ownWindowLabel) return;
+        if (linked.viewedWindowLabel !== linked.ownWindowLabel && !linked.remoteEditing) return;
         try {
           await saveActiveFileAs();
         } catch (err) {

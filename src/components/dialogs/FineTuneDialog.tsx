@@ -127,7 +127,7 @@ function flatten(
   }
 }
 
-const COLOR_CFG = "#a1a1aa";
+const COLOR_CFG = "var(--color-zinc-400)";
 
 function MemberChip({ m, languageColor }: { m: Membership; languageColor: string }) {
   if (m === "neither") {
@@ -331,7 +331,7 @@ export default function FineTuneDialog({
   const languageColor =
     project.language && project.language !== "config"
       ? tailwindToHex(languageMeta(project.language).color)
-      : "#71717a";
+      : "var(--color-zinc-500)";
 
   useEffect(() => {
     let cancelled = false;
@@ -508,12 +508,12 @@ export default function FineTuneDialog({
 function tailwindToHex(cls: string): string {
   const map: Record<string, string> = {
     "text-orange-400": "#fb923c",
-    "text-blue-400": "#60a5fa",
+    "text-blue-400": "var(--color-blue-400)",
     "text-yellow-400": "#facc15",
     "text-green-400": "#4ade80",
     "text-purple-400": "#c084fc",
     "text-violet-400": "#a78bfa",
-    "text-zinc-400": "#a1a1aa",
+    "text-zinc-400": "var(--color-zinc-400)",
   };
-  return map[cls] ?? "#a1a1aa";
+  return map[cls] ?? "var(--color-zinc-400)";
 }

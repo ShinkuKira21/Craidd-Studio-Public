@@ -142,7 +142,7 @@ export default function SearchPanel() {
             value={local}
             onChange={(e) => setLocal(e.target.value)}
             placeholder="Search files and content…"
-            className="flex-1 bg-transparent text-zinc-100 text-[12.5px] outline-none placeholder:text-zinc-600"
+            className="flex-1 bg-transparent text-zinc-100 text-[12.5px] outline-none placeholder:text-zinc-500"
           />
           {local && (
             <button

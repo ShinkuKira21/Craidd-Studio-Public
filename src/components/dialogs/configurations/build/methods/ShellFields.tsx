@@ -10,7 +10,7 @@ export default function ShellFields({ config }: { config: ConfigEntry }) {
             value={config.command ?? ""}
             readOnly
             placeholder="g++ main.cpp -o main"
-            className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-[12px] font-mono text-zinc-300 placeholder:text-zinc-700"
+            className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-[12px] font-mono text-zinc-300 placeholder:text-zinc-500"
           />
         </div>
       </div>

@@ -19,7 +19,7 @@ use super::toolchain::{get_toolchain, resolve_known_program};
 #[serde(rename_all = "camelCase")]
 pub struct RustDebugRequest {
     pub cwd: String,
-    pub instance_id: String,
+    pub solution_path: String,
     pub release: bool,
     #[serde(default)]
     pub command_args: Vec<String>,
@@ -34,7 +34,8 @@ struct Session {
     transport_busy: AtomicBool,
     pgid: i32,
     breakpoint_files: Mutex<HashSet<String>>,
-    instance_id: String,
+    breakpoints_ready: AtomicBool,
+    solution_path: String,
 }
 
 #[derive(Default)]
@@ -85,12 +86,17 @@ pub fn has_debug_session(app: &AppHandle, label: &str) -> bool {
         || app.try_state::<DebugBuildManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
 }
 
-pub fn update_parked_breakpoints(app: &AppHandle, solution_path: &str, points: &[Breakpoint]) {
-    let labels = super::linked_windows::parked_labels_for_solution(app, solution_path);
+pub fn update_solution_breakpoints(app: &AppHandle, solution_path: &str, points: &[Breakpoint]) {
     let Some(manager) = app.try_state::<DebugManager>() else { return; };
-    let sessions: Vec<_> = manager.0.lock().ok().map(|active| labels.iter()
-        .filter_map(|label| active.get(label).cloned()).collect()).unwrap_or_default();
-    for session in sessions { let _ = send_breakpoints(&session, points); }
+    let sessions: Vec<_> = manager.0.lock().ok().map(|active| active.iter()
+        .filter(|(_, session)| session.solution_path == solution_path
+            && session.breakpoints_ready.load(Ordering::Acquire))
+        .map(|(label, session)| (label.clone(), session.clone())).collect()).unwrap_or_default();
+    for (label, session) in sessions {
+        if let Err(error) = send_breakpoints(&session, points) {
+            emit(app, &label, json!({"status":"output", "text":format!("Could not update breakpoints: {error}")}));
+        }
+    }
 }
 
 fn request(session: &Session, command: &str, arguments: Value) -> Result<u64, String> {
@@ -223,20 +229,36 @@ fn adapter_path() -> Result<PathBuf, String> {
     Err("lldb-dap was not found. Install an LLDB DAP adapter, then rescan Rust tools in Preferences.".into())
 }
 
-fn send_breakpoints(session: &Session, points: &[Breakpoint]) -> Result<(), String> {
+fn breakpoint_lines(points: &[Breakpoint]) -> BTreeMap<String, Vec<u32>> {
     let mut by_file: BTreeMap<String, Vec<u32>> = BTreeMap::new();
-    for point in points {
-        if point.scope == "all" || point.scope == session.instance_id { by_file.entry(point.file.clone()).or_default().push(point.line); }
-    }
-    let mut files = session.breakpoint_files.lock().map_err(|e| e.to_string())?;
-    for previous in files.iter() { by_file.entry(previous.clone()).or_default(); }
+    for point in points { by_file.entry(point.file.clone()).or_default().push(point.line); }
     for lines in by_file.values_mut() { lines.sort_unstable(); lines.dedup(); }
+    by_file
+}
+
+fn send_breakpoints_locked(session: &Session, points: &[Breakpoint], files: &mut HashSet<String>) -> Result<(), String> {
+    let mut by_file = breakpoint_lines(points);
+    for previous in files.iter() { by_file.entry(previous.clone()).or_default(); }
     for (file, lines) in &by_file {
         request(session, "setBreakpoints", json!({"source":{"path":file},
             "breakpoints":lines.iter().map(|line| json!({"line":line})).collect::<Vec<_>>() }))?;
     }
     *files = by_file.into_keys().collect();
     Ok(())
+}
+
+fn send_breakpoints(session: &Session, points: &[Breakpoint]) -> Result<(), String> {
+    let mut files = session.breakpoint_files.lock().map_err(|e| e.to_string())?;
+    send_breakpoints_locked(session, points, &mut files)
+}
+
+fn initialize_breakpoints(session: &Session, fallback: &[Breakpoint]) -> Result<(), String> {
+    // Serialize the first DAP update with changes made while Cargo was building.
+    let mut files = session.breakpoint_files.lock().map_err(|e| e.to_string())?;
+    let points = super::breakpoints::load_breakpoints(session.solution_path.clone())
+        .unwrap_or_else(|_| fallback.to_vec());
+    session.breakpoints_ready.store(true, Ordering::Release);
+    send_breakpoints_locked(session, &points, &mut files)
 }
 
 pub fn adapter_available() -> bool {
@@ -264,7 +286,9 @@ pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_s
     if app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window is already building a debug session".into());
     }
-    let RustDebugRequest { cwd: request_cwd, instance_id, release, command_args, breakpoints } = request_spec;
+    let RustDebugRequest { cwd: request_cwd, solution_path, release, command_args, breakpoints } = request_spec;
+    let solution_path = PathBuf::from(solution_path).canonicalize().map_err(|e| e.to_string())?
+        .to_string_lossy().into_owned();
     let cwd = PathBuf::from(&request_cwd).canonicalize().map_err(|e| e.to_string())?;
     let (cargo_args, args) = split_cargo_debug_args(command_args);
     if !cwd.is_dir() { return Err("Debug working directory is missing".into()); }
@@ -294,7 +318,8 @@ pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_s
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
         transport_busy: AtomicBool::new(false), pgid,
         breakpoint_files: Mutex::new(HashSet::new()),
-        instance_id,
+        breakpoints_ready: AtomicBool::new(false),
+        solution_path,
     });
     let stdout = child.stdout.take().ok_or("Debugger output unavailable")?;
     let stderr = child.stderr.take().ok_or("Debugger errors unavailable")?;
@@ -318,7 +343,10 @@ pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_s
             if message["type"] == "event" {
                 match message["event"].as_str().unwrap_or("") {
                     "initialized" => {
-                        let _ = send_breakpoints(&session, &breakpoints);
+                        if let Err(error) = initialize_breakpoints(&session, &breakpoints) {
+                            emit(&app_reader, &label_reader, json!({"status":"output",
+                                "text":format!("Could not apply breakpoints: {error}")}));
+                        }
                         let _ = request(&session, "configurationDone", json!({}));
                     }
                     "stopped" => {
@@ -456,13 +484,6 @@ pub async fn start_rust_debug_for_label(app: AppHandle, label: String, request_s
 }
 
 #[tauri::command]
-pub fn update_debug_breakpoints(window: WebviewWindow, state: tauri::State<'_, DebugManager>, breakpoints: Vec<Breakpoint>) -> Result<(), String> {
-    let active = state.0.lock().map_err(|e| e.to_string())?;
-    let Some(session) = active.get(window.label()) else { return Ok(()); };
-    send_breakpoints(session, &breakpoints)
-}
-
-#[tauri::command]
 pub fn debug_control(window: WebviewWindow, state: tauri::State<'_, DebugManager>, builds: tauri::State<'_, DebugBuildManager>, action: String) -> Result<(), String> {
     control_debug(window.label(), &state, &builds, &action)
 }
@@ -551,6 +572,16 @@ mod tests {
         ]);
         assert_eq!(cargo, vec!["--features", "demo"]);
         assert!(program.is_empty());
+    }
+
+    #[test]
+    fn dap_breakpoints_ignore_legacy_window_scope_and_deduplicate_lines() {
+        let lines = breakpoint_lines(&[
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "window-a".into() },
+            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into() },
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into() },
+        ]);
+        assert_eq!(lines.get("/project/main.rs"), Some(&vec![8, 10]));
     }
 
     #[test]

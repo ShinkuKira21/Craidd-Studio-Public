@@ -48,6 +48,8 @@ pub struct LinkedWindowUpdate {
     pub can_build: bool,
     pub can_run: bool,
     pub can_debug: bool,
+    #[serde(default)]
+    pub debugging: bool,
     pub status: String,
     pub selected_config_name: Option<String>,
     pub selected_profile_name: Option<String>,
@@ -91,6 +93,7 @@ pub(crate) struct Participant {
     can_build: bool,
     can_run: bool,
     can_debug: bool,
+    debugging: bool,
     status: String,
     visible: bool,
     restoring: bool,
@@ -172,6 +175,7 @@ pub struct LinkedMember {
     pub selected_config_name: Option<String>,
     pub selected_profile_name: Option<String>,
     pub can_debug: bool,
+    pub debugging: bool,
     pub active_file: Option<LinkedFile>,
     pub tabs: Vec<LinkedTab>,
     pub output: String,
@@ -328,6 +332,7 @@ fn member(label: &str, item: &Participant, include_context: bool) -> LinkedMembe
         selected_config_name: item.selected_config_name.clone(),
         selected_profile_name: item.selected_profile_name.clone(),
         can_debug: item.can_debug,
+        debugging: item.debugging,
         active_file: item.active_file.as_ref().map(|file| LinkedFile {
             path: file.path.clone(), name: file.name.clone(), language: file.language.clone(),
             content: if include_context { file.content.clone() } else { String::new() },
@@ -401,7 +406,7 @@ pub fn update_linked_window(
             solution_path, window_id, instance_id: update.instance_id.filter(|id| !id.is_empty()).unwrap_or_else(|| window.label().into()),
             project_path: update.project_path, project_name: update.project_name,
             project_kind: update.project_kind, can_build: update.can_build, can_run: update.can_run,
-            can_debug: update.can_debug,
+            can_debug: update.can_debug, debugging: update.debugging,
             status: update.status, visible: window.is_visible().unwrap_or(true), restoring,
             selected_config_name: update.selected_config_name,
             selected_profile_name: update.selected_profile_name,
@@ -462,6 +467,7 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
     let Ok(mut registry) = state.0.lock() else { return; };
     let Some(item) = registry.windows.get_mut(label) else { return; };
     item.status = status.into();
+    item.debugging = matches!(status, "building" | "running" | "paused");
     item.paused_line = if status == "paused" { line } else { None };
     if status == "paused" {
         if let Some(reason) = reason { item.pause_reason = Some(reason.to_owned()); }
@@ -497,6 +503,7 @@ pub fn note_process_event(app: &AppHandle, label: &str, kind: &str, text: Option
     let Some(item) = registry.windows.get_mut(label) else { return; };
     let visible = item.visible && !item.restoring;
     if !visible { if let Some(text) = text { append_output(item, text); } }
+    if matches!(kind, "start" | "finish" | "cancelled" | "error" | "crashed") { item.debugging = false; }
     item.status = match kind {
         "start" => "running".into(),
         "finish" => if exit_code == Some(0) { "success" } else { "failed" }.into(),
@@ -553,13 +560,6 @@ pub fn note_debug_details(app: &AppHandle, label: &str, value: &serde_json::Valu
         registry.sequence += 1;
         broadcast(app, &registry);
     }
-}
-
-pub fn parked_labels_for_solution(app: &AppHandle, solution_path: &str) -> Vec<String> {
-    let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return vec![]; };
-    let Ok(registry) = state.0.lock() else { return vec![]; };
-    registry.windows.iter().filter(|(_, item)| item.solution_path == solution_path && (!item.visible || item.restoring))
-        .map(|(label, _)| label.clone()).collect()
 }
 
 fn parked_entry(window: &WebviewWindow, item: &Participant) -> WorkspaceEntry {
@@ -765,9 +765,10 @@ async fn launch_parked(app: AppHandle, label: String, participant: Participant, 
     let spec = participant.specs.get(&action).ok_or(format!("The hidden window has no {action} configuration"))?.clone();
     if action == "debug" {
         let request = super::debug::RustDebugRequest {
-            cwd: spec.cwd, instance_id: participant.instance_id,
+            cwd: spec.cwd,
             release: participant.selected_profile_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("release")),
-            command_args: spec.args, breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
+            command_args: spec.args, solution_path: participant.solution_path.clone(),
+            breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
         super::debug::start_rust_debug_for_label(app, label, request).await
     } else {
@@ -1264,7 +1265,7 @@ mod tests {
         Participant { solution_path: solution.into(), window_id: 1, project_path: Some(project.into()),
             instance_id: project.into(),
             project_name: Some(project.into()), project_kind: Some(kind.into()),
-            can_build: true, can_run: true, can_debug: true, status: "idle".into(), visible: true,
+            can_build: true, can_run: true, can_debug: true, debugging: false, status: "idle".into(), visible: true,
             selected_config_name: None, selected_profile_name: None,
             active_file: None, tabs: vec![], output: String::new(), dirty_count: 0, debug_frames: vec![], debug_variables: vec![],
             paused_line: None, pause_reason: None, failure_message: None, revision: 1, renderer_id: "test-renderer".into(), retired_renderer_ids: HashSet::new(),
@@ -1301,6 +1302,21 @@ mod tests {
         assert!(!view.can_debug);
         assert!(view.members.iter().any(|member| member.window_label == "rust" && member.can_debug));
         assert!(view.members.iter().any(|member| member.window_label == "api" && !member.can_debug));
+    }
+
+    #[test]
+    fn linked_snapshot_distinguishes_debugging_from_an_ordinary_run() {
+        let mut registry = Registry::default();
+        registry.windows.insert("visible".into(), participant("/one.cln", "client", "application"));
+        let mut parked = participant("/one.cln", "server", "service");
+        parked.visible = false;
+        parked.status = "running".into();
+        registry.windows.insert("parked".into(), parked);
+        let ordinary = snapshot(&registry, "visible");
+        assert!(!ordinary.windows.iter().find(|item| item.window_label == "parked").unwrap().debugging);
+        registry.windows.get_mut("parked").unwrap().debugging = true;
+        let debugging = snapshot(&registry, "visible");
+        assert!(debugging.windows.iter().find(|item| item.window_label == "parked").unwrap().debugging);
     }
 
     #[test]

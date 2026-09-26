@@ -61,7 +61,7 @@ export default function GetStarted({ startup, initialError, onOpen, onStartProje
   const previousGroups = groupPreviousWindows(previous);
 
   return (
-    <main className="h-screen overflow-y-auto text-zinc-200" style={{ background: "radial-gradient(circle at 90% 5%, rgba(37, 99, 235, 0.075), transparent 34%), #09090b" }}>
+    <main className="h-screen overflow-y-auto text-zinc-200" style={{ background: "radial-gradient(circle at 90% 5%, rgba(66, 158, 237, 0.07), transparent 34%), var(--color-zinc-950)" }}>
       <div className="max-w-[1050px] mx-auto px-8 py-9 md:px-12 md:py-10">
         <header className="flex items-center gap-4 pb-7 border-b border-zinc-800">
           <div className="w-12 h-12 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-center shrink-0"><img src="/craidd-icon.png" alt="" className="w-10 h-10" /></div>

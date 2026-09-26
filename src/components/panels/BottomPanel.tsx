@@ -21,6 +21,8 @@ export default function BottomPanel() {
   const artifact = useBuild((state) => state.artifact);
   const problems = useBuild((state) => state.problems);
   const linked = useLinkedWindows();
+  const remote = linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
+    && item.windowLabel !== linked.ownWindowLabel);
   const shownProblems = linked.linked ? linked.problems
     : problems.map((problem) => ({ ...problem, windowLabel: "", projectName: "" }));
   const revealFile = useSolution((state) => state.revealFile);
@@ -39,15 +41,15 @@ export default function BottomPanel() {
                 : "text-zinc-500 hover:text-zinc-300 border-transparent")
             }
           >
-            {t.label}{t.id === "problems" && shownProblems.length > 0 ? ` (${errors || shownProblems.length})` : ""}
+            {t.label}{t.id === "output" && remote ? ` · ${remote.projectName}` : ""}{t.id === "problems" && shownProblems.length > 0 ? ` (${errors || shownProblems.length})` : ""}
           </button>
         ))}
       </div>
       <div className="flex-1 overflow-y-auto scroll-thin p-3 mono text-[11.5px] leading-5 text-zinc-400">
         {tab === "output" && (
           <pre className="whitespace-pre-wrap break-words">
-            {renderOutput((["building", "running", "paused", "error"].includes(debugStatus) && debugOutput) || output || debugOutput || "No output yet.")}
-            {artifact && debugStatus === "idle" && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
+            {renderOutput(remote ? remote.output || "No output yet." : (["building", "running", "paused", "error"].includes(debugStatus) && debugOutput) || output || debugOutput || "No output yet.")}
+            {!remote && artifact && debugStatus === "idle" && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
           </pre>
         )}
         {tab === "problems" && (shownProblems.length === 0 ? (
@@ -59,10 +61,16 @@ export default function BottomPanel() {
               <button
                 key={`${problem.windowLabel}:${problem.file}:${problem.line}:${problem.column}:${index}`}
                 type="button"
-                onClick={() => void (linked.linked
-                  ? revealLinkedProblem(problem.windowLabel, problem)
-                  : revealFile(problem.file, problem.line, problem.column))
-                  .catch((error) => console.error("[craidd] Could not reveal problem:", error))}
+                onClick={() => void (async () => {
+                  if (!linked.linked) { await revealFile(problem.file, problem.line, problem.column); return; }
+                  await revealLinkedProblem(problem.windowLabel, problem);
+                  if (remote?.windowLabel === problem.windowLabel && !remote.visible) {
+                    await revealFile(problem.file, problem.line, problem.column);
+                    if (useSolution.getState().tabs.some((item) => item.fileId === problem.file)) {
+                      useLinkedWindows.getState().setRemoteEditing(true);
+                    }
+                  }
+                })().catch((error) => console.error("[craidd] Could not reveal problem:", error))}
                 className="w-full flex items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-zinc-800 focus-visible:outline focus-visible:outline-blue-500"
                 title={`${problem.file}:${problem.line}:${problem.column}`}
               >

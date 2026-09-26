@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { usePreferences } from "../../store/preferencesStore";
 import { useSolution } from "../../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../../lib/fileActions";
-import { useBuild } from "../../store/buildStore";
+import { choicesForConfig, useBuild } from "../../store/buildStore";
+import { startViewedAction, stopViewedAction } from "../../lib/viewedActions";
 import { useDebug } from "../../store/debugStore";
 import { useLinkedWindows } from "../../store/linkedWindowsStore";
 
@@ -18,18 +19,22 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
   const activeFileId = useSolution((s) => s.activeFileId);
   const clnPath = useSolution((s) => s.clnPath);
   const selectedConfigName = useBuild((s) => s.selectedConfigName);
+  const solution = useSolution((s) => s.solution);
   const selectedProfileName = useBuild((s) => s.selectedProfileName);
   const buildStatus = useBuild((s) => s.status);
   const mainChoices = useBuild((s) => s.mainChoices);
   const debugStatus = useDebug((s) => s.status);
-  const start = useBuild((s) => s.start);
-  const stop = useBuild((s) => s.stop);
-  const debugControl = useDebug((s) => s.control);
   const viewed = useLinkedWindows((s) => s.windows.find((item) => item.windowLabel === s.viewedWindowLabel && item.windowLabel !== s.ownWindowLabel));
-  const busy = ["starting", "building", "running", "paused"].includes(buildStatus)
-    || ["building", "running", "paused"].includes(debugStatus);
-  const canRun = (kind: "build" | "run" | "debug") => Boolean(mainChoices[kind]);
-  const stopLocal = () => ["building", "running", "paused"].includes(debugStatus) ? debugControl("stop") : stop();
+  const remoteEditing = useLinkedWindows((s) => s.remoteEditing);
+  const remoteConfig = solution && viewed ? [...(solution.inferredConfigs ?? []), ...(solution.configs ?? [])]
+    .find((item) => item.name === viewed.selectedConfigName) : null;
+  const remoteChoices = remoteConfig && solution ? choicesForConfig(solution, remoteConfig) : null;
+  const busy = viewed ? ["starting", "building", "running", "paused"].includes(viewed.status)
+    : ["starting", "building", "running", "paused"].includes(buildStatus) || ["building", "running", "paused"].includes(debugStatus);
+  const canRun = (kind: "build" | "run" | "debug") => Boolean(viewed ? remoteChoices?.[kind] : mainChoices[kind]);
+  const runViewed = (kind: "build" | "run" | "debug") => void startViewedAction(kind)
+    .catch((error) => alert(`${kind} failed: ${String(error)}`));
+  const stopViewed = () => void stopViewedAction().catch((error) => alert(`Stop failed: ${String(error)}`));
   const runSave = (action: () => Promise<void>) => {
     void action().catch((err) => alert(`Save failed: ${String(err)}`));
   };
@@ -44,8 +49,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("open_workspace_window", { entry: {
         path: clnPath, kind: "solution", name: clnPath.split("/").filter(Boolean).pop() ?? clnPath,
-        windowLabel: "", selectedConfigName,
-        selectedProfileName,
+        windowLabel: "", selectedConfigName: viewed?.selectedConfigName ?? selectedConfigName,
+        selectedProfileName: viewed?.selectedProfileName ?? selectedProfileName,
       } });
     } catch (error) { alert(`Could not duplicate window: ${String(error)}`); }
   };
@@ -102,8 +107,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         { label: "Get Started…", action: openWelcome },
         { label: "Duplicate Window", disabled: !clnPath, action: () => void duplicateWindow() },
         { separator: true },
-        { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId || !!viewed, action: () => runSave(saveActiveFile) },
-        { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId || !!viewed, action: () => runSave(saveActiveFileAs) },
+        { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId || (!!viewed && !remoteEditing), action: () => runSave(saveActiveFile) },
+        { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId || (!!viewed && !remoteEditing), action: () => runSave(saveActiveFileAs) },
         { separator: true },
         { label: "Preferences…", shortcut: "Ctrl+,", action: openPreferences },
         { separator: true },
@@ -143,10 +148,10 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     {
       label: "Run",
       items: [
-        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => void start("build"), disabled: !canRun("build") || busy },
-        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => void start("run"), disabled: !canRun("run") || busy },
-        { label: "Start Debugging", shortcut: "F5", action: () => void start("debug"), disabled: !canRun("debug") || busy },
-        { label: "Stop", shortcut: "Shift+F5", action: () => void stopLocal(), disabled: !busy },
+        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => runViewed("build"), disabled: !canRun("build") || busy },
+        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => runViewed("run"), disabled: !canRun("run") || busy },
+        { label: "Start Debugging", shortcut: "F5", action: () => runViewed("debug"), disabled: !canRun("debug") || busy },
+        { label: "Stop", shortcut: "Shift+F5", action: stopViewed, disabled: !busy },
       ],
     },
     {
