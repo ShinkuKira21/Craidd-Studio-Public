@@ -11,6 +11,8 @@ import DeleteProjectDialog from "../../dialogs/DeleteProjectDialog";
 import NewFileDialog, { type NewFileMode } from "../../dialogs/NewFileDialog";
 import NewFolderDialog from "../../dialogs/NewFolderDialog";
 import FineTuneDialog from "../../dialogs/FineTuneDialog";
+import TauriSetupDialog from "../../dialogs/TauriSetupDialog";
+import { detectTauriSetup, isTauriSuggestionSuppressed, type TauriSetupProposal } from "../../../lib/frameworkSetup";
 import ToolchainConfigurationDialog from "../../dialogs/ToolchainConfigurationDialog";
 import { useBuild } from "../../../store/buildStore";
 import { useLinkedWindows } from "../../../store/linkedWindowsStore";
@@ -46,6 +48,7 @@ export default function SolutionExplorer() {
   const [deleteTarget, setDeleteTarget] = useState<{ node: FileNode; basePath: string } | null>(null);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<{ id: string; name: string; folder: string } | null>(null);
   const [fineTuneTarget, setFineTuneTarget] = useState<{ projectId: string; mode: "fine-tune" | "recalibrate" } | null>(null);
+  const [tauriSetupProposal, setTauriSetupProposal] = useState<TauriSetupProposal | null>(null);
   const [pendingFineTuneName, setPendingFineTuneName] = useState<string | null>(null);
   const [toolchainTarget, setToolchainTarget] = useState<CraiddProject | null>(null);
 
@@ -83,7 +86,23 @@ export default function SolutionExplorer() {
         multiple: false,
         filters: [{ name: "Craidd Project", extensions: ["craidd"] }],
       });
-      if (typeof selected === "string") await addExistingProject(selected);
+      if (typeof selected === "string") {
+        await addExistingProject(selected);
+        const state = useSolution.getState();
+        const root = state.rootPath?.replace(/\\/g, "/").replace(/\/+$/, "");
+        const absolute = selected.replace(/\\/g, "/");
+        const relative = root && absolute.startsWith(root + "/")
+          ? absolute.slice(root.length + 1) : absolute;
+        const added = state.solution?.projects.find((project) => project.path.replace(/\\/g, "/") === relative);
+        if (added && state.solution && root && !isTauriSuggestionSuppressed(root)) {
+          try {
+            const proposal = await detectTauriSetup(state.solution, added.path);
+            if (proposal) setTauriSetupProposal(proposal);
+          } catch (detectionError) {
+            console.error("[craidd] Tauri setup detection failed:", detectionError);
+          }
+        }
+      }
     } catch (err) {
       console.error("[craidd] Open Existing Project failed:", err);
       alert("Could not open project: " + String(err));
@@ -656,6 +675,7 @@ export default function SolutionExplorer() {
           onClose={() => setToolchainTarget(null)}
         />
       )}
+      {tauriSetupProposal && <TauriSetupDialog proposal={tauriSetupProposal} onDone={() => setTauriSetupProposal(null)} />}
       {fineTuneTarget && (() => {
         const project = solution?.projects.find((p) => p.id === fineTuneTarget.projectId);
         if (!project || !rootPath) return null;
