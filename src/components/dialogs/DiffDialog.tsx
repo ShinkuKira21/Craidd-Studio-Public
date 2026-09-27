@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { useSolution } from "../../store/solutionStore";
+import { usePreferences } from "../../store/preferencesStore";
+import { CRAIDD_DARK_THEME, defineCraiddDarkTheme } from "../../lib/editorThemes";
 
 export default function DiffDialog({
   fileId,
@@ -10,6 +12,7 @@ export default function DiffDialog({
   onClose: () => void;
 }) {
   const tabs = useSolution((s) => s.tabs);
+  const theme = usePreferences((s) => s.theme);
   const tab = tabs.find((t) => t.fileId === fileId);
   const [diskContent, setDiskContent] = useState<string | null>(null);
 
@@ -49,7 +52,7 @@ export default function DiffDialog({
             ×
           </button>
         </div>
-        <div className="flex-1 min-h-0 bg-zinc-950">
+        <div className="flex-1 min-h-0 editor-surface bg-editor-bg">
           {diskContent === null ? (
             <div className="flex items-center justify-center h-full text-zinc-500 text-sm">
               Loading disk version…
@@ -60,7 +63,8 @@ export default function DiffDialog({
               original={diskContent}
               modified={tab.content}
               language={tab.language === "plaintext" ? "plaintext" : tab.language}
-              theme="vs-dark"
+              theme={theme === "craidd-dark" ? CRAIDD_DARK_THEME : theme}
+              beforeMount={defineCraiddDarkTheme}
               options={{
                 readOnly: true,
                 renderSideBySide: true,

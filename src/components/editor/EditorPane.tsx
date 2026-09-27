@@ -17,7 +17,7 @@ function EditorPane() {
   }, []);
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-zinc-950">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 editor-surface bg-editor-bg">
       <EditorTabs requestClose={(id) => setPendingClose(id)} />
       <Breadcrumb />
       <CodeView />

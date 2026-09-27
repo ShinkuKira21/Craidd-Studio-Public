@@ -121,7 +121,7 @@ async function withInferredConfigs(
   const base: CraiddSolution = {
     ...solution,
     configs: solution.configs ?? [],
-    inferredConfigs: solution.inferredConfigs ?? [],
+    inferredConfigs: [],
   };
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -372,7 +372,10 @@ async function refreshAllProjectTrees(
   const refreshed = await Promise.all(projects.map((p) => populateTrees(root, p, statMap)));
   const latest = get();
   if (epoch !== treeRefreshEpoch || latest.rootPath !== root || latest.solution !== state.solution) return;
-  set({ solution: { ...latest.solution, projects: refreshed } });
+  const next = await withInferredConfigs({ ...latest.solution, projects: refreshed });
+  if (epoch !== treeRefreshEpoch || get().rootPath !== root || get().solution !== state.solution) return;
+  set({ solution: next });
+  syncMainChoices(next);
 }
 
 export const useSolution = create<SolutionState>((set, get) => ({
@@ -427,6 +430,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
       isSolutionLoading: true,
       solutionError: null,
       rootPath: path,
+      clnPath: null,
       bannerState: "none",
       bannerMessage: null,
       rootMissing: false,
@@ -648,14 +652,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
           configs: [], inferredConfigs: [],
         };
         await invoke("save_solution", { root: path, solution: empty });
-        set({
-          solution: empty,
-          bannerState: "none",
-          bannerMessage: null,
-          pendingAncestor: null,
-          pendingPath: null,
-          bannerAncestor: null,
-        });
+        const opened = await get().openFolder(path);
+        if (opened.status !== "loaded") throw new Error("Could not reopen the new solution.");
       } catch (err) {
         const msg = `Failed to create solution: ${String(err)}`;
         logErr(msg);
@@ -688,16 +686,8 @@ export const useSolution = create<SolutionState>((set, get) => ({
           configs: [], inferredConfigs: [],
         };
         await invoke("save_solution", { root: path, solution: empty });
-
-        set({
-          solution: empty,
-          bannerState: "none",
-          bannerMessage: null,
-          pendingAncestor: null,
-          pendingPath: null,
-          bannerAncestor: null,
-        });
-
+        const opened = await get().openFolder(path);
+        if (opened.status !== "loaded") throw new Error("Could not reopen the new solution.");
         await get().addExistingProject(selected);
       } catch (err) {
         const msg = `Failed to add existing project: ${String(err)}`;
@@ -816,16 +806,23 @@ export const useSolution = create<SolutionState>((set, get) => ({
       inferredConfigs: [],
     };
     await invoke("save_solution", { root: state.rootPath, solution: nextSolution });
+    if (!state.clnPath) {
+      const opened = await get().openFolder(state.rootPath);
+      if (opened.status !== "loaded") throw new Error("Could not reopen the new solution.");
+      await get().refreshDiscovery();
+      return;
+    }
 
     const populated = await populateTrees(state.rootPath, project);
-    set({
-      solution: {
-        ...nextSolution,
-        projects: nextSolution.projects.map((p) =>
-          p.folder === folder && p.language === language ? populated : p
-        ),
-      },
-    });
+    const withProjects = {
+      ...nextSolution,
+      projects: nextSolution.projects.map((p) =>
+        p.folder === folder && p.language === language ? populated : p
+      ),
+    };
+    const inferred = await withInferredConfigs(withProjects);
+    set({ solution: inferred });
+    syncMainChoices(inferred);
 
     await get().refreshDiscovery();
   },
@@ -878,14 +875,20 @@ export const useSolution = create<SolutionState>((set, get) => ({
       inferredConfigs: [],
     };
     await invoke("save_solution", { root: state.rootPath, solution: nextSolution });
+    if (!state.clnPath) {
+      const opened = await get().openFolder(state.rootPath);
+      if (opened.status !== "loaded") throw new Error("Could not reopen the new solution.");
+      return;
+    }
 
     const populated = await populateTrees(state.rootPath, project);
-    set({
-      solution: {
-        ...nextSolution,
-        projects: nextSolution.projects.map((p) => (p.path === rel ? populated : p)),
-      },
-    });
+    const withProjects = {
+      ...nextSolution,
+      projects: nextSolution.projects.map((p) => (p.path === rel ? populated : p)),
+    };
+    const inferred = await withInferredConfigs(withProjects);
+    set({ solution: inferred });
+    syncMainChoices(inferred);
   },
 
   createBlankProject: async ({ name, language, subfolder }) => {
@@ -1267,12 +1270,12 @@ export const useSolution = create<SolutionState>((set, get) => ({
     };
     await invoke("save_project", { root: state.rootPath, project: updated });
     const populated = await populateTrees(state.rootPath, updated);
-    set({
-      solution: {
-        ...state.solution,
-        projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
-      },
+    const inferred = await withInferredConfigs({
+      ...state.solution,
+      projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
     });
+    set({ solution: inferred });
+    syncMainChoices(inferred);
   },
 
   saveMembership: async (projectId, overrides) => {
@@ -1312,12 +1315,12 @@ export const useSolution = create<SolutionState>((set, get) => ({
     };
     await invoke("save_project", { root: state.rootPath, project: updated });
     const populated = await populateTrees(state.rootPath, updated);
-    set({
-      solution: {
-        ...state.solution,
-        projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
-      },
+    const inferred = await withInferredConfigs({
+      ...state.solution,
+      projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
     });
+    set({ solution: inferred });
+    syncMainChoices(inferred);
   },
 
   removeConfig: async (projectId) => {
@@ -1335,12 +1338,13 @@ export const useSolution = create<SolutionState>((set, get) => ({
       configTreeError: null,
     };
     await invoke("save_project", { root: state.rootPath, project: updated });
-    set({
-      solution: {
-        ...state.solution,
-        projects: state.solution.projects.map((p) => (p.id === projectId ? updated : p)),
-      },
+    const populated = await populateTrees(state.rootPath, updated);
+    const inferred = await withInferredConfigs({
+      ...state.solution,
+      projects: state.solution.projects.map((p) => (p.id === projectId ? populated : p)),
     });
+    set({ solution: inferred });
+    syncMainChoices(inferred);
   },
 
   refreshProject: async (projectId) => {
@@ -1421,7 +1425,9 @@ export const useSolution = create<SolutionState>((set, get) => ({
     const withTrees: CraiddProject[] = [];
     for (const p of state.solution.projects) withTrees.push(await populateTrees(state.rootPath, p, statMap));
     for (const a of additions) withTrees.push(await populateTrees(state.rootPath, a, statMap));
-    set({ solution: { ...merged, projects: withTrees } });
+    const inferred = await withInferredConfigs({ ...merged, projects: withTrees });
+    set({ solution: inferred });
+    syncMainChoices(inferred);
     return additions.length;
   },
 

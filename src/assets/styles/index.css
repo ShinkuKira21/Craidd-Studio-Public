@@ -2,6 +2,7 @@
 
 @theme {
   /* Cool neutrals keep chrome distinct from the editor without heavy boxes. */
+  --color-editor-bg: #0e1117;
   --color-zinc-950: #0e1117;
   --color-zinc-900: #171b23;
   --color-zinc-800: #2a3140;
@@ -32,6 +33,114 @@
   --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
 }
 
+/* The IDE palette is independent of the code editor palette. */
+:root { --ide-color-scheme: dark; }
+
+:root[data-ide-theme="classic-dark"] {
+  --color-zinc-950: #1e1e1e;
+  --color-zinc-900: #252526;
+  --color-zinc-800: #333333;
+  --color-zinc-700: #454545;
+  --color-zinc-600: #939393;
+  --color-zinc-500: #a0a0a0;
+  --color-zinc-400: #bcbcbc;
+  --color-zinc-300: #d4d4d4;
+  --color-zinc-200: #e4e4e4;
+  --color-zinc-100: #f4f4f4;
+  --color-portico-bg: #1e1e1e;
+  --color-portico-panel: #252526;
+  --color-portico-border: #454545;
+  --color-portico-text: #d4d4d4;
+  --color-portico-text-dim: #a0a0a0;
+}
+
+:root[data-ide-theme="light"] {
+  --ide-color-scheme: light;
+  --color-zinc-950: #ffffff;
+  --color-zinc-900: #f4f5f7;
+  --color-zinc-800: #e4e7ec;
+  --color-zinc-700: #c5cbd5;
+  --color-zinc-600: #6a7688;
+  --color-zinc-500: #5c687b;
+  --color-zinc-400: #4c5a6b;
+  --color-zinc-300: #344255;
+  --color-zinc-200: #253346;
+  --color-zinc-100: #172538;
+  --color-blue-950: #e8f2fc;
+  --color-blue-900: #cce3f8;
+  --color-blue-800: #97c5eb;
+  --color-blue-700: #225e99;
+  --color-blue-600: #2877b4;
+  --color-blue-500: #176eaf;
+  --color-blue-400: #14639f;
+  --color-blue-300: #145687;
+  --color-blue-100: #083d68;
+  --color-portico-bg: #ffffff;
+  --color-portico-panel: #f4f5f7;
+  --color-portico-border: #c5cbd5;
+  --color-portico-text: #253346;
+  --color-portico-text-dim: #667386;
+  --color-portico-accent: #176eaf;
+}
+
+/* Editor chrome keeps its own neutral scale even when IDE Style is Light. */
+.editor-surface {
+  --color-editor-bg: #0e1117;
+  --color-zinc-950: #0e1117;
+  --color-zinc-900: #171b23;
+  --color-zinc-800: #2a3140;
+  --color-zinc-700: #404a5a;
+  --color-zinc-600: #798697;
+  --color-zinc-500: #939eae;
+  --color-zinc-400: #b7c0cd;
+  --color-zinc-300: #d4dbe5;
+  --color-zinc-200: #e4e9f1;
+  --color-zinc-100: #f4f6fa;
+  --color-blue-950: #11243a;
+  --color-blue-900: #183858;
+  --color-blue-800: #20517a;
+  --color-blue-700: #2773ae;
+  --color-blue-600: #2879b9;
+  --color-blue-500: #429eed;
+  --color-blue-400: #80bcff;
+  --color-blue-300: #b3d8ff;
+  --color-blue-100: #dbeafe;
+  color: var(--color-zinc-300);
+  color-scheme: dark;
+}
+
+:root[data-editor-theme="vs-dark"] .editor-surface {
+  --color-editor-bg: #1e1e1e;
+  --color-zinc-950: #1e1e1e;
+  --color-zinc-900: #252526;
+  --color-zinc-800: #333333;
+  --color-zinc-700: #454545;
+}
+
+:root[data-editor-theme="vs-light"] .editor-surface {
+  --color-editor-bg: #ffffff;
+  --color-zinc-950: #ffffff;
+  --color-zinc-900: #f4f5f7;
+  --color-zinc-800: #e4e7ec;
+  --color-zinc-700: #c5cbd5;
+  --color-zinc-600: #6a7688;
+  --color-zinc-500: #5c687b;
+  --color-zinc-400: #4c5a6b;
+  --color-zinc-300: #344255;
+  --color-zinc-200: #253346;
+  --color-zinc-100: #172538;
+  --color-blue-950: #e8f2fc;
+  --color-blue-900: #cce3f8;
+  --color-blue-800: #97c5eb;
+  --color-blue-700: #225e99;
+  --color-blue-600: #2877b4;
+  --color-blue-500: #176eaf;
+  --color-blue-400: #14639f;
+  --color-blue-300: #145687;
+  --color-blue-100: #083d68;
+  color-scheme: light;
+}
+
 html,
 body,
 #root {
@@ -45,8 +154,8 @@ body {
   color: var(--color-portico-text);
   font-family: Inter, system-ui, sans-serif;
   font-size: 13px;
-  /* Tell the browser this is a dark UI so native widgets adapt */
-  color-scheme: dark;
+  /* Keep native controls in step with the selected IDE style. */
+  color-scheme: var(--ide-color-scheme);
 }
 
 .scroll-thin::-webkit-scrollbar {
@@ -69,7 +178,7 @@ select {
   background-color: var(--color-zinc-950);
   color: var(--color-zinc-200);
   border: 1px solid var(--color-zinc-700);
-  color-scheme: dark;
+  color-scheme: var(--ide-color-scheme);
 }
 
 select:focus {

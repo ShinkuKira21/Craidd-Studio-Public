@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { FileNode, Language } from "../../types/project";
 import { LANGUAGES } from "../../lib/languages";
 import { useSolution } from "../../store/solutionStore";
+import { detectTauriSetup, isTauriSuggestionSuppressed, type TauriSetupProposal } from "../../lib/frameworkSetup";
+import TauriSetupDialog from "./TauriSetupDialog";
 
 export default function MakeProjectDialog({ node, onClose }: { node: FileNode; onClose: () => void }) {
   const addProject = useSolution((s) => s.addProject);
@@ -16,6 +18,8 @@ export default function MakeProjectDialog({ node, onClose }: { node: FileNode; o
   const [fineTuneAfter, setFineTuneAfter] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [setupProposal, setSetupProposal] = useState<TauriSetupProposal | null>(null);
+  const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!rootPath) {
@@ -54,6 +58,13 @@ export default function MakeProjectDialog({ node, onClose }: { node: FileNode; o
     return () => { cancelled = true; };
   }, [rootPath, node.path]);
 
+  const finish = (projectId: string | null) => {
+    onClose();
+    if (fineTuneAfter && projectId) {
+      window.dispatchEvent(new CustomEvent("craidd:fine-tune-project", { detail: projectId }));
+    }
+  };
+
   const submit = async () => {
     setError(null);
     setSubmitting(true);
@@ -61,7 +72,7 @@ export default function MakeProjectDialog({ node, onClose }: { node: FileNode; o
       await addProject({ name: name.trim() || node.name, language, folder: node.path || "." });
       const projects = useSolution.getState().solution?.projects ?? [];
       const created = projects.find(
-        (p) => p.folder === (node.path || ".") && p.language === language && p.name === name.trim()
+        (p) => p.folder === (node.path || ".") && p.language === language
       ) ?? (language === "config" ? projects.find((p) => p.folder === (node.path || ".") && p.configEnabled) : undefined);
       if (withConfig && created && language !== "config") {
         if (configDir.trim() && configDir.trim() !== ".") {
@@ -70,10 +81,20 @@ export default function MakeProjectDialog({ node, onClose }: { node: FileNode; o
           await useSolution.getState().addConfigHere(created.id);
         }
       }
-      onClose();
-      if (fineTuneAfter && created) {
-        window.dispatchEvent(new CustomEvent("craidd:fine-tune-project", { detail: created.id }));
+      setCreatedProjectId(created?.id ?? null);
+      const current = useSolution.getState();
+      if (created && current.solution && current.rootPath && !isTauriSuggestionSuppressed(current.solution.root.replace(/\/+$/, ""))) {
+        try {
+          const proposal = await detectTauriSetup(current.solution, created.path);
+          if (proposal) {
+            setSetupProposal(proposal);
+            return;
+          }
+        } catch (detectionError) {
+          console.error("[craidd] Tauri setup detection failed:", detectionError);
+        }
       }
+      finish(created?.id ?? null);
     } catch (err) {
       console.error("[craidd] MakeProjectDialog failed:", err);
       setError(String(err));
@@ -81,6 +102,8 @@ export default function MakeProjectDialog({ node, onClose }: { node: FileNode; o
       setSubmitting(false);
     }
   };
+
+  if (setupProposal) return <TauriSetupDialog proposal={setupProposal} onDone={() => finish(createdProjectId)} />;
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50" onClick={submitting ? undefined : onClose}>
