@@ -75,6 +75,10 @@ pub struct RunSpec {
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     pub cwd: String,
+    #[serde(default)]
+    pub linked: Option<crate::types::LinkedLaunch>,
+    #[serde(default)]
+    pub order: Option<super::build_order::OrderRequest>,
 }
 
 #[derive(Clone, Serialize)]
@@ -128,6 +132,31 @@ fn stream_lines<R: Read + Send + 'static>(
     })
 }
 
+/// Configure a CMake build tree with the selected profile, then let the normal
+/// runner stream the build. Reconfiguration is how single-config generators
+/// switch between Debug and Release; CMake preserves the project's other cache
+/// values.
+fn prepare_cmake_build(program: &Path, spec: &RunSpec) -> Result<Option<String>, String> {
+    if Path::new(&spec.program).file_name().and_then(|name| name.to_str()) != Some("cmake")
+        || spec.args.first().map(String::as_str) != Some("--build") {
+        return Ok(None);
+    }
+    let build_dir = spec.args.get(1).ok_or("cmake --build requires a build directory")?;
+    let build_path = { let path = Path::new(build_dir); if path.is_absolute() { path.to_path_buf() } else { Path::new(&spec.cwd).join(path) } };
+    let profile = spec.args.iter().position(|arg| arg == "--config")
+        .and_then(|index| spec.args.get(index + 1)).map(String::as_str).unwrap_or("Debug");
+    let build_type = format!("-DCMAKE_BUILD_TYPE={profile}");
+    let output = Command::new(program).current_dir(&spec.cwd)
+        .args(["-S", ".", "-B", build_dir, build_type.as_str()])
+        .stdin(Stdio::null()).output().map_err(|e| format!("Could not configure CMake build tree: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!("CMake configure failed ({}).\n{}{}", output.status, stdout, stderr));
+    }
+    Ok(Some(format!("Configured CMake build tree at {}.\n{}{}", build_path.display(), stdout, stderr)))
+}
+
 #[tauri::command]
 pub async fn start_config(
     window: WebviewWindow,
@@ -137,9 +166,36 @@ pub async fn start_config(
     start_config_for_label(app, window.label().to_string(), spec).await
 }
 
-pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec) -> Result<u64, String> {
+pub async fn start_config_for_label(app: AppHandle, label: String, mut spec: RunSpec) -> Result<u64, String> {
     if !Path::new(&spec.cwd).is_dir() {
         return Err(format!("Working directory does not exist: {}", spec.cwd));
+    }
+    if let Some(request) = spec.order.clone() {
+        let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+        emit(&app, &label, id, "start", Some("Preparing declared build order…".into()), None);
+        let app_output = app.clone();
+        let label_output = label.clone();
+        let prepared = super::build_order::prepare(app.clone(), label.clone(), request, move |text|
+            emit(&app_output, &label_output, id, "output", Some(text), None)).await;
+        let artifact = match prepared {
+            Ok(artifact) => artifact,
+            Err(error) => {
+                emit(&app, &label, id, if error == "Build order cancelled" { "cancelled" } else { "error" }, Some(error.clone()), None);
+                return Err(error);
+            }
+        };
+        if spec.program == "craidd-plan" {
+            emit(&app, &label, id, "finish", Some("Build order completed.".into()), Some(0));
+            return Ok(id);
+        }
+        if spec.program == "dotnet" && spec.args.first().is_some_and(|arg| arg == "run") {
+            if let Some(artifact) = artifact {
+                let application_args = spec.args.iter().position(|arg| arg == "--").map(|index| spec.args[index + 1..].to_vec()).unwrap_or_default();
+                spec.args = vec![artifact.to_string_lossy().into_owned()];
+                spec.args.extend(application_args);
+                spec.label = format!("dotnet {} (prepared output; no rebuild)", artifact.display());
+            }
+        }
     }
 
     // Multiple Tauri clients share one frontend server, but each receives
@@ -151,6 +207,10 @@ pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec
     let program = tauri::async_runtime::spawn_blocking(move || resolve_known_program(&requested_program))
         .await.map_err(|error| error.to_string())??
         .unwrap_or_else(|| spec.program.clone().into());
+    let prepare_program = program.clone();
+    let prepare_spec = spec.clone();
+    let preparation = tauri::async_runtime::spawn_blocking(move || prepare_cmake_build(&prepare_program, &prepare_spec))
+        .await.map_err(|error| error.to_string())??;
     let mut command = Command::new(&program);
     command
         .current_dir(cwd)
@@ -196,6 +256,7 @@ pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec
     drop(active);
 
     emit(&app, &label, id, "start", Some(format!("$ {}  (in {})", spec.label, spec.cwd)), None);
+    if let Some(text) = preparation { emit(&app, &label, id, "output", Some(text), None); }
     if dev_lease.is_some() {
         emit(&app, &label, id, "output", Some("Using the shared Tauri frontend dev server.".into()), None);
     }
@@ -261,6 +322,7 @@ pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec
 
 #[tauri::command]
 pub fn stop_config(window: WebviewWindow, state: State<'_, RunnerManager>) -> Result<(), String> {
+    super::build_order::cancel(window.app_handle(), window.label());
     let (pgid, term_sent) = {
         let active = state.0.lock().map_err(|e| e.to_string())?;
         let Some(run) = active.get(window.label()) else { return Ok(()); };
@@ -290,6 +352,7 @@ pub fn cancel_window_run(window: &tauri::Window) {
 }
 
 pub fn cancel_run_by_label(app: &AppHandle, label: &str) {
+    super::build_order::cancel(app, label);
     if let Some(manager) = app.try_state::<RunnerManager>() {
         if let Ok(active) = manager.0.lock() {
             if let Some(run) = active.get(label) {

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -143,6 +144,17 @@ struct GroupAction {
     pending: HashSet<String>,
     unfinished: HashSet<String>,
     id: u64,
+    cancelled: bool,
+}
+
+#[derive(Clone)]
+struct PlannedLaunch {
+    label: String,
+    participant: Participant,
+    visible: bool,
+    priority: u8,
+    ready_url: Option<String>,
+    timeout_ms: u64,
 }
 
 #[derive(Default)]
@@ -215,6 +227,25 @@ pub struct LinkedProblem {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LinkedLaunchPlanMember {
+    project_name: String,
+    window_id: u32,
+    command: String,
+    ready_url: Option<String>,
+    timeout_ms: u64,
+    preparation: Vec<String>,
+    after: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedLaunchPlanPhase {
+    priority: u8,
+    members: Vec<LinkedLaunchPlanMember>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RestoredRuntime {
     status: String,
     output: String,
@@ -262,7 +293,7 @@ fn is_application(kind: Option<&str>) -> bool {
 }
 
 fn is_busy(status: &str) -> bool {
-    matches!(status, "starting" | "building" | "running" | "paused")
+    matches!(status, "waiting" | "starting" | "building" | "running" | "paused")
 }
 
 fn group_members(registry: &Registry, solution: &str) -> Vec<String> {
@@ -289,7 +320,8 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let all = members.iter().filter_map(|member| registry.windows.get(member));
     let can_build = linked && all.clone().all(|participant| participant.can_build);
     let can_run = linked && all.clone().all(|participant| participant.can_run);
-    let debug_adapter_available = super::debug::adapter_available();
+    let debug_adapter_available = linked && all.clone().all(|participant| participant.specs.get("debug")
+        .is_some_and(|spec| super::debug::adapter_available_for_method(&spec.program)));
     let busy = action.is_some() || (linked && all.clone().any(|participant| is_busy(&participant.status)));
     // Once an action starts, its count describes the launched windows even if
     // another window opens or changes its project while the action is active.
@@ -386,6 +418,11 @@ pub fn update_linked_window(
         .filter(|path| path.is_file())
         .map(|path| path.to_string_lossy().into_owned());
     if let Some(solution_path) = path {
+        let staged_status = registry.actions.get(&solution_path)
+            .filter(|group| group.pending.contains(window.label()))
+            .and_then(|_| registry.windows.get(window.label()))
+            .filter(|participant| matches!(participant.status.as_str(), "waiting" | "starting"))
+            .map(|participant| participant.status.clone());
         let paused_line = registry.windows.get(window.label()).and_then(|item| item.paused_line);
         let pause_reason = registry.windows.get(window.label()).and_then(|item|
             (update.status == "paused").then(|| item.pause_reason.clone())).flatten();
@@ -407,7 +444,7 @@ pub fn update_linked_window(
             project_path: update.project_path, project_name: update.project_name,
             project_kind: update.project_kind, can_build: update.can_build, can_run: update.can_run,
             can_debug: update.can_debug, debugging: update.debugging,
-            status: update.status, visible: window.is_visible().unwrap_or(true), restoring,
+            status: staged_status.unwrap_or(update.status), visible: window.is_visible().unwrap_or(true), restoring,
             selected_config_name: update.selected_config_name,
             selected_profile_name: update.selected_profile_name,
             active_file: update.active_file.map(|mut file| {
@@ -764,13 +801,17 @@ pub fn update_parked_window_configuration(
 async fn launch_parked(app: AppHandle, label: String, participant: Participant, action: String) -> Result<(), String> {
     let spec = participant.specs.get(&action).ok_or(format!("The hidden window has no {action} configuration"))?.clone();
     if action == "debug" {
-        let request = super::debug::RustDebugRequest {
+        let method = super::debug::normalize_debug_method(&spec.program)
+            .ok_or_else(|| format!("The hidden window's debug command is not supported: {}", spec.program))?;
+        let request = super::debug::DebugRequest {
             cwd: spec.cwd,
-            release: participant.selected_profile_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("release")),
-            command_args: spec.args, solution_path: participant.solution_path.clone(),
+            method: method.into(),
+            profile: participant.selected_profile_name.unwrap_or_else(|| if method == "cargo" { "debug".into() } else { "Debug".into() }),
+            command_args: spec.args, env: spec.env, solution_path: participant.solution_path.clone(),
+            order: spec.order,
             breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
-        super::debug::start_rust_debug_for_label(app, label, request).await
+        super::debug::start_debug_for_label(app, label, request).await
     } else {
         super::runner::start_config_for_label(app, label, spec).await.map(|_| ())
     }
@@ -1001,42 +1042,282 @@ pub fn reveal_linked_problem(
 }
 
 
-/// Spawn a watchdog for a group action. After WATCHDOG_SECS, any member
-/// still marked pending is treated as failed: removed from pending and
-/// unfinished, so the group reconciles and the gold button unsticks.
-/// This exists because hidden WebKitGTK windows can be throttled and
-/// never ack. The backend must not depend on the frontend acking.
-fn spawn_action_watchdog(app: AppHandle, action_id: u64, solution_path: String) {
-    const WATCHDOG_SECS: u64 = 20;
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(WATCHDOG_SECS));
-        let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return; };
-        let Ok(mut registry) = state.0.lock() else { return; };
-        // Collect the stragglers and clear their pending flags in one
-        // scoped borrow, then update the participants in a second one.
-        let stragglers: Vec<String> = {
-            let Some(action) = registry.actions.get_mut(&solution_path) else { return; };
-            if action.id != action_id { return; }
-            if action.pending.is_empty() { return; }
-            let labels: Vec<String> = action.pending.iter().cloned().collect();
-            for label in &labels {
-                action.pending.remove(label);
-                action.unfinished.remove(label);
+fn linked_action_active(app: &AppHandle, solution_path: &str, action_id: u64) -> bool {
+    app.try_state::<LinkedWindowRegistry>().is_some_and(|state| state.0.lock().is_ok_and(|registry|
+        registry.actions.get(solution_path).is_some_and(|group| group.id == action_id && !group.cancelled)))
+}
+
+fn wait_for_phase_start(app: &AppHandle, solution_path: &str, action_id: u64, labels: &[String], timeout_ms: u64) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let state = app.try_state::<LinkedWindowRegistry>().ok_or("Linked window registry is unavailable")?;
+        let registry = state.0.lock().map_err(|error| error.to_string())?;
+        let group = registry.actions.get(solution_path).filter(|group| group.id == action_id)
+            .ok_or("Linked action stopped")?;
+        if group.cancelled { return Err("Linked action stopped".into()); }
+        if labels.iter().all(|label| !group.pending.contains(label)) {
+            if let Some(failed) = labels.iter().find_map(|label| registry.windows.get(label)
+                .filter(|participant| matches!(participant.status.as_str(), "failed" | "error" | "cancelled"))
+                .map(|participant| participant.failure_message.clone().unwrap_or_else(|| format!("{} did not start", participant.project_name.as_deref().unwrap_or(label))))) {
+                return Err(failed);
             }
-            labels
-        };
-        for label in &stragglers {
-            if let Some(participant) = registry.windows.get_mut(label) {
-                if is_busy(&participant.status) {
-                    participant.status = "failed".into();
-                    participant.failure_message = Some("Timed out waiting for the window to respond".into());
+            // Starting a build process is not completing a build. Named
+            // dependencies must wait for successful exit before advancing.
+            if group.action != "build" || labels.iter().all(|label| !group.unfinished.contains(label)) {
+                return Ok(());
+            }
+        }
+        drop(registry);
+        if Instant::now() >= deadline { return Err("Timed out waiting for a linked window to start".into()); }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn parse_http_ready_url(url: &str) -> Result<(String, u16, String), String> {
+    if !url.starts_with("http://") { return Err("Readiness URL must start with http://".into()); }
+    if url.chars().any(|character| character.is_whitespace() || character.is_control() || character == '\\') {
+        return Err("Readiness URL must not contain whitespace or backslashes".into());
+    }
+    let parsed = tauri::Url::parse(url).map_err(|error| format!("Invalid readiness URL: {error}"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
+        return Err("Readiness URL must not contain credentials or a fragment".into());
+    }
+    let host = parsed.host_str().ok_or("Readiness URL has no host")?.trim_matches(['[', ']']);
+    let port = parsed.port_or_known_default().filter(|port| *port > 0).ok_or("Invalid readiness URL port")?;
+    let mut path = parsed.path().to_string();
+    if let Some(query) = parsed.query() { path.push('?'); path.push_str(query); }
+    Ok((host.into(), port, path))
+}
+
+fn http_ready(url: &str) -> Result<bool, String> {
+    let (host, port, path) = parse_http_ready_url(url)?;
+    let addresses = (host.as_str(), port).to_socket_addrs().map_err(|error| error.to_string())?;
+    let mut stream = None;
+    for address in addresses {
+        if let Ok(candidate) = TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
+            stream = Some(candidate);
+            break;
+        }
+    }
+    let Some(mut stream) = stream else { return Ok(false); };
+    stream.set_read_timeout(Some(Duration::from_millis(500))).map_err(|error| error.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_millis(500))).map_err(|error| error.to_string())?;
+    let authority = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
+        .map_err(|error| error.to_string())?;
+    let mut first_line = String::new();
+    BufReader::new(stream).read_line(&mut first_line).map_err(|error| error.to_string())?;
+    let status = first_line.split_whitespace().nth(1)
+        .and_then(|value| value.parse::<u16>().ok());
+    Ok(status.is_some_and(|status| (200..400).contains(&status)))
+}
+
+#[tauri::command]
+pub async fn probe_linked_readiness(url: String) -> Result<bool, String> {
+    parse_http_ready_url(&url)?;
+    tauri::async_runtime::spawn_blocking(move || http_ready(&url)).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn preview_linked_action(
+    window: WebviewWindow,
+    state: tauri::State<'_, LinkedWindowRegistry>,
+    action: String,
+) -> Result<Vec<LinkedLaunchPlanPhase>, String> {
+    if !matches!(action.as_str(), "build" | "run" | "debug") { return Err("Unsupported linked action".into()); }
+    let registry = state.0.lock().map_err(|error| error.to_string())?;
+    let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
+    let members = group_members(&registry, &participant.solution_path);
+    if !members.iter().any(|label| label == window.label()) { return Err("Linked windows are not ready".into()); }
+    linked_plan_phases(&registry, members, &action)
+}
+
+fn linked_plan_phases(registry: &Registry, members: Vec<String>, action: &str) -> Result<Vec<LinkedLaunchPlanPhase>, String> {
+    let input = members.iter().map(|label| {
+        let participant = registry.windows.get(label).ok_or("Linked window disappeared")?;
+        let spec = participant.specs.get(action).ok_or_else(|| format!("{} has no {action} command", participant.project_name.as_deref().unwrap_or(label)))?;
+        Ok((label.clone(), participant.project_path.clone().unwrap_or_default(),
+            spec.linked.as_ref().map_or(crate::types::default_linked_priority(), |linked| linked.priority),
+            spec.linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default()))
+    }).collect::<Result<Vec<_>, String>>()?;
+    let groups = order_phases(&input)?;
+    let mut phases = vec![];
+    for (index, group) in groups.into_iter().enumerate() {
+      let mut phase = LinkedLaunchPlanPhase { priority: (index + 1) as u8, members: vec![] };
+      for label in group {
+        let participant = registry.windows.get(&label).ok_or("Linked window disappeared")?;
+        let spec = participant.specs.get(action).ok_or_else(|| format!("{} has no {action} command",
+            participant.project_name.as_deref().unwrap_or(&label)))?;
+        phase.members.push(LinkedLaunchPlanMember {
+            project_name: participant.project_name.clone().unwrap_or(label),
+            window_id: participant.window_id,
+            command: spec.label.clone(),
+            ready_url: spec.linked.as_ref().and_then(|linked| linked.ready_url.clone()).filter(|url| !url.is_empty()),
+            timeout_ms: spec.linked.as_ref().map_or(crate::types::default_linked_timeout_ms(), |linked| linked.timeout_ms),
+            preparation: spec.order.as_ref().map(super::build_order::preview).transpose()?.unwrap_or_default(),
+            after: spec.linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default(),
+        });
+      }
+      phases.push(phase);
+    }
+    Ok(phases)
+}
+
+/// Name-based dependencies, validated before launching. Legacy priorities are
+/// retained for participants without an explicit prerequisite list.
+fn order_phases(input: &[(String, String, u8, Vec<String>)]) -> Result<Vec<Vec<String>>, String> {
+    let mut pending: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    for (label, _, priority, after) in input {
+        let mut needs = HashSet::new();
+        for project in after {
+            let matches = input.iter().filter(|(_, target, _, _)| target == project).collect::<Vec<_>>();
+            if matches.is_empty() { return Err(format!("{label} waits for {project}, but that project has no linked session. Open/select it first.")); }
+            needs.extend(matches.iter().map(|(label, _, _, _)| label.clone()));
+        }
+        if after.is_empty() { needs.extend(input.iter().filter(|(_, _, other, _)| other < priority).map(|(label, _, _, _)| label.clone())); }
+        pending.insert(label.clone(), needs);
+    }
+    let mut phases = vec![];
+    while !pending.is_empty() {
+        let ready = pending.iter().filter(|(_, needs)| needs.is_empty()).map(|(label, _)| label.clone()).collect::<Vec<_>>();
+        if ready.is_empty() { return Err(format!("Linked startup cycle involving {}", pending.keys().cloned().collect::<Vec<_>>().join(", "))); }
+        for label in &ready { pending.remove(label); }
+        for needs in pending.values_mut() { for label in &ready { needs.remove(label); } }
+        phases.push(ready);
+    }
+    Ok(phases)
+}
+
+fn wait_for_http_ready(app: &AppHandle, solution_path: &str, action_id: u64, url: &str, timeout_ms: u64) -> Result<(), String> {
+    parse_http_ready_url(url)?;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if !linked_action_active(app, solution_path, action_id) { return Err("Linked action stopped".into()); }
+        match http_ready(url) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) if Instant::now() >= deadline => return Err(format!("Readiness check failed for {url}: {error}")),
+            Err(_) => {}
+        }
+        if Instant::now() >= deadline { return Err(format!("Timed out waiting for {url}")); }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn mark_orchestration_failure(app: &AppHandle, solution_path: &str, action_id: u64, launched: &HashSet<String>, message: &str) {
+    let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return; };
+    let Ok(mut registry) = state.0.lock() else { return; };
+    let Some(group) = registry.actions.get_mut(solution_path).filter(|group| group.id == action_id) else { return; };
+    group.pending.retain(|label| launched.contains(label));
+    group.unfinished.retain(|label| launched.contains(label));
+    if let Some(label) = launched.iter().next() {
+        if let Some(participant) = registry.windows.get_mut(label) {
+            participant.failure_message = Some(message.into());
+            append_output(participant, message);
+        }
+    }
+    reconcile(&mut registry);
+    registry.sequence += 1;
+    broadcast(app, &registry);
+}
+
+fn mark_phase_starting(app: &AppHandle, solution_path: &str, action_id: u64, labels: &[String]) -> bool {
+    let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return false; };
+    let Ok(mut registry) = state.0.lock() else { return false; };
+    if !registry.actions.get(solution_path).is_some_and(|group| group.id == action_id && !group.cancelled) { return false; }
+    for label in labels {
+        if let Some(participant) = registry.windows.get_mut(label) {
+            participant.status = "starting".into();
+            participant.failure_message = None;
+        }
+    }
+    registry.sequence += 1;
+    broadcast(app, &registry);
+    true
+}
+
+async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, action_id: u64, phases: Vec<Vec<PlannedLaunch>>) {
+    let mut launched = HashSet::new();
+    for phase in phases {
+        if !linked_action_active(&app, &solution_path, action_id) { return; }
+        let command = LinkedCommand { kind: "start".into(), action: Some(action.clone()), action_id };
+        let labels = phase.iter().map(|launch| launch.label.clone()).collect::<Vec<_>>();
+        let start_timeout_ms = phase.iter().map(|launch| launch.timeout_ms).max().unwrap_or(crate::types::default_linked_timeout_ms());
+        if !mark_phase_starting(&app, &solution_path, action_id, &labels) { return; }
+        for launch in &phase {
+            launched.insert(launch.label.clone());
+            if launch.visible {
+                if let Err(error) = app.emit_to(launch.label.as_str(), COMMAND_EVENT, &command) {
+                    note_process_event(&app, &launch.label, "error", Some(&error.to_string()), None);
+                }
+            } else {
+                let app_task = app.clone();
+                let action_task = action.clone();
+                let label = launch.label.clone();
+                let participant = launch.participant.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = launch_parked(app_task.clone(), label.clone(), participant, action_task).await;
+                    if let Err(ref error) = result { note_process_event(&app_task, &label, "error", Some(error), None); }
+                    if let Some(state) = app_task.try_state::<LinkedWindowRegistry>() {
+                        if let Ok(mut registry) = state.0.lock() {
+                            if let Some(group) = registry.actions.values_mut().find(|group| group.id == action_id) {
+                                group.pending.remove(&label);
+                                if result.is_err() { group.unfinished.remove(&label); }
+                            }
+                            reconcile(&mut registry);
+                            registry.sequence += 1;
+                            broadcast(&app_task, &registry);
+                        }
+                    }
+                });
+            }
+        }
+        let start_result = tauri::async_runtime::spawn_blocking({
+            let app = app.clone();
+            let solution_path = solution_path.clone();
+            let labels = labels.clone();
+            move || wait_for_phase_start(&app, &solution_path, action_id, &labels, start_timeout_ms)
+        }).await;
+        let start_result = start_result.map_err(|error| error.to_string()).and_then(|result| result);
+        if let Err(error) = start_result {
+            if error != "Linked action stopped" { mark_orchestration_failure(&app, &solution_path, action_id, &launched, &error); }
+            return;
+        }
+        for launch in &phase {
+            let Some(url) = launch.ready_url.clone() else { continue; };
+            if action == "build" { continue; }
+            if let Some(state) = app.try_state::<LinkedWindowRegistry>() {
+                if let Ok(mut registry) = state.0.lock() {
+                    if let Some(participant) = registry.windows.get_mut(&launch.label) {
+                        append_output(participant, &format!("[Startup order] Waiting for {url}; later stages have not started."));
+                    }
+                    registry.sequence += 1;
+                    broadcast(&app, &registry);
+                }
+            }
+            let readiness = tauri::async_runtime::spawn_blocking({
+                let app = app.clone();
+                let solution_path = solution_path.clone();
+                let url = url.clone();
+                let timeout_ms = launch.timeout_ms;
+                move || wait_for_http_ready(&app, &solution_path, action_id, &url, timeout_ms)
+            }).await;
+            let readiness = readiness.map_err(|error| error.to_string()).and_then(|result| result);
+            if let Err(error) = readiness {
+                if error != "Linked action stopped" { mark_orchestration_failure(&app, &solution_path, action_id, &launched, &error); }
+                return;
+            }
+            if let Some(state) = app.try_state::<LinkedWindowRegistry>() {
+                if let Ok(mut registry) = state.0.lock() {
+                    if let Some(participant) = registry.windows.get_mut(&launch.label) {
+                        append_output(participant, &format!("[Startup order] Ready: {url}."));
+                    }
+                    registry.sequence += 1;
+                    broadcast(&app, &registry);
                 }
             }
         }
-        reconcile(&mut registry);
-        registry.sequence += 1;
-        broadcast(&app, &registry);
-    });
+    }
 }
 
 #[tauri::command]
@@ -1061,8 +1342,10 @@ pub fn start_linked_action(
     if members.iter().any(|label| registry.windows.get(label).is_some_and(|participant| participant.dirty_count > 0)) {
         return Err("Save the unsaved files in every linked IDE window before launching them together".into());
     }
-    if action == "debug" && !super::debug::adapter_available() {
-        return Err("lldb-dap is required for linked Rust debugging".into());
+    if action == "debug" && members.iter().any(|label| registry.windows.get(label)
+        .and_then(|participant| participant.specs.get("debug"))
+        .is_none_or(|spec| !super::debug::adapter_available_for_method(&spec.program))) {
+        return Err("Every linked debug configuration needs its installed debugger adapter (lldb-dap or netcoredbg)".into());
     }
     if members.iter().any(|label| registry.windows.get(label).is_none_or(|participant| {
         if action == "build" { !participant.can_build } else if action == "debug" { !participant.can_debug } else { !participant.can_run }
@@ -1070,61 +1353,42 @@ pub fn start_linked_action(
     if members.iter().any(|label| registry.windows.get(label).is_some_and(|participant| participant.restoring)) {
         return Err("Wait for the linked IDE window to finish opening".into());
     }
-    let parked: Vec<(String, Participant)> = members.iter().filter_map(|label| registry.windows.get(label)
-        .filter(|participant| !participant.visible && !participant.restoring)
-        .map(|participant| (label.clone(), participant.clone()))).collect();
-    if parked.iter().any(|(_, participant)| !participant.specs.contains_key(&action)) {
-        return Err(format!("A hidden window has no {action} command. Show it and choose a configuration first."));
+    let mut plan = Vec::with_capacity(members.len());
+    for label in &members {
+        let participant = registry.windows.get(label).ok_or("Linked window disappeared")?;
+        let spec = participant.specs.get(&action).ok_or_else(|| format!("A linked window has no {action} command"))?;
+        let priority = spec.linked.as_ref().map_or(crate::types::default_linked_priority(), |linked| linked.priority);
+        let timeout_ms = spec.linked.as_ref().map_or(crate::types::default_linked_timeout_ms(), |linked| linked.timeout_ms);
+        let ready_url = spec.linked.as_ref().and_then(|linked| linked.ready_url.clone()).filter(|url| !url.is_empty());
+        if !(1..=100).contains(&priority) { return Err(format!("Linked priority for {} must be between 1 and 100", spec.label)); }
+        if !(100..=300_000).contains(&timeout_ms) { return Err(format!("Linked readiness timeout for {} must be between 100 and 300000 ms", spec.label)); }
+        if let Some(url) = &ready_url { parse_http_ready_url(url)?; }
+        if let Some(order) = &spec.order { super::build_order::preview(order)?; }
+        plan.push(PlannedLaunch { label: label.clone(), participant: participant.clone(),
+            visible: participant.visible && !participant.restoring, priority, ready_url, timeout_ms });
     }
-    let visible: Vec<String> = members.iter().filter(|label| !parked.iter().any(|(hidden, _)| hidden == *label)).cloned().collect();
+    let input = plan.iter().map(|launch| (launch.label.clone(), launch.participant.project_path.clone().unwrap_or_default(), launch.priority,
+        launch.participant.specs[&action].linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default())).collect::<Vec<_>>();
+    let phases = order_phases(&input)?.into_iter().map(|labels| labels.into_iter()
+        .filter_map(|label| plan.iter().find(|launch| launch.label == label).cloned()).collect()).collect();
     registry.next_id += 1;
     let id = registry.next_id;
     registry.actions.insert(solution_path.clone(), GroupAction {
         action: action.clone(), members: members.clone(),
         pending: members.iter().cloned().collect(), id,
         unfinished: members.iter().cloned().collect(),
+        cancelled: false,
     });
+    for label in &members {
+        if let Some(participant) = registry.windows.get_mut(label) {
+            participant.status = "waiting".into();
+            participant.failure_message = None;
+        }
+    }
     registry.sequence += 1;
     broadcast(&app, &registry);
     drop(registry);
-    let command = LinkedCommand { kind: "start".into(), action: Some(action.clone()), action_id: id };
-    let mut failed = Vec::new();
-    for label in &visible {
-        if app.emit_to(label.as_str(), COMMAND_EVENT, &command).is_err() {
-            failed.push(label.clone());
-        }
-    }
-    for (label, participant) in parked {
-        let app_task = app.clone();
-        let action_task = action.clone();
-        tauri::async_runtime::spawn(async move {
-            let result = launch_parked(app_task.clone(), label.clone(), participant, action_task).await;
-            if let Err(ref error) = result {
-                note_process_event(&app_task, &label, "error", Some(error), None);
-            }
-            if let Some(state) = app_task.try_state::<LinkedWindowRegistry>() {
-                if let Ok(mut registry) = state.0.lock() {
-                    if let Some(group) = registry.actions.values_mut().find(|group| group.id == id) {
-                        group.pending.remove(&label);
-                        if result.is_err() { group.unfinished.remove(&label); }
-                    }
-                    reconcile(&mut registry);
-                    registry.sequence += 1;
-                    broadcast(&app_task, &registry);
-                }
-            }
-        });
-    }
-    if !failed.is_empty() {
-        let mut registry = state.0.lock().map_err(|e| e.to_string())?;
-        if let Some(group) = registry.actions.values_mut().find(|group| group.id == id) {
-            for label in &failed { group.pending.remove(label); group.unfinished.remove(label); }
-        }
-        reconcile(&mut registry);
-        registry.sequence += 1;
-        broadcast(&app, &registry);
-    }
-    spawn_action_watchdog(app.clone(), id, solution_path.clone());
+    tauri::async_runtime::spawn(run_linked_plan(app.clone(), solution_path, action, id, phases));
     Ok(())
 }
 
@@ -1157,16 +1421,29 @@ pub fn stop_linked_action(
     app: AppHandle,
     state: tauri::State<'_, LinkedWindowRegistry>,
 ) -> Result<(), String> {
-    let registry = state.0.lock().map_err(|e| e.to_string())?;
+    let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
-    let group = registry.actions.get(&participant.solution_path).ok_or("No linked action is active")?;
+    let solution_path = participant.solution_path.clone();
+    let group = registry.actions.get(&solution_path).ok_or("No linked action is active")?;
     if !group.members.iter().any(|label| label == window.label()) { return Err("Window is not in linked action".into()); }
     if group.action == "build" { return Err("Linked Build has no group Stop control".into()); }
     let command = LinkedCommand { kind: "stop".into(), action: None, action_id: group.id };
     let targets: Vec<(String, bool)> = group.members.iter().map(|label| (label.clone(), registry.windows.get(label)
         .is_some_and(|member| member.visible))).collect();
+    let busy: HashSet<String> = targets.iter().filter_map(|(label, _)| registry.windows.get(label)
+        .filter(|participant| matches!(participant.status.as_str(), "starting" | "building" | "running" | "paused"))
+        .map(|_| label.clone())).collect();
+    if let Some(group) = registry.actions.get_mut(&solution_path) {
+        group.cancelled = true;
+        group.pending.clear();
+        group.unfinished.retain(|label| busy.contains(label));
+    }
+    reconcile(&mut registry);
+    registry.sequence += 1;
+    broadcast(&app, &registry);
     drop(registry);
     for (label, visible) in targets {
+        super::build_order::cancel(&app, &label);
         if visible { let _ = app.emit_to(label.as_str(), COMMAND_EVENT, &command); }
         else if super::debug::has_debug_session(&app, &label) {
             let _ = super::debug::control_debug_by_label(&app, &label, "stop");
@@ -1341,7 +1618,7 @@ mod tests {
         registry.actions.insert("/one.cln".into(), GroupAction {
             action: "run".into(), members: vec!["a".into(), "b".into(), "c".into()],
             pending: HashSet::from(["a".into(), "b".into(), "c".into()]),
-            unfinished: HashSet::from(["a".into(), "b".into(), "c".into()]), id: 1,
+            unfinished: HashSet::from(["a".into(), "b".into(), "c".into()]), id: 1, cancelled: false,
         });
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
         assert_eq!(snapshot(&registry, "a").active_count, 3);
@@ -1393,10 +1670,73 @@ mod tests {
         registry.actions.insert("/one.cln".into(), GroupAction {
             action: "run".into(), members: vec!["a".into(), "b".into()],
             pending: HashSet::from(["a".into(), "b".into()]),
-            unfinished: HashSet::from(["a".into(), "b".into()]), id: 1,
+            unfinished: HashSet::from(["a".into(), "b".into()]), id: 1, cancelled: false,
         });
         registry.windows.insert("c".into(), participant("/one.cln", "server", "service"));
         assert_eq!(snapshot(&registry, "a").members.len(), 2);
         assert_eq!(snapshot(&registry, "c").members.len(), 3);
+    }
+
+    #[test]
+    fn parses_and_probes_http_readiness() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request_line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request_line).unwrap();
+            assert_eq!(request_line.trim_end(), "GET /api/health HTTP/1.1");
+            stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n").unwrap();
+        });
+        let url = format!("http://127.0.0.1:{}/api/health", address.port());
+        assert!(http_ready(&url).unwrap());
+        server.join().unwrap();
+        assert!(parse_http_ready_url("https://127.0.0.1/health").is_err());
+    }
+
+    #[test]
+    fn validates_readiness_urls_and_preserves_queries() {
+        assert_eq!(parse_http_ready_url("http://localhost:5087?ready=1").unwrap(),
+            ("localhost".into(), 5087, "/?ready=1".into()));
+        assert_eq!(parse_http_ready_url("http://[::1]:5087/health").unwrap(),
+            ("::1".into(), 5087, "/health".into()));
+        for url in ["http://", "http://localhost:0/health", "http://localhost:bad/health",
+            "http://user:pass@localhost/health", "http://localhost/health#fragment",
+            "http://localhost/health\r\nX-Header: value", "http://localhost\\health"] {
+            assert!(parse_http_ready_url(url).is_err(), "accepted {url:?}");
+        }
+    }
+
+    #[test]
+    fn launch_preview_groups_visible_and_parked_instances_by_priority() {
+        let mut registry = Registry::default();
+        for (label, priority, ready_url, visible) in [
+            ("client-a", 50, None, true), ("api", 20, Some("http://localhost:5087/health"), true),
+            ("client-b", 50, None, false),
+        ] {
+            let mut item = participant("/one.cln", label, "application");
+            item.visible = visible;
+            item.specs.insert("run".into(), RunSpec { label: format!("run {label}"), program: "echo".into(),
+                args: vec![], env: BTreeMap::new(), cwd: "/tmp".into(),
+                linked: Some(crate::types::LinkedLaunch { after: vec![], priority, ready_url: ready_url.map(String::from), timeout_ms: 45000 }), order: None });
+            registry.windows.insert(label.into(), item);
+        }
+        let phases = linked_plan_phases(&registry, group_members(&registry, "/one.cln"), "run").unwrap();
+        assert_eq!(phases.iter().map(|phase| phase.priority).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(phases[0].members[0].ready_url.as_deref(), Some("http://localhost:5087/health"));
+        assert_eq!(phases[0].members[0].timeout_ms, 45000);
+        assert_eq!(phases[1].members.len(), 2);
+        assert_eq!(phases[1].members[1].command, "run client-b");
+        assert!(linked_plan_phases(&registry, group_members(&registry, "/one.cln"), "debug").is_err());
+    }
+
+    #[test]
+    fn named_dependencies_override_incidental_window_order() {
+        let input = vec![("window-1".into(), "client".into(), 50, vec!["api".into()]),
+            ("window-2".into(), "api".into(), 50, vec![])];
+        assert_eq!(order_phases(&input).unwrap(), vec![vec!["window-2"], vec!["window-1"]]);
+        assert!(order_phases(&[("client".into(), "client".into(), 50, vec!["missing".into()])]).unwrap_err().contains("no linked session"));
+        assert!(order_phases(&[("client".into(), "client".into(), 50, vec!["api".into()]),
+            ("api".into(), "api".into(), 50, vec!["client".into()])]).unwrap_err().contains("cycle"));
     }
 }

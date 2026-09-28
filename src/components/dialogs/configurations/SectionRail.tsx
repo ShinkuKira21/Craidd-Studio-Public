@@ -1,4 +1,4 @@
-export type SectionId = "identity" | "membership" | "toolchain" | "build" | "build-order";
+export type SectionId = "identity" | "membership" | "toolchain" | "build";
 
 type Section = { id: SectionId; label: string; available: boolean };
 
@@ -10,7 +10,6 @@ const groups: { heading: string; sections: Section[] }[] = [
   ] },
   { heading: "Execution", sections: [
     { id: "build", label: "Build Configuration", available: true },
-    { id: "build-order", label: "Build Order", available: false },
   ] },
 ];
 

@@ -7,6 +7,11 @@ import { useDebug, type DebugFrame, type DebugVariable } from "./debugStore";
 
 type Action = "build" | "run" | "debug";
 
+export interface LinkedLaunchPlanPhase {
+  priority: number;
+  members: { projectName: string; windowId: number; command: string; readyUrl: string | null; timeoutMs: number; preparation: string[]; after: string[] }[];
+}
+
 export interface LinkedSnapshot {
   sequence: number;
   linked: boolean;
@@ -138,7 +143,7 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     for (const action of ["build", "run", "debug"] as const) {
       const config = configs.find((item) => item.name === build.mainChoices[action] && item.kind === action);
       if (config) {
-        const spec = resolveSpec(config, solutionState.rootPath, solution, build.selectedProfileName);
+        const spec = resolveSpec(config, solutionState.rootPath, solution, build.selectedProfileName, clnPath);
         if (spec) specs[action] = spec;
       }
     }
@@ -151,7 +156,7 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     projectKind: project?.kind ?? null,
     canBuild: Boolean(build.mainChoices.build),
     canRun: Boolean(build.mainChoices.run),
-    canDebug: debugChoice?.kind === "debug" && debugChoice.method === "cargo",
+    canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""),
     debugging: ["building", "running", "paused"].includes(debug.status),
     status: ["building", "running", "paused"].includes(debug.status) ? debug.status : build.status,
     selectedConfigName: build.selectedConfigName,
@@ -175,6 +180,11 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
 export async function startLinkedAction(action: Action): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("start_linked_action", { action });
+}
+
+export async function previewLinkedAction(action: Action): Promise<LinkedLaunchPlanPhase[]> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LinkedLaunchPlanPhase[]>("preview_linked_action", { action });
 }
 
 export async function stopLinkedAction(): Promise<void> {
@@ -391,7 +401,7 @@ export async function dispatchLinkedWindowCommand(targetLabel: string, kind: str
       selectedConfigName: selected.name, selectedProfileName: profileName,
       projectPath: project?.path ?? null, projectName: project?.name ?? null, projectKind: project?.kind ?? null,
       canBuild: Boolean(choices.build), canRun: Boolean(choices.run),
-      canDebug: debugChoice?.kind === "debug" && debugChoice.method === "cargo", specs,
+      canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""), specs,
     } });
     return;
   }

@@ -1,0 +1,4 @@
+[project]
+name = "C# Math API"
+language = "csharp"
+root = "."

@@ -1,0 +1,4 @@
+[project]
+name = "Tauri GUI"
+language = "rust"
+root = "."

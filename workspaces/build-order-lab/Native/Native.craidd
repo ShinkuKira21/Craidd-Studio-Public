@@ -1,0 +1,5 @@
+[project]
+name = "C++ Math Library"
+language = "cpp"
+root = "."
+kind = "library"

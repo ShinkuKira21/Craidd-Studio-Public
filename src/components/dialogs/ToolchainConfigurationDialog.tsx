@@ -15,8 +15,8 @@ const ROLES_BY_LANGUAGE: Record<string, string[]> = {
   rust: ["build", "compiler", "manager", "debugger"],
   typescript: ["runtime", "package_manager"],
   javascript: ["runtime", "package_manager"],
-  cpp: ["compiler", "build_system"],
-  csharp: ["sdk"],
+  cpp: ["compiler", "build_system", "debugger"],
+  csharp: ["sdk", "debugger"],
   python: ["runtime", "package_manager"],
   config: [],
 };

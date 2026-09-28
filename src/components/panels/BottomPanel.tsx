@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useBuild } from "../../store/buildStore";
 import { useDebug } from "../../store/debugStore";
 import { useSolution } from "../../store/solutionStore";
 import { useLinkedWindows, revealLinkedProblem } from "../../store/linkedWindowsStore";
+import { cleanOutput, isAtOutputBottom } from "../../lib/outputPresentation";
+import { formatBuildOutput } from "../../lib/buildDiagnostics";
 
 const tabs = [
   { id: "output", label: "Output" },
@@ -15,6 +17,11 @@ type Tab = typeof tabs[number]["id"];
 
 export default function BottomPanel() {
   const [tab, setTab] = useState<Tab>("output");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true);
+  const [following, setFollowing] = useState(true);
+  const [errorAttention, setErrorAttention] = useState(false);
+  const seenErrors = useRef(new Set<string>());
   const output = useBuild((state) => state.output);
   const debugOutput = useDebug((state) => state.output);
   const debugStatus = useDebug((state) => state.status);
@@ -27,28 +34,78 @@ export default function BottomPanel() {
     : problems.map((problem) => ({ ...problem, windowLabel: "", projectName: "" }));
   const revealFile = useSolution((state) => state.revealFile);
   const errors = shownProblems.filter((problem) => problem.severity === "error").length;
+  const errorKeys = JSON.stringify(shownProblems.filter((problem) => problem.severity === "error")
+    .map((problem) => `${problem.windowLabel}:${problem.file}:${problem.line}:${problem.column}:${problem.message}`));
+  const shownOutput = remote ? formatBuildOutput(remote.output || "No output yet.")
+    : cleanOutput((["building", "running", "paused", "error"].includes(debugStatus) && debugOutput) || output || debugOutput || "No output yet.");
+  const outputSource = remote?.windowLabel ?? "own";
+  const activeId = useBuild((state) => state.activeId);
+  const changeFollow = (enabled: boolean) => { followRef.current = enabled; setFollowing(enabled); };
+
+  useEffect(() => {
+    const current = new Set<string>(JSON.parse(errorKeys));
+    const added = [...current].some((key) => !seenErrors.current.has(key));
+    seenErrors.current = current;
+    if (current.size === 0 || tab === "problems") setErrorAttention(false);
+    else if (added) setErrorAttention(true);
+  }, [errorKeys, tab]);
+  useEffect(() => {
+    if (!errorAttention) return;
+    const timer = window.setTimeout(() => setErrorAttention(false), 4000);
+    return () => window.clearTimeout(timer);
+  }, [errorAttention]);
+
+  // New sessions and switching windows start at the latest output. Subsequent
+  // updates follow only while enabled; scrolling up lets the user read history.
+  useLayoutEffect(() => {
+    followRef.current = true;
+    setFollowing(true);
+  }, [outputSource]);
+  useLayoutEffect(() => {
+    if (activeId !== null || debugStatus === "building") {
+      followRef.current = true;
+      setFollowing(true);
+    }
+  }, [activeId, debugStatus]);
+  useLayoutEffect(() => {
+    if (tab === "output" && followRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [shownOutput, artifact, tab, following, outputSource, activeId]);
   return (
     <div className="bg-zinc-900 border-t border-zinc-800 flex flex-col shrink-0 h-full">
       <div className="h-8 flex items-center px-3 gap-4 border-b border-zinc-800 text-xs shrink-0">
         {tabs.map((t) => (
           <button
             key={t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => { setTab(t.id); if (t.id === "problems") setErrorAttention(false); }}
             className={
               "pb-1.5 -mb-1.5 border-b-2 transition-colors " +
               (tab === t.id
                 ? "text-zinc-200 font-medium border-blue-500"
-                : "text-zinc-500 hover:text-zinc-300 border-transparent")
+                : t.id === "problems" && errors > 0 ? "text-red-400 hover:text-red-300 border-transparent" : "text-zinc-500 hover:text-zinc-300 border-transparent") +
+              (t.id === "problems" && errorAttention ? " motion-safe:animate-pulse" : "")
             }
           >
             {t.label}{t.id === "output" && remote ? ` · ${remote.projectName}` : ""}{t.id === "problems" && shownProblems.length > 0 ? ` (${errors || shownProblems.length})` : ""}
           </button>
         ))}
+        {tab === "output" && <button type="button" aria-pressed={following}
+          title={following ? "Following new output. Scroll up to pause." : "Resume following the latest output"}
+          onClick={() => changeFollow(!following)}
+          className={"ml-auto text-[11px] whitespace-nowrap " + (following ? "text-blue-400" : "text-zinc-400 hover:text-zinc-200")}>
+          {following ? "↓ Following" : "↓ Follow output"}
+        </button>}
+        <span role="status" className="sr-only">{errorAttention ? `${errors} build errors. Open Problems for details.` : ""}</span>
       </div>
-      <div className="flex-1 overflow-y-auto scroll-thin p-3 mono text-[11.5px] leading-5 text-zinc-400">
+      <div ref={scrollRef} onScroll={(event) => {
+        if (tab !== "output") return;
+        const node = event.currentTarget;
+        changeFollow(isAtOutputBottom(node.scrollTop, node.scrollHeight, node.clientHeight));
+      }} className="flex-1 min-h-0 overflow-y-auto scroll-thin p-3 mono text-[11.5px] leading-5 text-zinc-400">
         {tab === "output" && (
           <pre className="whitespace-pre-wrap break-words">
-            {renderOutput(remote ? remote.output || "No output yet." : (["building", "running", "paused", "error"].includes(debugStatus) && debugOutput) || output || debugOutput || "No output yet.")}
+            {renderOutput(shownOutput)}
             {!remote && artifact && debugStatus === "idle" && !output.includes(artifact) ? `\nArtifact: ${artifact}` : ""}
           </pre>
         )}

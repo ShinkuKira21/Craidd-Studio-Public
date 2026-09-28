@@ -1,6 +1,7 @@
 import type { ConfigEntry, ConfigKind, CraiddProject, Profile } from "../../../types/project";
 import { choicesForConfig } from "../../../store/buildStore";
 import type { CraiddSolution } from "../../../types/project";
+import BuildOrderEditor from "./BuildOrderEditor";
 
 interface Props {
   config: ConfigEntry;
@@ -13,7 +14,7 @@ interface Props {
 
 const inputClass = "w-full min-w-0 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-[12px] text-zinc-100 outline-none focus:border-blue-500 disabled:border-zinc-800 disabled:text-zinc-500";
 const kinds: ConfigKind[] = ["run", "build", "debug", "test"];
-const methods = ["cargo", "npm", "shell", "dotnet", "cmake", "python", "composed"];
+const methods = ["cargo", "npm", "shell", "dotnet", "cmake", "python", "plan"];
 
 export default function ConfigurationForm({ config, projects, allConfigs, solution, editable, onChange }: Props) {
   const isComposition = !!config.slots || config.bestFit === true;
@@ -21,6 +22,7 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
   const slots = config.slots ?? inferredSlots;
   const set = (patch: Partial<ConfigEntry>) => onChange({ ...config, ...patch });
   const profiles = config.profiles ?? [];
+  const linked = config.linked ?? { priority: 50, timeoutMs: 30_000 };
   const updateProfile = (index: number, patch: Partial<Profile>) => {
     const next = profiles.map((profile, i) => i === index ? { ...profile, ...patch } : profile);
     set({ profiles: next });
@@ -53,9 +55,28 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
           <>
             <Field label="Kind"><select className={inputClass} value={config.kind} disabled={!editable} onChange={(e) => set({ kind: e.target.value as ConfigKind })}>{kinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select></Field>
             <Field label="Project"><select className={inputClass} value={config.target} disabled={!editable} onChange={(e) => set({ target: e.target.value })}><option value=".">Whole solution</option>{projects.map((project) => <option key={project.path} value={project.path}>{project.name}</option>)}</select></Field>
-            <Field label="Method"><select className={inputClass} value={config.method ?? ""} disabled={!editable} onChange={(e) => set({ method: e.target.value || undefined })}><option value="">Automatic</option>{methods.map((method) => <option key={method} value={method}>{method}</option>)}</select></Field>
+            <Field label="Method"><select className={inputClass} value={config.method ?? ""} disabled={!editable} onChange={(e) => set(e.target.value === "plan" ? { method: "plan", kind: "build", target: ".", order: { steps: [] }, command: undefined } : { method: e.target.value || undefined })}><option value="">Automatic</option>{methods.map((method) => <option key={method} value={method}>{method === "plan" ? "Build order" : method}</option>)}</select></Field>
+            {config.method === "plan" ? <BuildOrderEditor config={config} configs={allConfigs} editable={editable} onChange={onChange} /> : <>
             <Field label="Command"><input className={inputClass + " font-mono"} value={config.command ?? ""} disabled={!editable} placeholder="Derived from method when empty" onChange={(e) => set({ command: e.target.value || undefined })} /></Field>
             <Field label="Working directory"><input className={inputClass + " font-mono"} value={config.cwd ?? ""} disabled={!editable} placeholder="Project folder when empty" onChange={(e) => set({ cwd: e.target.value || undefined })} /></Field>
+            <Field label="Before this action"><select className={inputClass} disabled={!editable} value={config.order?.before ?? ""}
+              onChange={(event) => set({ order: event.target.value ? { before: event.target.value, steps: [] } : undefined })}>
+              <option value="">No preparation</option>{allConfigs.filter((item) => item.origin === "user" && item.kind === "build" && !item.slots && item.name !== config.name)
+                .map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+            </select></Field>
+            {config.order?.before && <p className="text-[11px] text-blue-300">Wait for {config.order.before} to succeed before this action. Applies to individual and linked launches.</p>}
+            <div className="pt-3 border-t border-zinc-800 space-y-2">
+              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Linked startup order</div>
+              <p className="text-[11px] text-zinc-500">Start after these linked projects finish starting and pass their readiness checks. Projects must have a participating linked session.</p>
+              {projects.filter((project) => project.path !== config.target && project.kind !== "library").map((project) => <label key={project.path} className="flex gap-2 text-[12px] text-zinc-300">
+                <input type="checkbox" disabled={!editable} checked={linked.after?.includes(project.path) ?? false} onChange={(event) => set({ linked: { ...linked,
+                  after: event.target.checked ? [...(linked.after ?? []), project.path] : linked.after?.filter((path) => path !== project.path) } })} />{project.name}
+              </label>)}
+              {linked.priority !== 50 && <details className="text-[11px] text-zinc-500"><summary>Legacy priority settings</summary><Field label="Priority"><input type="number" min={1} max={100} className={inputClass} value={linked.priority} disabled={!editable} onChange={(e) => set({ linked: { ...linked, priority: Number(e.target.value) } })} /></Field></details>}
+              <Field label="Ready URL"><input className={inputClass + " font-mono"} value={linked.readyUrl ?? ""} disabled={!editable} placeholder="Optional, e.g. http://127.0.0.1:5087/api/health" onChange={(e) => set({ linked: { ...linked, readyUrl: e.target.value || undefined } })} /></Field>
+              <Field label="Timeout (ms)"><input type="number" min={100} max={300000} className={inputClass} value={linked.timeoutMs} disabled={!editable} onChange={(e) => set({ linked: { ...linked, timeoutMs: Number(e.target.value) } })} /></Field>
+            </div>
+            </>}
             <div className="pt-3 border-t border-zinc-800">
               <div className="flex items-center gap-2 mb-3"><span className="text-[11px] uppercase tracking-wide text-zinc-500">Profiles</span><button type="button" disabled={!editable} className="ml-auto text-[11px] text-blue-400 disabled:text-zinc-700" onClick={() => set({ profiles: [...profiles, { name: `Profile ${profiles.length + 1}`, args: [], env: {} }] })}>+ Add profile</button></div>
               {profiles.length === 0 && <p className="text-[11px] text-zinc-600">No profiles. The command runs with its default arguments.</p>}

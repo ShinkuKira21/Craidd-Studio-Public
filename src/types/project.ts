@@ -116,6 +116,20 @@ export interface ConfigEntry {
   origin: ConfigOrigin;
   profiles?: Profile[];
   defaultProfile?: string;
+  linked?: LinkedLaunch;
+  order?: BuildOrder;
+}
+
+export type OrderStep = { kind: "build"; configuration: string }
+  | { kind: "install"; configuration: string; destination: string };
+export interface BuildOrder { before?: string; steps: OrderStep[] }
+export interface OrderRequest { solutionPath: string; configuration: string; profile?: string }
+
+export interface LinkedLaunch {
+  after?: string[];
+  priority: number;
+  readyUrl?: string;
+  timeoutMs: number;
 }
 
 export interface Profile {

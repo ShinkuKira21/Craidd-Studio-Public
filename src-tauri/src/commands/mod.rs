@@ -12,3 +12,4 @@ pub mod containment;
 pub mod linked_windows;
 pub mod breakpoints;
 pub mod debug;
+pub mod build_order;

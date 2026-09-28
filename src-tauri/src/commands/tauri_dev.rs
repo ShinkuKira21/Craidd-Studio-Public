@@ -106,7 +106,8 @@ fn drain<R: Read + Send + 'static>(reader: R, tail: Arc<Mutex<VecDeque<String>>>
     });
 }
 
-fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap<String, String>) -> Result<Server, String> {
+fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap<String, String>, cancelled: Option<&AtomicBool>) -> Result<Server, String> {
+    if cancelled.is_some_and(|token| token.load(Ordering::Acquire)) { return Err("Debug build cancelled".into()); }
     if listening(host, port) {
         return Ok(Server { pgid: 0, clients: 1, alive: Arc::new(AtomicBool::new(true)), env: env.clone() });
     }
@@ -124,6 +125,14 @@ fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap
     if let Some(stderr) = child.stderr.take() { drain(stderr, tail.clone()); }
     let started = Instant::now();
     loop {
+        if cancelled.is_some_and(|token| token.load(Ordering::Acquire)) {
+            terminate(pgid);
+            // Do not leave a frontend command that ignores SIGTERM alive.
+            thread::sleep(Duration::from_millis(100));
+            unsafe { libc::killpg(pgid, libc::SIGKILL); }
+            let _ = child.wait();
+            return Err("Debug build cancelled".into());
+        }
         if listening(host, port) { break; }
         if let Ok(Some(status)) = child.try_wait() {
             let lines = tail.lock().ok().map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
@@ -186,8 +195,20 @@ fn acquire(app: AppHandle, spec: RunSpec) -> Result<(RunSpec, Option<DevLease>),
             return Ok((spec, None));
         }
     };
-    let _ = &project_root;
-    let config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path).map_err(|error| error.to_string())?)
+    let lease = acquire_frontend(app, &config_path, &project_root, &spec.env, None)?;
+
+    let manifest_dir = locate_manifest(&project_root)?;
+    let mut replacement = spec.clone();
+    replacement.program = "cargo".into();
+    replacement.args = vec!["run".into(), "--no-default-features".into(), "--color".into(), "always".into(), "--".into()];
+    replacement.cwd = manifest_dir.to_string_lossy().into_owned();
+    replacement.label = format!("{} (client)", replacement.label);
+    Ok((replacement, Some(lease)))
+}
+
+fn acquire_frontend(app: AppHandle, config_path: &Path, project_root: &Path,
+    env: &BTreeMap<String, String>, cancelled: Option<&AtomicBool>) -> Result<DevLease, String> {
+    let config: serde_json::Value = serde_json::from_slice(&fs::read(config_path).map_err(|error| error.to_string())?)
         .map_err(|error| format!("Could not read Tauri configuration: {error}"))?;
     let before_dev = config.pointer("/build/beforeDevCommand").and_then(|value| value.as_str())
         .filter(|value| !value.trim().is_empty())
@@ -195,39 +216,39 @@ fn acquire(app: AppHandle, spec: RunSpec) -> Result<(RunSpec, Option<DevLease>),
     let dev_url = config.pointer("/build/devUrl").and_then(|value| value.as_str())
         .ok_or("Shared Tauri dev needs build.devUrl")?;
     let (host, port) = server_address(dev_url)?;
-    let key = fs::canonicalize(cwd).map_err(|error| error.to_string())?.to_string_lossy().into_owned();
+    let key = fs::canonicalize(project_root).map_err(|error| error.to_string())?.to_string_lossy().into_owned();
     let manager = app.state::<TauriDevServers>();
     {
         let mut servers = manager.0.lock().map_err(|error| error.to_string())?;
         if let Some(server) = servers.get_mut(&key) {
             if server.alive.load(Ordering::SeqCst) && listening(&host, port) {
-                if server.env != spec.env {
+                if &server.env != env {
                     return Err("Tauri clients sharing one frontend port need the same profile environment".into());
                 }
                 server.clients += 1;
             } else {
                 servers.remove(&key);
-                servers.insert(key.clone(), start_server(cwd, before_dev, &host, port, &spec.env)?);
+                servers.insert(key.clone(), start_server(project_root, before_dev, &host, port, env, cancelled)?);
             }
         } else {
-            servers.insert(key.clone(), start_server(cwd, before_dev, &host, port, &spec.env)?);
+            servers.insert(key.clone(), start_server(project_root, before_dev, &host, port, env, cancelled)?);
         }
     }
 
-    let manifest_dir = locate_manifest(&project_root)?;
-    let mut replacement = spec.clone();
-    replacement.program = "cargo".into();
-    replacement.args = vec![
-        "run".into(),
-        "--no-default-features".into(),
-        "--color".into(),
-        "always".into(),
-        "--".into(),
-    ];
-    replacement.cwd = manifest_dir.to_string_lossy().into_owned();
-    replacement.label = format!("{} (client)", replacement.label);
+    Ok(DevLease { app, key })
+}
 
-    Ok((replacement, Some(DevLease { app, key })))
+/// Native Tauri Debug needs the same frontend prerequisite as tauri dev.
+/// Ordinary Cargo projects are unchanged. The lease survives for the
+/// debugger's entire lifetime, including while its viewport is hidden.
+pub async fn prepare_debug(app: AppHandle, cwd: PathBuf, env: BTreeMap<String, String>, cancelled: Arc<AtomicBool>) -> Result<Option<DevLease>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some((config, root)) = locate_tauri_config(&cwd) else { return Ok(None); };
+        if config.parent() != Some(cwd.as_path()) { return Ok(None); }
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&config).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+        if value.pointer("/build/devUrl").is_none() { return Ok(None); }
+        acquire_frontend(app, &config, &root, &env, Some(&cancelled)).map(Some)
+    }).await.map_err(|error| error.to_string())?
 }
 
 pub async fn prepare_run(app: AppHandle, spec: RunSpec) -> Result<(RunSpec, Option<DevLease>), String> {
@@ -249,7 +270,7 @@ mod tests {
     #[test]
     fn detects_tauri_dev_without_matching_other_commands() {
         let mut spec = RunSpec { label: String::new(), program: "npm".into(),
-            args: vec!["run".into(), "tauri".into(), "dev".into()], env: Default::default(), cwd: String::new() };
+            args: vec!["run".into(), "tauri".into(), "dev".into()], env: Default::default(), cwd: String::new(), linked: None, order: None };
         assert!(is_tauri_dev(&spec));
         spec.args = vec!["run".into(), "dev".into()];
         assert!(!is_tauri_dev(&spec));
@@ -259,5 +280,22 @@ mod tests {
     fn requires_a_specific_dev_port() {
         assert_eq!(server_address("http://localhost:1520").unwrap(), ("localhost".into(), 1520));
         assert!(server_address("http://localhost").is_err());
+    }
+
+    #[test]
+    fn run_and_debug_find_the_same_tauri_frontend_root() {
+        let client = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("workspaces/build-order-lab/Client");
+        let native = client.join("src-tauri");
+        assert_eq!(locate_tauri_config(&client), locate_tauri_config(&native));
+        let (config, root) = locate_tauri_config(&native).unwrap();
+        assert_eq!(root, client);
+        assert_eq!(config.parent(), Some(native.as_path()));
+    }
+
+    #[test]
+    fn cancelled_debug_does_not_start_a_frontend() {
+        let cancelled = AtomicBool::new(true);
+        let error = start_server(Path::new("."), "not-a-command", "127.0.0.1", 1, &BTreeMap::new(), Some(&cancelled)).err().unwrap();
+        assert_eq!(error, "Debug build cancelled");
     }
 }
