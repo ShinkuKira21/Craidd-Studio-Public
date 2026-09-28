@@ -53,6 +53,7 @@ pub fn run() {
         .manage(commands::tauri_dev::TauriDevServers::default())
         .manage(DebugManager::default())
         .manage(DebugBuildManager::default())
+        .manage(commands::build_order::OrderManager::default())
         .manage(LinkedWindowRegistry::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

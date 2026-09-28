@@ -180,11 +180,33 @@ pub struct ConfigEntry {
     /// the next priority waits for this configuration's readiness probe.
     #[serde(default)]
     pub linked: Option<LinkedLaunch>,
+    /// Declarative preparation: ordered build/install steps, or a reference
+    /// to a saved preparation configuration. Never a shell script.
+    #[serde(default)]
+    pub order: Option<BuildOrder>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildOrder {
+    pub before: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<OrderStep>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum OrderStep {
+    Build { configuration: String },
+    Install { configuration: String, destination: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkedLaunch {
+    /// Named project dependencies, evaluated before legacy priorities.
+    #[serde(default)]
+    pub after: Vec<String>,
     #[serde(default = "default_linked_priority")]
     pub priority: u8,
     #[serde(default)]

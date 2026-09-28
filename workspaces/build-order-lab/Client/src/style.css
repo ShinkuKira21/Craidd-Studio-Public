@@ -1,0 +1,8 @@
+:root { font-family: system-ui, sans-serif; color: #e4e4e7; background: #111116; }
+body { margin: 0; } main { max-width: 670px; margin: 50px auto; padding: 0 32px; }
+.eyebrow { font-size: 12px; letter-spacing: 2px; color: #a5b4fc; } h1 { font-size: 36px; line-height: 1.2; font-weight: 600; }
+.chain { display: flex; gap: 15px; align-items: center; color: #a1a1aa; } .chain span { padding: 10px; border: 1px solid #373741; border-radius: 8px; }
+section { background: #1b1b23; border: 1px solid #373741; border-radius: 12px; padding: 20px; margin: 28px 0 16px; }
+strong { display: block; font-size: 70px; color: #a5b4fc; } .ready { color: #86efac; } .error { color: #fca5a5; }
+button { border: 1px solid #52525b; background: #27272f; color: white; padding: 10px 15px; border-radius: 7px; cursor: pointer; }
+.hint { color: #71717a; font-size: 13px; line-height: 1.6; }

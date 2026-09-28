@@ -73,9 +73,26 @@ export function detectLinkedStartupSuggestions(solution: CraiddSolution, configs
 }
 
 export function cloneStartupConfig(config: ConfigEntry): ConfigEntry {
-  return { ...config, ...(config.linked ? { linked: { ...config.linked } } : {}),
+  return { ...config, ...(config.linked ? { linked: { ...config.linked, ...(config.linked.after ? { after: [...config.linked.after] } : {}) } } : {}),
+    ...(config.order ? { order: { ...config.order, steps: config.order.steps.map((step) => ({ ...step })) } } : {}),
     ...(config.slots ? { slots: { ...config.slots } } : {}),
     profiles: config.profiles?.map((profile) => ({ ...profile, args: [...profile.args], env: { ...profile.env } })) ?? [] };
+}
+
+/** Keep saved compositions intact when a configuration is renamed. */
+export function renameConfigurationReferences(config: ConfigEntry, oldName: string, newName: string): ConfigEntry {
+  const next = cloneStartupConfig(config);
+  if (next.slots) for (const kind of ["build", "run", "debug"] as const) {
+    if (next.slots[kind] === oldName) next.slots[kind] = newName;
+  }
+  if (next.order) {
+    if (next.order.before === oldName) next.order.before = newName;
+    next.order.steps = next.order.steps.map((step) => ({ ...step,
+      configuration: step.configuration === oldName ? newName : step.configuration,
+      ...(step.kind === "install" ? { destination: step.destination === oldName ? newName : step.destination } : {}),
+    }));
+  }
+  return next;
 }
 
 export function applyLinkedStartupSetup(
@@ -85,6 +102,7 @@ export function applyLinkedStartupSetup(
   const configs = drafts.map(cloneStartupConfig);
   const used = new Set([...configs, ...inferred].map((config) => config.name.toLowerCase()));
   let firstServerName: string | undefined;
+  const serverTargets = new Set<string>();
   for (const name of [...serverNames, ...clientNames]) {
     let target = configs.find((config) => config.name === name);
     if (!target) {
@@ -102,6 +120,7 @@ export function applyLinkedStartupSetup(
       configs.push(target);
     }
     if (serverNames.includes(name)) {
+      serverTargets.add(target.target);
       target.linked = { ...serverPolicy };
       firstServerName ??= target.name;
       // DAP launches bypass launchSettings.json. Pin its detected binding in
@@ -112,7 +131,8 @@ export function applyLinkedStartupSetup(
         target.profiles = target.profiles.map((profile) => ({ ...profile, env: { ...profile.env, ASPNETCORE_URLS: baseUrl } }));
       }
     } else {
-      target.linked = { ...(target.linked ?? { timeoutMs: 30_000 }), priority: clientPriority };
+      target.linked = { ...(target.linked ?? { timeoutMs: 30_000 }), priority: clientPriority,
+        after: [...new Set([...(target.linked?.after ?? []), ...serverTargets])] };
     }
   }
   return { configs, firstServerName };

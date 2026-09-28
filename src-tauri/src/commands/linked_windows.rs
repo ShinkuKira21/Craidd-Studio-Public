@@ -233,6 +233,8 @@ pub struct LinkedLaunchPlanMember {
     command: String,
     ready_url: Option<String>,
     timeout_ms: u64,
+    preparation: Vec<String>,
+    after: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -806,6 +808,7 @@ async fn launch_parked(app: AppHandle, label: String, participant: Participant, 
             method: method.into(),
             profile: participant.selected_profile_name.unwrap_or_else(|| if method == "cargo" { "debug".into() } else { "Debug".into() }),
             command_args: spec.args, env: spec.env, solution_path: participant.solution_path.clone(),
+            order: spec.order,
             breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
         super::debug::start_debug_for_label(app, label, request).await
@@ -1058,7 +1061,11 @@ fn wait_for_phase_start(app: &AppHandle, solution_path: &str, action_id: u64, la
                 .map(|participant| participant.failure_message.clone().unwrap_or_else(|| format!("{} did not start", participant.project_name.as_deref().unwrap_or(label))))) {
                 return Err(failed);
             }
-            return Ok(());
+            // Starting a build process is not completing a build. Named
+            // dependencies must wait for successful exit before advancing.
+            if group.action != "build" || labels.iter().all(|label| !group.unfinished.contains(label)) {
+                return Ok(());
+            }
         }
         drop(registry);
         if Instant::now() >= deadline { return Err("Timed out waiting for a linked window to start".into()); }
@@ -1126,21 +1133,59 @@ pub fn preview_linked_action(
 }
 
 fn linked_plan_phases(registry: &Registry, members: Vec<String>, action: &str) -> Result<Vec<LinkedLaunchPlanPhase>, String> {
-    let mut phases: BTreeMap<u8, Vec<LinkedLaunchPlanMember>> = BTreeMap::new();
-    for label in members {
+    let input = members.iter().map(|label| {
+        let participant = registry.windows.get(label).ok_or("Linked window disappeared")?;
+        let spec = participant.specs.get(action).ok_or_else(|| format!("{} has no {action} command", participant.project_name.as_deref().unwrap_or(label)))?;
+        Ok((label.clone(), participant.project_path.clone().unwrap_or_default(),
+            spec.linked.as_ref().map_or(crate::types::default_linked_priority(), |linked| linked.priority),
+            spec.linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default()))
+    }).collect::<Result<Vec<_>, String>>()?;
+    let groups = order_phases(&input)?;
+    let mut phases = vec![];
+    for (index, group) in groups.into_iter().enumerate() {
+      let mut phase = LinkedLaunchPlanPhase { priority: (index + 1) as u8, members: vec![] };
+      for label in group {
         let participant = registry.windows.get(&label).ok_or("Linked window disappeared")?;
         let spec = participant.specs.get(action).ok_or_else(|| format!("{} has no {action} command",
             participant.project_name.as_deref().unwrap_or(&label)))?;
-        let priority = spec.linked.as_ref().map_or(crate::types::default_linked_priority(), |linked| linked.priority);
-        phases.entry(priority).or_default().push(LinkedLaunchPlanMember {
+        phase.members.push(LinkedLaunchPlanMember {
             project_name: participant.project_name.clone().unwrap_or(label),
             window_id: participant.window_id,
             command: spec.label.clone(),
             ready_url: spec.linked.as_ref().and_then(|linked| linked.ready_url.clone()).filter(|url| !url.is_empty()),
             timeout_ms: spec.linked.as_ref().map_or(crate::types::default_linked_timeout_ms(), |linked| linked.timeout_ms),
+            preparation: spec.order.as_ref().map(super::build_order::preview).transpose()?.unwrap_or_default(),
+            after: spec.linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default(),
         });
+      }
+      phases.push(phase);
     }
-    Ok(phases.into_iter().map(|(priority, members)| LinkedLaunchPlanPhase { priority, members }).collect())
+    Ok(phases)
+}
+
+/// Name-based dependencies, validated before launching. Legacy priorities are
+/// retained for participants without an explicit prerequisite list.
+fn order_phases(input: &[(String, String, u8, Vec<String>)]) -> Result<Vec<Vec<String>>, String> {
+    let mut pending: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    for (label, _, priority, after) in input {
+        let mut needs = HashSet::new();
+        for project in after {
+            let matches = input.iter().filter(|(_, target, _, _)| target == project).collect::<Vec<_>>();
+            if matches.is_empty() { return Err(format!("{label} waits for {project}, but that project has no linked session. Open/select it first.")); }
+            needs.extend(matches.iter().map(|(label, _, _, _)| label.clone()));
+        }
+        if after.is_empty() { needs.extend(input.iter().filter(|(_, _, other, _)| other < priority).map(|(label, _, _, _)| label.clone())); }
+        pending.insert(label.clone(), needs);
+    }
+    let mut phases = vec![];
+    while !pending.is_empty() {
+        let ready = pending.iter().filter(|(_, needs)| needs.is_empty()).map(|(label, _)| label.clone()).collect::<Vec<_>>();
+        if ready.is_empty() { return Err(format!("Linked startup cycle involving {}", pending.keys().cloned().collect::<Vec<_>>().join(", "))); }
+        for label in &ready { pending.remove(label); }
+        for needs in pending.values_mut() { for label in &ready { needs.remove(label); } }
+        phases.push(ready);
+    }
+    Ok(phases)
 }
 
 fn wait_for_http_ready(app: &AppHandle, solution_path: &str, action_id: u64, url: &str, timeout_ms: u64) -> Result<(), String> {
@@ -1191,11 +1236,9 @@ fn mark_phase_starting(app: &AppHandle, solution_path: &str, action_id: u64, lab
     true
 }
 
-async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, action_id: u64, plan: Vec<PlannedLaunch>) {
-    let mut phases: BTreeMap<u8, Vec<PlannedLaunch>> = BTreeMap::new();
-    for launch in plan { phases.entry(launch.priority).or_default().push(launch); }
+async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, action_id: u64, phases: Vec<Vec<PlannedLaunch>>) {
     let mut launched = HashSet::new();
-    for phase in phases.into_values() {
+    for phase in phases {
         if !linked_action_active(&app, &solution_path, action_id) { return; }
         let command = LinkedCommand { kind: "start".into(), action: Some(action.clone()), action_id };
         let labels = phase.iter().map(|launch| launch.label.clone()).collect::<Vec<_>>();
@@ -1242,9 +1285,20 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
         }
         for launch in &phase {
             let Some(url) = launch.ready_url.clone() else { continue; };
+            if action == "build" { continue; }
+            if let Some(state) = app.try_state::<LinkedWindowRegistry>() {
+                if let Ok(mut registry) = state.0.lock() {
+                    if let Some(participant) = registry.windows.get_mut(&launch.label) {
+                        append_output(participant, &format!("[Startup order] Waiting for {url}; later stages have not started."));
+                    }
+                    registry.sequence += 1;
+                    broadcast(&app, &registry);
+                }
+            }
             let readiness = tauri::async_runtime::spawn_blocking({
                 let app = app.clone();
                 let solution_path = solution_path.clone();
+                let url = url.clone();
                 let timeout_ms = launch.timeout_ms;
                 move || wait_for_http_ready(&app, &solution_path, action_id, &url, timeout_ms)
             }).await;
@@ -1252,6 +1306,15 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
             if let Err(error) = readiness {
                 if error != "Linked action stopped" { mark_orchestration_failure(&app, &solution_path, action_id, &launched, &error); }
                 return;
+            }
+            if let Some(state) = app.try_state::<LinkedWindowRegistry>() {
+                if let Ok(mut registry) = state.0.lock() {
+                    if let Some(participant) = registry.windows.get_mut(&launch.label) {
+                        append_output(participant, &format!("[Startup order] Ready: {url}."));
+                    }
+                    registry.sequence += 1;
+                    broadcast(&app, &registry);
+                }
             }
         }
     }
@@ -1300,9 +1363,14 @@ pub fn start_linked_action(
         if !(1..=100).contains(&priority) { return Err(format!("Linked priority for {} must be between 1 and 100", spec.label)); }
         if !(100..=300_000).contains(&timeout_ms) { return Err(format!("Linked readiness timeout for {} must be between 100 and 300000 ms", spec.label)); }
         if let Some(url) = &ready_url { parse_http_ready_url(url)?; }
+        if let Some(order) = &spec.order { super::build_order::preview(order)?; }
         plan.push(PlannedLaunch { label: label.clone(), participant: participant.clone(),
             visible: participant.visible && !participant.restoring, priority, ready_url, timeout_ms });
     }
+    let input = plan.iter().map(|launch| (launch.label.clone(), launch.participant.project_path.clone().unwrap_or_default(), launch.priority,
+        launch.participant.specs[&action].linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default())).collect::<Vec<_>>();
+    let phases = order_phases(&input)?.into_iter().map(|labels| labels.into_iter()
+        .filter_map(|label| plan.iter().find(|launch| launch.label == label).cloned()).collect()).collect();
     registry.next_id += 1;
     let id = registry.next_id;
     registry.actions.insert(solution_path.clone(), GroupAction {
@@ -1320,7 +1388,7 @@ pub fn start_linked_action(
     registry.sequence += 1;
     broadcast(&app, &registry);
     drop(registry);
-    tauri::async_runtime::spawn(run_linked_plan(app.clone(), solution_path, action, id, plan));
+    tauri::async_runtime::spawn(run_linked_plan(app.clone(), solution_path, action, id, phases));
     Ok(())
 }
 
@@ -1375,6 +1443,7 @@ pub fn stop_linked_action(
     broadcast(&app, &registry);
     drop(registry);
     for (label, visible) in targets {
+        super::build_order::cancel(&app, &label);
         if visible { let _ = app.emit_to(label.as_str(), COMMAND_EVENT, &command); }
         else if super::debug::has_debug_session(&app, &label) {
             let _ = super::debug::control_debug_by_label(&app, &label, "stop");
@@ -1649,15 +1718,25 @@ mod tests {
             item.visible = visible;
             item.specs.insert("run".into(), RunSpec { label: format!("run {label}"), program: "echo".into(),
                 args: vec![], env: BTreeMap::new(), cwd: "/tmp".into(),
-                linked: Some(crate::types::LinkedLaunch { priority, ready_url: ready_url.map(String::from), timeout_ms: 45000 }) });
+                linked: Some(crate::types::LinkedLaunch { after: vec![], priority, ready_url: ready_url.map(String::from), timeout_ms: 45000 }), order: None });
             registry.windows.insert(label.into(), item);
         }
         let phases = linked_plan_phases(&registry, group_members(&registry, "/one.cln"), "run").unwrap();
-        assert_eq!(phases.iter().map(|phase| phase.priority).collect::<Vec<_>>(), vec![20, 50]);
+        assert_eq!(phases.iter().map(|phase| phase.priority).collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(phases[0].members[0].ready_url.as_deref(), Some("http://localhost:5087/health"));
         assert_eq!(phases[0].members[0].timeout_ms, 45000);
         assert_eq!(phases[1].members.len(), 2);
         assert_eq!(phases[1].members[1].command, "run client-b");
         assert!(linked_plan_phases(&registry, group_members(&registry, "/one.cln"), "debug").is_err());
+    }
+
+    #[test]
+    fn named_dependencies_override_incidental_window_order() {
+        let input = vec![("window-1".into(), "client".into(), 50, vec!["api".into()]),
+            ("window-2".into(), "api".into(), 50, vec![])];
+        assert_eq!(order_phases(&input).unwrap(), vec![vec!["window-2"], vec!["window-1"]]);
+        assert!(order_phases(&[("client".into(), "client".into(), 50, vec!["missing".into()])]).unwrap_err().contains("no linked session"));
+        assert!(order_phases(&[("client".into(), "client".into(), 50, vec!["api".into()]),
+            ("api".into(), "api".into(), 50, vec!["client".into()])]).unwrap_err().contains("cycle"));
     }
 }

@@ -6,7 +6,7 @@ import ts from "typescript";
 // Exercise the actual pure TypeScript helpers without adding a test runner.
 const source = await readFile(new URL("../src/lib/linkedStartup.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
-const { detectLinkedStartupSuggestions: detect, applyLinkedStartupSetup: apply } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { detectLinkedStartupSuggestions: detect, applyLinkedStartupSetup: apply, renameConfigurationReferences: rename } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 const profile = (url) => ({ name: "Local", args: [], env: url ? { ASPNETCORE_URLS: url } : {} });
 const config = (name, target, kind = "run", url) => ({ name, target, kind, method: target === "api" ? "dotnet" : "cargo", origin: "user", profiles: [profile(url)] });
@@ -54,7 +54,7 @@ test("applying setup changes only selected drafts and preserves source profiles"
   assert.deepEqual(drafts, original);
   assert.deepEqual(configs[0].profiles, original[0].profiles);
   assert.deepEqual(configs[1], original[1]);
-  assert.deepEqual(configs[2].linked, { ...original[2].linked, priority: 50 });
+  assert.deepEqual(configs[2].linked, { ...original[2].linked, priority: 50, after: ["api"] });
   assert.deepEqual(configs[0].linked, policy);
   configs[0].profiles[0].args.push("new");
   assert.deepEqual(drafts, original);
@@ -75,4 +75,25 @@ test("inferred configs become uniquely named saved copies with explicit API debu
   assert.deepEqual(configs[1].relatedProjects, []);
   assert.deepEqual(configs[1].profiles[0].env, { EXTRA: "preserved", ASPNETCORE_URLS: "http://127.0.0.1:5087" });
   assert.deepEqual(inferred, original);
+});
+
+test("clients depend on every selected inferred server, not only the first", () => {
+  const servers = [config("API A", "api-a"), config("API B", "api-b")].map((entry) => ({ ...entry, origin: "inferred" }));
+  const { configs } = apply([config("Client", "client")], servers, ["API A", "API B"], ["Client"],
+    { priority: 20, timeoutMs: 30000 }, 50, "http://127.0.0.1:5087");
+  assert.deepEqual(configs[0].linked.after, ["api-a", "api-b"]);
+});
+
+test("renaming updates preparation, steps, install destinations and Power slots without mutating drafts", () => {
+  const entry = { ...config("Combined", "."), slots: { build: "Old", debug: "Other" },
+    order: { before: "Old", steps: [{ kind: "build", configuration: "Old" },
+      { kind: "install", configuration: "Native", destination: "Old" }] } };
+  const original = structuredClone(entry);
+  const next = rename(entry, "Old", "New");
+  assert.equal(next.slots.build, "New");
+  assert.equal(next.slots.debug, "Other");
+  assert.equal(next.order.before, "New");
+  assert.equal(next.order.steps[0].configuration, "New");
+  assert.equal(next.order.steps[1].destination, "New");
+  assert.deepEqual(entry, original);
 });

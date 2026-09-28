@@ -164,7 +164,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     setLaunching(true);
     try {
       const phases = await previewLinkedAction(kind);
-      if (phases.length > 1 || phases.some((phase) => phase.members.some((member) => member.readyUrl))) {
+      if (phases.length > 1 || phases.some((phase) => phase.members.some((member) => member.readyUrl || member.preparation.length > 0))) {
         setLaunchError(null); setPlan(phases);
       } else { await startLinkedAction(kind); }
     } finally { setLaunching(false); }

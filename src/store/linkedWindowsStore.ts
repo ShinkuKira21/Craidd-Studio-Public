@@ -9,7 +9,7 @@ type Action = "build" | "run" | "debug";
 
 export interface LinkedLaunchPlanPhase {
   priority: number;
-  members: { projectName: string; windowId: number; command: string; readyUrl: string | null; timeoutMs: number }[];
+  members: { projectName: string; windowId: number; command: string; readyUrl: string | null; timeoutMs: number; preparation: string[]; after: string[] }[];
 }
 
 export interface LinkedSnapshot {
@@ -143,7 +143,7 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     for (const action of ["build", "run", "debug"] as const) {
       const config = configs.find((item) => item.name === build.mainChoices[action] && item.kind === action);
       if (config) {
-        const spec = resolveSpec(config, solutionState.rootPath, solution, build.selectedProfileName);
+        const spec = resolveSpec(config, solutionState.rootPath, solution, build.selectedProfileName, clnPath);
         if (spec) specs[action] = spec;
       }
     }

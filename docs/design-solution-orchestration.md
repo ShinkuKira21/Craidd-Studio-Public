@@ -4,6 +4,12 @@
 **Applies to:** Phase 3+.
 **Governs:** How `.cln` declares what a solution does — build, run, debug.
 
+**Implementation update:** The sketches below are historical, not the current
+schema. Named `[[config]]` entries, Power slots, ordered build/install steps,
+and linked startup dependencies now have a focused working prototype. See
+[Declarative build order](design-declarative-build-order.md) and the
+[Build Order Lab](../workspaces/build-order-lab/README.md) for supported syntax.
+
 ---
 
 ## Why this document exists

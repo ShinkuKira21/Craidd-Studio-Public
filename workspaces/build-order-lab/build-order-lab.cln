@@ -1,0 +1,112 @@
+[solution]
+name = "Build Order Lab"
+version = "1.0"
+projects = ["Api/Api.craidd", "Native/Native.craidd", "Client/Client.craidd", "Client/src-tauri/src-tauri.craidd"]
+default_project = "Api/Api.craidd"
+default_config = "API · Local"
+
+[[config]]
+name = "API · Local"
+kind = "run"
+target = "Api/Api.craidd"
+[config.slots]
+build = "Prepare application"
+run = "API · Run"
+debug = "API · Debug"
+
+[[config]]
+name = "Tauri · Development"
+kind = "run"
+target = "Client/src-tauri/src-tauri.craidd"
+[config.slots]
+build = "Tauri · Build"
+run = "Tauri · Run"
+debug = "Tauri · Debug"
+
+[[config]]
+name = "Prepare application"
+kind = "build"
+target = "."
+method = "plan"
+[[config.order.steps]]
+kind = "build"
+configuration = "API · Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native · Build"
+[[config.order.steps]]
+kind = "install"
+configuration = "Native · Build"
+destination = "API · Build"
+
+[[config]]
+name = "API · Build"
+kind = "build"
+target = "Api/Api.craidd"
+method = "dotnet"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "Native · Build"
+kind = "build"
+target = "Native/Native.craidd"
+method = "cmake"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug"]
+
+[[config]]
+name = "API · Run"
+kind = "run"
+target = "Api/Api.craidd"
+method = "dotnet"
+command = "dotnet run --project OrderApi.csproj --no-launch-profile -- --urls http://127.0.0.1:5187"
+[config.order]
+before = "Prepare application"
+[config.linked]
+ready_url = "http://127.0.0.1:5187/health"
+timeout_ms = 120000
+
+[[config]]
+name = "API · Debug"
+kind = "debug"
+target = "Api/Api.craidd"
+method = "dotnet"
+command = "dotnet run --project OrderApi.csproj --no-launch-profile -- --urls http://127.0.0.1:5187"
+[config.order]
+before = "Prepare application"
+[config.linked]
+ready_url = "http://127.0.0.1:5187/health"
+timeout_ms = 120000
+
+[[config]]
+name = "Tauri · Build"
+kind = "build"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "cargo"
+command = "cargo build"
+
+[[config]]
+name = "Tauri · Run"
+kind = "run"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "npm"
+cwd = "Client"
+command = "npm run tauri dev"
+[config.linked]
+after = ["Api/Api.craidd"]
+timeout_ms = 300000
+
+[[config]]
+name = "Tauri · Debug"
+kind = "debug"
+target = "Client/src-tauri/src-tauri.craidd"
+method = "cargo"
+command = "cargo build"
+[config.linked]
+after = ["Api/Api.craidd"]
+timeout_ms = 300000

@@ -28,6 +28,8 @@ pub struct DebugRequest {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
+    pub order: Option<super::build_order::OrderRequest>,
+    #[serde(default)]
     pub breakpoints: Vec<Breakpoint>,
 }
 
@@ -56,7 +58,10 @@ pub struct DebugBuildManager(Mutex<HashMap<String, BuildJob>>);
 impl Drop for DebugBuildManager {
     fn drop(&mut self) {
         if let Ok(active) = self.0.lock() {
-            for job in active.values() { unsafe { libc::killpg(job.pgid, libc::SIGTERM); } }
+            for job in active.values() {
+                job.cancelled.store(true, Ordering::Release);
+                if job.pgid > 0 { unsafe { libc::killpg(job.pgid, libc::SIGTERM); } }
+            }
         }
     }
 }
@@ -523,7 +528,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
     if app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window is already building a debug session".into());
     }
-    let DebugRequest { cwd: request_cwd, solution_path, method, profile, command_args, env, breakpoints } = request_spec;
+    let DebugRequest { cwd: request_cwd, solution_path, method, profile, command_args, env, order, breakpoints } = request_spec;
     let solution_path = PathBuf::from(solution_path).canonicalize().map_err(|e| e.to_string())?
         .to_string_lossy().into_owned();
     let cwd = PathBuf::from(&request_cwd).canonicalize().map_err(|e| e.to_string())?;
@@ -538,6 +543,18 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
     let adapter_name = adapter.file_name().and_then(|name| name.to_str()).unwrap_or("debug adapter").to_string();
     let (build_args, args) = split_debug_args(&method, command_args);
     emit(&app, &label, json!({"status":"building"}));
+    let prepared = if let Some(request) = order {
+        let app_output = app.clone();
+        let label_output = label.clone();
+        match super::build_order::prepare(app.clone(), label.clone(), request, move |text|
+            emit(&app_output, &label_output, json!({"status":"output", "text":text}))).await {
+            Ok(artifact) => artifact,
+            Err(error) => {
+                emit(&app, &label, json!({"status":if error == "Build order cancelled" { "terminated" } else { "error" }, "text":error}));
+                return Err(error);
+            }
+        }
+    } else { None };
     let executable = tauri::async_runtime::spawn_blocking({
         let cwd = cwd.clone();
         let app = app.clone();
@@ -546,7 +563,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
         let profile = profile.clone();
         move || match method.as_str() {
             "cargo" => executable_from_cargo(&app, &label, &cwd, profile.eq_ignore_ascii_case("release"), &build_args),
-            "dotnet" => executable_from_dotnet(&app, &label, &cwd, &profile, &build_args),
+            "dotnet" => prepared.map(Ok).unwrap_or_else(|| executable_from_dotnet(&app, &label, &cwd, &profile, &build_args)),
             "cmake" => executable_from_cmake(&app, &label, &cwd, &profile, &build_args),
             _ => unreachable!(),
         }
@@ -559,6 +576,27 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
             return Err(error);
         }
     };
+    let dev_lease = if method == "cargo" {
+        emit(&app, &label, json!({"status":"output", "text":"Checking Tauri frontend prerequisite…"}));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        app.state::<DebugBuildManager>().0.lock().map_err(|error| error.to_string())?
+            .insert(label.clone(), BuildJob { pgid: 0, cancelled: cancelled.clone() });
+        let frontend = super::tauri_dev::prepare_debug(app.clone(), cwd.clone(), env.clone(), cancelled.clone()).await;
+        if let Ok(mut builds) = app.state::<DebugBuildManager>().0.lock() { builds.remove(&label); }
+        if cancelled.load(Ordering::Acquire) {
+            drop(frontend);
+            emit(&app, &label, json!({"status":"terminated", "text":"Debug build cancelled"}));
+            return Err("Debug build cancelled".into());
+        }
+        match frontend {
+            Ok(lease) => lease,
+            Err(error) => {
+                emit(&app, &label, json!({"status":"error", "text":error}));
+                return Err(error);
+            }
+        }
+    } else { None };
+    if dev_lease.is_some() { emit(&app, &label, json!({"status":"output", "text":"Tauri frontend is ready; launching native debugger."})); }
     let mut command = Command::new(&adapter);
     if language == "csharp" { command.arg("--interpreter=vscode"); }
     command.current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -583,6 +621,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
     let ready = Arc::new(AtomicBool::new(false));
     let ready_reader = ready.clone();
     thread::spawn(move || {
+        let _dev_lease = dev_lease;
         let mut reader = BufReader::new(stdout);
         let mut pending: HashMap<u64, String> = HashMap::new();
         let mut initialized_event = false;
@@ -759,10 +798,12 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
 
 #[tauri::command]
 pub fn debug_control(window: WebviewWindow, state: tauri::State<'_, DebugManager>, builds: tauri::State<'_, DebugBuildManager>, action: String) -> Result<(), String> {
+    if action == "stop" && super::build_order::cancel(window.app_handle(), window.label()) { return Ok(()); }
     control_debug(window.label(), &state, &builds, &action)
 }
 
 pub fn control_debug_by_label(app: &AppHandle, label: &str, action: &str) -> Result<(), String> {
+    if action == "stop" && super::build_order::cancel(app, label) { return Ok(()); }
     let state = app.state::<DebugManager>();
     let builds = app.state::<DebugBuildManager>();
     control_debug(label, &state, &builds, action)
@@ -773,7 +814,7 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
         let active_builds = builds.0.lock().map_err(|e| e.to_string())?;
         if let Some(job) = active_builds.get(label) {
             job.cancelled.store(true, Ordering::Release);
-            unsafe { libc::killpg(job.pgid, libc::SIGTERM); }
+            if job.pgid > 0 { unsafe { libc::killpg(job.pgid, libc::SIGTERM); } }
             return Ok(());
         }
     }
@@ -806,11 +847,12 @@ pub fn cancel_window_debug(window: &tauri::Window) {
 }
 
 pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
+    super::build_order::cancel(app, label);
     if let Some(builds) = app.try_state::<DebugBuildManager>() {
         if let Ok(active) = builds.0.lock() {
             if let Some(job) = active.get(label) {
                 job.cancelled.store(true, Ordering::Release);
-                unsafe { libc::killpg(job.pgid, libc::SIGTERM); }
+                if job.pgid > 0 { unsafe { libc::killpg(job.pgid, libc::SIGTERM); } }
             }
         }
     }

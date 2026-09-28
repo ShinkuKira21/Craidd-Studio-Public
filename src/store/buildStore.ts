@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { useSolution } from "./solutionStore";
-import { decodeBuildLine, type BuildProblem } from "../lib/buildDiagnostics";
+import { appendBuildProblem, decodeBuildLine, type BuildProblem } from "../lib/buildDiagnostics";
+import { appendOutput } from "../lib/outputPresentation";
 
 type Profile = "debug" | "release";
 type Status = "idle" | "starting" | "running" | "success" | "failed" | "cancelled";
@@ -56,9 +57,9 @@ async function ensureEvents() {
         if (message.kind === "output") {
           const decoded = decodeBuildLine(message.text ?? "", state.activeCwd ?? "");
           return {
-            output: decoded.display === null ? state.output : (state.output + decoded.display + "\n").slice(-150_000),
+            output: decoded.display === null ? state.output : appendOutput(state.output, decoded.display),
             artifact: decoded.artifact ?? state.artifact,
-            problems: decoded.problem ? [...state.problems, decoded.problem].slice(-500) : state.problems,
+            problems: decoded.problem ? appendBuildProblem(state.problems, decoded.problem) : state.problems,
           };
         }
         if (message.kind === "artifact") return { artifact: message.text, output: state.output + `Artifact: ${message.text}\n` };
@@ -80,7 +81,7 @@ async function ensureEvents() {
 export function listenToBuildEvents(): Promise<void> { return ensureEvents(); }
 
 
-import type { ConfigEntry, CraiddSolution } from "../types/project";
+import type { ConfigEntry, CraiddSolution, OrderRequest } from "../types/project";
 
 export interface RunSpec {
   label: string;
@@ -89,6 +90,7 @@ export interface RunSpec {
   env: Record<string, string>;
   cwd: string;
   linked?: ConfigEntry["linked"];
+  order?: OrderRequest;
 }
 
 /**
@@ -108,6 +110,7 @@ export function resolveSpec(
   solutionRoot: string,
   solution: CraiddSolution,
   selectedProfileName: string | null,
+  solutionPath?: string | null,
 ): RunSpec | null {
   const root = solutionRoot.replace(/\/+$/, "");
 
@@ -133,15 +136,19 @@ export function resolveSpec(
     ?? profiles[0];
   const env: Record<string, string> = { ...(chosen?.env ?? {}) };
   const profileArgs = chosen?.args ?? [];
+  const order = config.order && solutionPath ? { solutionPath, configuration: config.name,
+    profile: selectedProfileName ?? config.defaultProfile } : undefined;
+
+  if (config.method === "plan") return { label: `Build order: ${config.name}`, program: "craidd-plan", args: [], env, cwd, order, linked: config.linked };
 
   // Explicit command wins.
   if (config.command && config.command.trim()) {
     const parts = parseCommandLine(config.command.trim());
     if (parts.length === 0) return null;
     const [program, ...rest] = parts;
-    const cargoJson = config.origin === "inferred" && config.method === "cargo"
+    const cargoJson = config.method === "cargo"
       && config.kind === "build" && (rest[0] === "build" || rest[0] === "check")
-      && !rest.some((arg) => arg.startsWith("--message-format"));
+      && ![...rest, ...profileArgs].some((arg) => arg.startsWith("--message-format"));
     const args = [...rest, ...profileArgs, ...(cargoJson ? ["--message-format=json"] : [])];
     return {
       label: [program, ...args].join(" "),
@@ -150,6 +157,7 @@ export function resolveSpec(
       env,
       cwd,
       linked: config.linked,
+      order,
     };
   }
 
@@ -164,9 +172,10 @@ export function resolveSpec(
         env,
         cwd,
         linked: config.linked,
+        order,
       };
     case "npm":
-      return { label: "npm run dev", program: "npm", args: ["run", "dev", ...profileArgs], env, cwd, linked: config.linked };
+      return { label: "npm run dev", program: "npm", args: ["run", "dev", ...profileArgs], env, cwd, linked: config.linked, order };
     case "dotnet":
       return {
         label: `dotnet ${config.kind === "run" ? "run" : "build"}${profileArgs.length ? " " + profileArgs.join(" ") : ""}`,
@@ -175,9 +184,10 @@ export function resolveSpec(
         env,
         cwd,
         linked: config.linked,
+        order,
       };
     case "cmake":
-      return { label: "cmake --build build", program: "cmake", args: ["--build", "build", ...profileArgs], env, cwd, linked: config.linked };
+      return { label: "cmake --build build", program: "cmake", args: ["--build", "build", ...profileArgs], env, cwd, linked: config.linked, order };
     case "shell":
       return null; // shell method requires config.command, which was absent above
     default:
@@ -366,7 +376,7 @@ export const useBuild = create<BuildState>((set, get) => ({
       }
     }
 
-    const spec = resolveSpec(chosen, rootPath, solution, state.selectedProfileName);
+    const spec = resolveSpec(chosen, rootPath, solution, state.selectedProfileName, useSolution.getState().clnPath);
     if (!spec) {
       set({ status: "failed", output: `Could not resolve a command for "${chosen.name}".\n` });
       return;
@@ -388,6 +398,7 @@ export const useBuild = create<BuildState>((set, get) => ({
         profile,
         spec.args,
         spec.env,
+        spec.order,
       );
       return;
     }
@@ -407,12 +418,13 @@ export const useBuild = create<BuildState>((set, get) => ({
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke<number>("start_config", { spec });
     } catch (error) {
-      set({
-        status: "failed",
+      const cancelled = String(error).includes("Build order cancelled");
+      set((state) => ({
+        status: cancelled ? "cancelled" : "failed",
         activeId: null,
         activeConfigName: null,
-        output: `Could not ${action}: ${String(error)}\n`,
-      });
+        output: state.output.trimEnd().endsWith(String(error)) ? state.output : appendOutput(state.output, `Could not ${action}: ${String(error)}`),
+      }));
     }
   },
   stop: async () => {

@@ -2,7 +2,8 @@
 
 Linked Run and Debug can start an API, wait until it is ready, and only then
 start its clients. Window numbers do not determine launch order: each selected
-configuration owns its linked priority and optional readiness check.
+configuration owns its named startup prerequisites and optional readiness check.
+Legacy priorities remain supported for existing solutions.
 
 ## Guided setup
 
@@ -30,9 +31,11 @@ adds `ASPNETCORE_URLS` to the saved profiles: debugger launches do not load
 
 ## Manual control
 
-Every editable configuration has linked priority, readiness URL, and timeout
-fields. Lower priorities start first (1–100); equal priorities start together.
-The default priority is 50. An HTTP response with status 200–399 passes the
+Editable configurations offer **Start after** project checkboxes, readiness URL,
+and timeout fields. Select the server project as the client's prerequisite.
+Every prerequisite must have a participating linked session. Cycles and missing
+prerequisites are rejected. Independent projects may start together.
+An HTTP response with status 200–399 passes the
 readiness check; HTTPS is not currently supported. Choose an endpoint that
 actually represents readiness, not merely an open listener.
 
@@ -40,14 +43,24 @@ For example, inside an API `[[config]]` entry:
 
 ```toml
 [config.linked]
-priority = 20
 ready_url = "http://127.0.0.1:5087/api/health"
 timeout_ms = 30000
 ```
 
-Leave clients at priority 50, or choose another higher value. A failed check
+Inside the client configuration, declare its prerequisite:
+
+```toml
+[config.linked]
+after = ["Server/Api/Api.craidd"]
+```
+
+Use the actual API project path declared in your solution. Configurations without
+named prerequisites retain legacy priority ordering (1–100; default 50). Explicit
+prerequisites override that participant's legacy priority. A failed check
 prevents later phases from launching. Stop cancels queued phases and stops the
-remaining launched instances. Ordinary single-window actions are unchanged.
+remaining launched instances. Startup dependencies apply only to linked launches;
+an explicit **Before this action** build preparation applies to individual actions
+too. See [Declarative build order](design-declarative-build-order.md).
 
 ## Detection limits
 

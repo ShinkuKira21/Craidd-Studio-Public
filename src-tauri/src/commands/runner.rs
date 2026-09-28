@@ -77,6 +77,8 @@ pub struct RunSpec {
     pub cwd: String,
     #[serde(default)]
     pub linked: Option<crate::types::LinkedLaunch>,
+    #[serde(default)]
+    pub order: Option<super::build_order::OrderRequest>,
 }
 
 #[derive(Clone, Serialize)]
@@ -164,9 +166,36 @@ pub async fn start_config(
     start_config_for_label(app, window.label().to_string(), spec).await
 }
 
-pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec) -> Result<u64, String> {
+pub async fn start_config_for_label(app: AppHandle, label: String, mut spec: RunSpec) -> Result<u64, String> {
     if !Path::new(&spec.cwd).is_dir() {
         return Err(format!("Working directory does not exist: {}", spec.cwd));
+    }
+    if let Some(request) = spec.order.clone() {
+        let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+        emit(&app, &label, id, "start", Some("Preparing declared build order…".into()), None);
+        let app_output = app.clone();
+        let label_output = label.clone();
+        let prepared = super::build_order::prepare(app.clone(), label.clone(), request, move |text|
+            emit(&app_output, &label_output, id, "output", Some(text), None)).await;
+        let artifact = match prepared {
+            Ok(artifact) => artifact,
+            Err(error) => {
+                emit(&app, &label, id, if error == "Build order cancelled" { "cancelled" } else { "error" }, Some(error.clone()), None);
+                return Err(error);
+            }
+        };
+        if spec.program == "craidd-plan" {
+            emit(&app, &label, id, "finish", Some("Build order completed.".into()), Some(0));
+            return Ok(id);
+        }
+        if spec.program == "dotnet" && spec.args.first().is_some_and(|arg| arg == "run") {
+            if let Some(artifact) = artifact {
+                let application_args = spec.args.iter().position(|arg| arg == "--").map(|index| spec.args[index + 1..].to_vec()).unwrap_or_default();
+                spec.args = vec![artifact.to_string_lossy().into_owned()];
+                spec.args.extend(application_args);
+                spec.label = format!("dotnet {} (prepared output; no rebuild)", artifact.display());
+            }
+        }
     }
 
     // Multiple Tauri clients share one frontend server, but each receives
@@ -293,6 +322,7 @@ pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec
 
 #[tauri::command]
 pub fn stop_config(window: WebviewWindow, state: State<'_, RunnerManager>) -> Result<(), String> {
+    super::build_order::cancel(window.app_handle(), window.label());
     let (pgid, term_sent) = {
         let active = state.0.lock().map_err(|e| e.to_string())?;
         let Some(run) = active.get(window.label()) else { return Ok(()); };
@@ -322,6 +352,7 @@ pub fn cancel_window_run(window: &tauri::Window) {
 }
 
 pub fn cancel_run_by_label(app: &AppHandle, label: &str) {
+    super::build_order::cancel(app, label);
     if let Some(manager) = app.try_state::<RunnerManager>() {
         if let Ok(active) = manager.0.lock() {
             if let Some(run) = active.get(label) {

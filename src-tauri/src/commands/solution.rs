@@ -239,12 +239,15 @@ fn parse_config_entry(v: &toml::Value) -> Option<ConfigEntry> {
         profiles: parse_profiles(t.get("profile")),
         default_profile: t.get("default_profile").and_then(|x| x.as_str()).map(String::from),
         linked: parse_linked_launch(t.get("linked")),
+        order: match t.get("order") { Some(value) => Some(value.clone().try_into().ok()?), None => None },
     })
 }
 
 fn parse_linked_launch(v: Option<&toml::Value>) -> Option<LinkedLaunch> {
     let table = v?.as_table()?;
     Some(LinkedLaunch {
+        after: table.get("after").and_then(|value| value.as_array()).map(|values|
+            values.iter().filter_map(|value| value.as_str().map(String::from)).collect()).unwrap_or_default(),
         priority: table.get("priority").and_then(|value| value.as_integer())
             .and_then(|value| u8::try_from(value).ok()).unwrap_or(crate::types::default_linked_priority()),
         ready_url: table.get("ready_url").and_then(|value| value.as_str()).map(String::from),
@@ -628,9 +631,22 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
         if let Some(p) = &cfg.default_profile { text.push_str(&format!("default_profile = \"{}\"\n", escape(p))); }
         if let Some(linked) = &cfg.linked {
             text.push_str("\n[config.linked]\n");
+            let after = linked.after.iter().map(|name| format!("\"{}\"", escape(name))).collect::<Vec<_>>().join(", ");
+            if !after.is_empty() { text.push_str(&format!("after = [{after}]\n")); }
             text.push_str(&format!("priority = {}\n", linked.priority));
             if let Some(url) = &linked.ready_url { text.push_str(&format!("ready_url = \"{}\"\n", escape(url))); }
             text.push_str(&format!("timeout_ms = {}\n", linked.timeout_ms));
+        }
+        if let Some(order) = &cfg.order {
+            text.push_str("\n[config.order]\n");
+            if let Some(before) = &order.before { text.push_str(&format!("before = \"{}\"\n", escape(before))); }
+            for step in &order.steps {
+                text.push_str("\n[[config.order.steps]]\n");
+                match step {
+                    crate::types::OrderStep::Build { configuration } => text.push_str(&format!("kind = \"build\"\nconfiguration = \"{}\"\n", escape(configuration))),
+                    crate::types::OrderStep::Install { configuration, destination } => text.push_str(&format!("kind = \"install\"\nconfiguration = \"{}\"\ndestination = \"{}\"\n", escape(configuration), escape(destination))),
+                }
+            }
         }
         if let Some(slots) = &cfg.slots {
             text.push_str("\n[config.slots]\n");
@@ -702,6 +718,18 @@ pub fn save_solution_configs(cln_path: String, configs: Vec<ConfigEntry>, defaul
         return Err("Configurations changed on disk. Reload the solution before saving.".into());
     }
     let mut doc: Document = text.parse().map_err(|e| format!("Invalid .cln: {e}"))?;
+    let mut validation_solution = load_solution_from_cln(path.parent().ok_or("Solution has no folder")?, path)?.ok_or("Solution is missing")?;
+    validation_solution.configs = configs.clone();
+    for config in &configs {
+        if config.order.is_some() { super::build_order::plan(&validation_solution, &config.name)?; }
+        if let Some(linked) = &config.linked {
+            for target in &linked.after {
+                if target == &config.target || !validation_solution.projects.iter().any(|project| &project.path == target) {
+                    return Err(format!("{}: choose another existing project as a startup prerequisite", config.name));
+                }
+            }
+        }
+    }
     if !doc["solution"].is_table() { return Err("Missing [solution] table".into()); }
     let mut seen = std::collections::HashSet::new();
     let mut entries = ArrayOfTables::new();
@@ -733,10 +761,28 @@ pub fn save_solution_configs(cln_path: String, configs: Vec<ConfigEntry>, defaul
                 return Err(format!("Linked readiness URL for {name} must start with http://"));
             }
             let mut table = Table::new();
+            let mut after = Array::new();
+            for target in &linked.after { after.push(target.as_str()); }
+            if !after.is_empty() { table.insert("after", value(after)); }
             table.insert("priority", value(i64::from(linked.priority)));
             if let Some(url) = &linked.ready_url { table.insert("ready_url", value(url)); }
             table.insert("timeout_ms", value(i64::try_from(linked.timeout_ms).map_err(|_| "Linked readiness timeout is too large")?));
             item.insert("linked", Item::Table(table));
+        }
+        if let Some(order) = &cfg.order {
+            let mut table = Table::new();
+            if let Some(before) = &order.before { table.insert("before", value(before)); }
+            let mut steps = ArrayOfTables::new();
+            for step in &order.steps {
+                let mut row = Table::new();
+                match step {
+                    crate::types::OrderStep::Build { configuration } => { row.insert("kind", value("build")); row.insert("configuration", value(configuration)); }
+                    crate::types::OrderStep::Install { configuration, destination } => { row.insert("kind", value("install")); row.insert("configuration", value(configuration)); row.insert("destination", value(destination)); }
+                }
+                steps.push(row);
+            }
+            table.insert("steps", Item::ArrayOfTables(steps));
+            item.insert("order", Item::Table(table));
         }
         if let Some(slots) = &cfg.slots {
             let mut table = Table::new();
@@ -784,6 +830,39 @@ mod config_editor_tests {
     use super::*;
 
     #[test]
+    fn both_solution_writers_round_trip_build_order_and_startup_dependencies() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("workspaces/build-order-lab");
+        let mut solution = load_solution_named(source.to_string_lossy().into_owned(), "build-order-lab.cln".into()).unwrap().unwrap().solution;
+        let dir = std::env::temp_dir().join(format!("craidd-order-save-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&dir).unwrap();
+        // Project membership can be parsed without copying generated build output.
+        solution.name = "order-test".into();
+        solution.root = dir.to_string_lossy().into_owned();
+        for project in &solution.projects {
+            let path = dir.join(&project.path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::copy(source.join(&project.path), path).unwrap();
+        }
+        save_solution(solution.root.clone(), solution.clone()).unwrap();
+        let file = dir.join("order-test.cln");
+        let expected = serde_json::to_value(&solution.configs).unwrap();
+        let loaded = load_solution_named(solution.root.clone(), "order-test.cln".into()).unwrap().unwrap().solution;
+        assert_eq!(serde_json::to_value(&loaded.configs).unwrap(), expected);
+        save_solution_configs(file.to_string_lossy().into_owned(), loaded.configs.clone(), loaded.default_config.clone(),
+            loaded.configs.clone(), loaded.default_config.clone()).unwrap();
+        let reloaded = load_solution_named(solution.root.clone(), "order-test.cln".into()).unwrap().unwrap().solution;
+        assert_eq!(serde_json::to_value(&reloaded.configs).unwrap(), expected);
+        let saved = fs::read_to_string(&file).unwrap();
+        let mut invalid = reloaded.configs.clone();
+        invalid.iter_mut().find(|config| config.name == "Prepare application").unwrap().order.as_mut().unwrap().steps.swap(0, 2);
+        assert!(save_solution_configs(file.to_string_lossy().into_owned(), invalid, reloaded.default_config.clone(),
+            reloaded.configs.clone(), reloaded.default_config.clone()).unwrap_err().contains("before installing"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), saved);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn config_save_preserves_other_solution_data_and_reloads_slots() {
         let dir = std::env::temp_dir().join(format!("craidd-config-editor-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -795,7 +874,7 @@ mod config_editor_tests {
             origin: "user".into(), best_fit: false, related_projects: vec![],
             slots: Some(ConfigSlots { run: Some("Run app".into()), build: None, debug: None }),
             method: None, command: None, cwd: None, profiles: vec![], default_profile: None,
-            linked: None,
+            linked: None, order: None,
         };
         let mut env = std::collections::BTreeMap::new();
         env.insert("MODE".into(), "test".into());
@@ -805,7 +884,7 @@ mod config_editor_tests {
             method: Some("shell".into()), command: Some("echo hello".into()), cwd: None,
             profiles: vec![crate::types::Profile { name: "dev".into(), args: vec!["--watch".into()], env, description: None }],
             default_profile: Some("dev".into()),
-            linked: Some(LinkedLaunch { priority: 20, ready_url: Some("http://127.0.0.1:5087/api/health".into()), timeout_ms: 30_000 }),
+            linked: Some(LinkedLaunch { after: vec![], priority: 20, ready_url: Some("http://127.0.0.1:5087/api/health".into()), timeout_ms: 30_000 }), order: None,
         };
         save_solution_configs(file.to_string_lossy().into_owned(), vec![config, run], Some("My solution".into()), vec![], None).unwrap();
         let saved = fs::read_to_string(&file).unwrap();
