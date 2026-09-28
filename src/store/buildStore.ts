@@ -383,6 +383,7 @@ export const useBuild = create<BuildState>((set, get) => ({
         spec.cwd,
         profile,
         spec.args,
+        spec.env,
       );
       return;
     }

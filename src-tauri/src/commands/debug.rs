@@ -26,6 +26,8 @@ pub struct DebugRequest {
     #[serde(default)]
     pub command_args: Vec<String>,
     #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
     pub breakpoints: Vec<Breakpoint>,
 }
 
@@ -302,18 +304,34 @@ fn dotnet_target_path(lines: &[String], cwd: &Path) -> Option<PathBuf> {
     })
 }
 
-fn executable_from_dotnet(app: &AppHandle, label: &str, cwd: &Path, profile: &str, command_args: &[String]) -> Result<PathBuf, String> {
-    let project = single_project_file(cwd, "csproj")?;
+fn dotnet_debug_build_args(project: &Path, profile: &str, command_args: &[String]) -> Vec<String> {
     let profile = if profile.is_empty() { "Debug" } else { profile };
     let mut build_args = vec!["build".into(), project.to_string_lossy().into_owned(), "--configuration".into(), profile.into(), "--nologo".into()];
     let mut skip = false;
     for (index, arg) in command_args.iter().enumerate() {
         if index == 0 && matches!(arg.as_str(), "build" | "run") { continue; }
         if skip { skip = false; continue; }
-        if arg == "--configuration" || arg == "-c" { skip = true; continue; }
-        if arg.starts_with("--configuration=") { continue; }
+        if matches!(arg.as_str(), "--configuration" | "-c" | "--project" | "--launch-profile") {
+            skip = true;
+            continue;
+        }
+        if arg.starts_with("--configuration=") || arg.starts_with("--project=")
+            || arg.starts_with("--launch-profile=") || matches!(arg.as_str(), "--no-launch-profile" | "--no-build") {
+            continue;
+        }
+        if Path::new(arg).extension().and_then(|value| value.to_str())
+            .is_some_and(|extension| matches!(extension, "csproj" | "sln" | "slnx")) {
+            continue;
+        }
         build_args.push(arg.clone());
     }
+    build_args
+}
+
+fn executable_from_dotnet(app: &AppHandle, label: &str, cwd: &Path, profile: &str, command_args: &[String]) -> Result<PathBuf, String> {
+    let project = single_project_file(cwd, "csproj")?;
+    let profile = if profile.is_empty() { "Debug" } else { profile };
+    let build_args = dotnet_debug_build_args(&project, profile, command_args);
     let build_lines = run_build_command(app, label, cwd, "dotnet", &build_args, ".NET debug build")?;
     if let Some(target) = dotnet_target_path(&build_lines, cwd).filter(|path| path.is_file()) {
         return Ok(target);
@@ -505,7 +523,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
     if app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window is already building a debug session".into());
     }
-    let DebugRequest { cwd: request_cwd, solution_path, method, profile, command_args, breakpoints } = request_spec;
+    let DebugRequest { cwd: request_cwd, solution_path, method, profile, command_args, env, breakpoints } = request_spec;
     let solution_path = PathBuf::from(solution_path).canonicalize().map_err(|e| e.to_string())?
         .to_string_lossy().into_owned();
     let cwd = PathBuf::from(&request_cwd).canonicalize().map_err(|e| e.to_string())?;
@@ -519,7 +537,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
     let adapter = adapter_path(language)?;
     let adapter_name = adapter.file_name().and_then(|name| name.to_str()).unwrap_or("debug adapter").to_string();
     let (build_args, args) = split_debug_args(&method, command_args);
-    emit(&app, &label, json!({"status":"building", "text":format!("Building a debuggable {language} executable…")}));
+    emit(&app, &label, json!({"status":"building"}));
     let executable = tauri::async_runtime::spawn_blocking({
         let cwd = cwd.clone();
         let app = app.clone();
@@ -571,9 +589,9 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
         let mut launch_succeeded = false;
         let mut configured = false;
         let launch = if language == "csharp" {
-            json!({"program": executable, "cwd": cwd, "args": args, "stopAtEntry": false, "console":"internalConsole"})
+            json!({"program": executable, "cwd": cwd, "args": args, "env": env, "stopAtEntry": false, "console":"internalConsole"})
         } else {
-            json!({"program": executable, "cwd": cwd, "args": args, "stopOnEntry": false})
+            json!({"program": executable, "cwd": cwd, "args": args, "env": env, "stopOnEntry": false})
         };
         loop {
             let message = match read_message(&mut reader) {
@@ -838,6 +856,20 @@ mod tests {
         ]);
         assert_eq!(build, vec!["build", "--configuration", "Debug"]);
         assert_eq!(program, vec!["--urls", "http://localhost:5050"]);
+    }
+
+    #[test]
+    fn strips_dotnet_run_only_options_from_debug_build() {
+        let project = Path::new("/tmp/Api.csproj");
+        let args = dotnet_debug_build_args(project, "Debug", &[
+            "run".into(), "--project".into(), "Api.csproj".into(),
+            "--no-launch-profile".into(), "--configuration".into(), "Release".into(),
+            "-p:TreatWarningsAsErrors=true".into(),
+        ]);
+        assert_eq!(args, vec![
+            "build", "/tmp/Api.csproj", "--configuration", "Debug", "--nologo",
+            "-p:TreatWarningsAsErrors=true",
+        ]);
     }
 
     #[test]

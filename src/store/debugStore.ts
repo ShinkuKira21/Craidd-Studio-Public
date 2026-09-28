@@ -23,13 +23,13 @@ interface DebugState {
   line: number | null;
   frames: DebugFrame[];
   variables: DebugVariable[];
-  start: (method: "cargo" | "dotnet" | "cmake", cwd: string, profile: string, commandArgs?: string[]) => Promise<void>;
+  start: (method: "cargo" | "dotnet" | "cmake", cwd: string, profile: string, commandArgs?: string[], env?: Record<string, string>) => Promise<void>;
   control: (action: "continue" | "pause" | "stepOver" | "stepInto" | "stepOut" | "stop") => Promise<void>;
 }
 
 export const useDebug = create<DebugState>((set, get) => ({
   status: "idle", output: "", reason: null, file: null, line: null, frames: [], variables: [],
-  start: async (method, cwd, profile, commandArgs = []) => {
+  start: async (method, cwd, profile, commandArgs = [], env = {}) => {
     if (["building", "running", "paused"].includes(get().status)) return;
     const language = method === "cargo" ? "Rust" : method === "dotnet" ? "C#" : "C++";
     set({ status: "building", output: `Building a debuggable ${language} executable…\n`, frames: [], variables: [], file: null, line: null });
@@ -37,7 +37,7 @@ export const useDebug = create<DebugState>((set, get) => ({
       const { invoke } = await import("@tauri-apps/api/core");
       const solutionPath = useSolution.getState().clnPath;
       if (!solutionPath) throw new Error("Open a solution before starting the debugger");
-      await invoke("start_debug", { requestSpec: { cwd, method, profile, solutionPath, commandArgs,
+      await invoke("start_debug", { requestSpec: { cwd, method, profile, solutionPath, commandArgs, env,
         breakpoints: useBreakpoints.getState().points } });
     } catch (error) {
       const cancelled = String(error).includes("Debug build cancelled");

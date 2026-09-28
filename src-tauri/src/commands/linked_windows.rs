@@ -771,7 +771,7 @@ async fn launch_parked(app: AppHandle, label: String, participant: Participant, 
             cwd: spec.cwd,
             method: method.into(),
             profile: participant.selected_profile_name.unwrap_or_else(|| if method == "cargo" { "debug".into() } else { "Debug".into() }),
-            command_args: spec.args, solution_path: participant.solution_path.clone(),
+            command_args: spec.args, env: spec.env, solution_path: participant.solution_path.clone(),
             breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
         super::debug::start_debug_for_label(app, label, request).await
