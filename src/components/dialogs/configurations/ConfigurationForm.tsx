@@ -21,6 +21,7 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
   const slots = config.slots ?? inferredSlots;
   const set = (patch: Partial<ConfigEntry>) => onChange({ ...config, ...patch });
   const profiles = config.profiles ?? [];
+  const linked = config.linked ?? { priority: 50, timeoutMs: 30_000 };
   const updateProfile = (index: number, patch: Partial<Profile>) => {
     const next = profiles.map((profile, i) => i === index ? { ...profile, ...patch } : profile);
     set({ profiles: next });
@@ -56,6 +57,13 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
             <Field label="Method"><select className={inputClass} value={config.method ?? ""} disabled={!editable} onChange={(e) => set({ method: e.target.value || undefined })}><option value="">Automatic</option>{methods.map((method) => <option key={method} value={method}>{method}</option>)}</select></Field>
             <Field label="Command"><input className={inputClass + " font-mono"} value={config.command ?? ""} disabled={!editable} placeholder="Derived from method when empty" onChange={(e) => set({ command: e.target.value || undefined })} /></Field>
             <Field label="Working directory"><input className={inputClass + " font-mono"} value={config.cwd ?? ""} disabled={!editable} placeholder="Project folder when empty" onChange={(e) => set({ cwd: e.target.value || undefined })} /></Field>
+            <div className="pt-3 border-t border-zinc-800 space-y-2">
+              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Linked startup</div>
+              <p className="text-[11px] text-zinc-600">Lower priorities start first. Equal priorities start together; a readiness URL gates the next priority.</p>
+              <Field label="Priority"><input type="number" min={1} max={100} className={inputClass} value={linked.priority} disabled={!editable} onChange={(e) => set({ linked: { ...linked, priority: Number(e.target.value) } })} /></Field>
+              <Field label="Ready URL"><input className={inputClass + " font-mono"} value={linked.readyUrl ?? ""} disabled={!editable} placeholder="Optional, e.g. http://127.0.0.1:5087/api/health" onChange={(e) => set({ linked: { ...linked, readyUrl: e.target.value || undefined } })} /></Field>
+              <Field label="Timeout (ms)"><input type="number" min={100} max={300000} className={inputClass} value={linked.timeoutMs} disabled={!editable} onChange={(e) => set({ linked: { ...linked, timeoutMs: Number(e.target.value) } })} /></Field>
+            </div>
             <div className="pt-3 border-t border-zinc-800">
               <div className="flex items-center gap-2 mb-3"><span className="text-[11px] uppercase tracking-wide text-zinc-500">Profiles</span><button type="button" disabled={!editable} className="ml-auto text-[11px] text-blue-400 disabled:text-zinc-700" onClick={() => set({ profiles: [...profiles, { name: `Profile ${profiles.length + 1}`, args: [], env: {} }] })}>+ Add profile</button></div>
               {profiles.length === 0 && <p className="text-[11px] text-zinc-600">No profiles. The command runs with its default arguments.</p>}

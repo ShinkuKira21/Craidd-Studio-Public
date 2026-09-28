@@ -116,6 +116,13 @@ export interface ConfigEntry {
   origin: ConfigOrigin;
   profiles?: Profile[];
   defaultProfile?: string;
+  linked?: LinkedLaunch;
+}
+
+export interface LinkedLaunch {
+  priority: number;
+  readyUrl?: string;
+  timeoutMs: number;
 }
 
 export interface Profile {

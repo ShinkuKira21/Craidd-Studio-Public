@@ -73,9 +73,10 @@ The native .NET solution is `Server/PolyglotLab.sln`.
 - **Rust: Cargo Debug (LLDB)** uses Craidd's LLDB DAP integration. Linked
   Debug requires each linked window to select a Rust Cargo debug configuration
   and requires `lldb-dap` to be installed or selected in Preferences → Toolchain.
-- **API: Debug Launch (no adapter)** is a capability probe, not a working C#
-  debugger. Craidd does not yet launch C# debugging or stop at its breakpoints;
-  the Debug button should explain that a supported adapter is required.
+- **API: Debug Launch** builds the API and launches it through `netcoredbg`.
+  In linked Run or Debug, the API has priority 20 and gates the default-priority
+  Tauri client on `http://127.0.0.1:5087/api/health`, preventing the client from
+  opening before the server is ready.
 - **Tests: Reserved Test Kind** checks how the picker displays a `test`
   configuration. Craidd has no Test toolbar action yet. Use **Tests: Unit**
   to execute the test runner today.

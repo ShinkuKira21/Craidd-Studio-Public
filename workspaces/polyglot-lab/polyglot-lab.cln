@@ -172,6 +172,11 @@ method = "dotnet"
 command = "dotnet run --project Api.csproj --no-launch-profile"
 default_profile = "Debug"
 
+[config.linked]
+priority = 20
+ready_url = "http://127.0.0.1:5087/api/health"
+timeout_ms = 30000
+
 [[config.profile]]
 name = "Debug"
 args = ["--configuration", "Debug", "--", "--urls", "http://127.0.0.1:5087"]
@@ -199,11 +204,16 @@ method = "dotnet"
 command = "dotnet run --project Api.csproj --no-launch-profile --configuration Debug -- --urls http://127.0.0.1:5087 --dataset extended"
 
 [[config]]
-name = "API: Debug Launch (no adapter)"
+name = "API: Debug Launch"
 kind = "debug"
 target = "Server/Api/Api.craidd"
 method = "dotnet"
 command = "dotnet run --project Api.csproj --no-launch-profile --configuration Debug -- --urls http://127.0.0.1:5087"
+
+[config.linked]
+priority = 20
+ready_url = "http://127.0.0.1:5087/api/health"
+timeout_ms = 30000
 
 # The console test runner needs no external NuGet test framework.
 [[config]]

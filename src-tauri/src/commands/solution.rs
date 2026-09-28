@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{AncestorInfo, BuildEntry, ConfigEntry, ConfigSlots, CraiddProject, CraiddSolution, SolutionWithPath};
+use crate::types::{AncestorInfo, BuildEntry, ConfigEntry, ConfigSlots, CraiddProject, CraiddSolution, LinkedLaunch, SolutionWithPath};
 
 const IGNORE_DIRS: &[&str] = &[
     ".git", "node_modules", "target", "dist", "build", "bin", "obj",
@@ -238,6 +238,18 @@ fn parse_config_entry(v: &toml::Value) -> Option<ConfigEntry> {
         origin: t.get("origin").and_then(|x| x.as_str()).unwrap_or("user").to_string(),
         profiles: parse_profiles(t.get("profile")),
         default_profile: t.get("default_profile").and_then(|x| x.as_str()).map(String::from),
+        linked: parse_linked_launch(t.get("linked")),
+    })
+}
+
+fn parse_linked_launch(v: Option<&toml::Value>) -> Option<LinkedLaunch> {
+    let table = v?.as_table()?;
+    Some(LinkedLaunch {
+        priority: table.get("priority").and_then(|value| value.as_integer())
+            .and_then(|value| u8::try_from(value).ok()).unwrap_or(crate::types::default_linked_priority()),
+        ready_url: table.get("ready_url").and_then(|value| value.as_str()).map(String::from),
+        timeout_ms: table.get("timeout_ms").and_then(|value| value.as_integer())
+            .and_then(|value| u64::try_from(value).ok()).unwrap_or(crate::types::default_linked_timeout_ms()),
     })
 }
 
@@ -614,6 +626,12 @@ pub fn save_solution(root: String, solution: CraiddSolution) -> Result<(), Strin
         if let Some(c) = &cfg.command { text.push_str(&format!("command = \"{}\"\n", escape(c))); }
         if let Some(c) = &cfg.cwd { text.push_str(&format!("cwd = \"{}\"\n", escape(c))); }
         if let Some(p) = &cfg.default_profile { text.push_str(&format!("default_profile = \"{}\"\n", escape(p))); }
+        if let Some(linked) = &cfg.linked {
+            text.push_str("\n[config.linked]\n");
+            text.push_str(&format!("priority = {}\n", linked.priority));
+            if let Some(url) = &linked.ready_url { text.push_str(&format!("ready_url = \"{}\"\n", escape(url))); }
+            text.push_str(&format!("timeout_ms = {}\n", linked.timeout_ms));
+        }
         if let Some(slots) = &cfg.slots {
             text.push_str("\n[config.slots]\n");
             if let Some(v) = &slots.build { text.push_str(&format!("build = \"{}\"\n", escape(v))); }
@@ -704,6 +722,22 @@ pub fn save_solution_configs(cln_path: String, configs: Vec<ConfigEntry>, defaul
         if let Some(v) = &cfg.command { item.insert("command", value(v)); }
         if let Some(v) = &cfg.cwd { item.insert("cwd", value(v)); }
         if let Some(v) = &cfg.default_profile { item.insert("default_profile", value(v)); }
+        if let Some(linked) = &cfg.linked {
+            if !(1..=100).contains(&linked.priority) {
+                return Err(format!("Linked priority for {name} must be between 1 and 100"));
+            }
+            if !(100..=300_000).contains(&linked.timeout_ms) {
+                return Err(format!("Linked readiness timeout for {name} must be between 100 and 300000 ms"));
+            }
+            if linked.ready_url.as_deref().is_some_and(|url| !url.starts_with("http://")) {
+                return Err(format!("Linked readiness URL for {name} must start with http://"));
+            }
+            let mut table = Table::new();
+            table.insert("priority", value(i64::from(linked.priority)));
+            if let Some(url) = &linked.ready_url { table.insert("ready_url", value(url)); }
+            table.insert("timeout_ms", value(i64::try_from(linked.timeout_ms).map_err(|_| "Linked readiness timeout is too large")?));
+            item.insert("linked", Item::Table(table));
+        }
         if let Some(slots) = &cfg.slots {
             let mut table = Table::new();
             if let Some(v) = &slots.build { table.insert("build", value(v)); }
@@ -761,6 +795,7 @@ mod config_editor_tests {
             origin: "user".into(), best_fit: false, related_projects: vec![],
             slots: Some(ConfigSlots { run: Some("Run app".into()), build: None, debug: None }),
             method: None, command: None, cwd: None, profiles: vec![], default_profile: None,
+            linked: None,
         };
         let mut env = std::collections::BTreeMap::new();
         env.insert("MODE".into(), "test".into());
@@ -770,6 +805,7 @@ mod config_editor_tests {
             method: Some("shell".into()), command: Some("echo hello".into()), cwd: None,
             profiles: vec![crate::types::Profile { name: "dev".into(), args: vec!["--watch".into()], env, description: None }],
             default_profile: Some("dev".into()),
+            linked: Some(LinkedLaunch { priority: 20, ready_url: Some("http://127.0.0.1:5087/api/health".into()), timeout_ms: 30_000 }),
         };
         save_solution_configs(file.to_string_lossy().into_owned(), vec![config, run], Some("My solution".into()), vec![], None).unwrap();
         let saved = fs::read_to_string(&file).unwrap();
@@ -781,6 +817,8 @@ mod config_editor_tests {
         assert_eq!(loaded.configs[1].profiles[0].args, ["--watch"]);
         assert_eq!(loaded.configs[1].profiles[0].env.get("MODE").map(String::as_str), Some("test"));
         assert_eq!(loaded.configs[0].slots.as_ref().unwrap().run.as_deref(), Some("Run app"));
+        assert_eq!(loaded.configs[1].linked.as_ref().map(|linked| linked.priority), Some(20));
+        assert_eq!(loaded.configs[1].linked.as_ref().and_then(|linked| linked.ready_url.as_deref()), Some("http://127.0.0.1:5087/api/health"));
         let conflict = save_solution_configs(file.to_string_lossy().into_owned(), vec![], None, vec![], None);
         assert!(conflict.unwrap_err().contains("changed on disk"));
         let default_conflict = save_solution_configs(file.to_string_lossy().into_owned(),

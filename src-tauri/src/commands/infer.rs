@@ -202,6 +202,7 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
                 origin: "inferred".into(),
                 profiles: vec![],
                 default_profile: None,
+                linked: None,
             },
             ConfigEntry {
                 name: "Tauri Dev — Build".into(),
@@ -216,6 +217,7 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
                 origin: "inferred".into(),
                 profiles: profiles_for_cargo(rust),
                 default_profile: Some("debug".into()),
+                linked: None,
             },
             ConfigEntry {
                 name: "Tauri Dev — Debug".into(),
@@ -230,6 +232,7 @@ fn infer_solution_default(solution: &CraiddSolution) -> Vec<ConfigEntry> {
                 origin: "inferred".into(),
                 profiles: profiles_for_cargo(rust),
                 default_profile: Some("debug".into()),
+                linked: None,
             },
         ];
     }
@@ -266,6 +269,7 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                     origin: "inferred".into(),
                     profiles: profiles_for_cargo(project),
                     default_profile: Some("debug".into()),
+                    linked: None,
                 });
             }
             "npm" => {
@@ -289,6 +293,7 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                         origin: "inferred".into(),
                         profiles: vec![],
                         default_profile: None,
+                        linked: None,
                     });
                 }
             }
@@ -315,6 +320,7 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                         origin: "inferred".into(),
                         profiles,
                         default_profile,
+                        linked: None,
                     });
                 } else {
                     return Some(ConfigEntry {
@@ -330,6 +336,7 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                         origin: "inferred".into(),
                         profiles,
                         default_profile,
+                        linked: None,
                     });
                 }
             }
@@ -349,6 +356,7 @@ fn infer_project_default(project: &CraiddProject) -> Option<ConfigEntry> {
                     origin: "inferred".into(),
                     profiles: profiles_for_cmake(),
                     default_profile: Some("Debug".into()),
+                    linked: None,
                 });
             }
             _ => {}

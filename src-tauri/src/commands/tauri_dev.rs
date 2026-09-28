@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn detects_tauri_dev_without_matching_other_commands() {
         let mut spec = RunSpec { label: String::new(), program: "npm".into(),
-            args: vec!["run".into(), "tauri".into(), "dev".into()], env: Default::default(), cwd: String::new() };
+            args: vec!["run".into(), "tauri".into(), "dev".into()], env: Default::default(), cwd: String::new(), linked: None };
         assert!(is_tauri_dev(&spec));
         spec.args = vec!["run".into(), "dev".into()];
         assert!(!is_tauri_dev(&spec));

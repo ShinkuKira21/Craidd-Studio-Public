@@ -88,6 +88,7 @@ export interface RunSpec {
   args: string[];
   env: Record<string, string>;
   cwd: string;
+  linked?: ConfigEntry["linked"];
 }
 
 /**
@@ -148,6 +149,7 @@ export function resolveSpec(
       args,
       env,
       cwd,
+      linked: config.linked,
     };
   }
 
@@ -161,9 +163,10 @@ export function resolveSpec(
           ...(config.kind === "build" ? ["--message-format=json"] : [])],
         env,
         cwd,
+        linked: config.linked,
       };
     case "npm":
-      return { label: "npm run dev", program: "npm", args: ["run", "dev", ...profileArgs], env, cwd };
+      return { label: "npm run dev", program: "npm", args: ["run", "dev", ...profileArgs], env, cwd, linked: config.linked };
     case "dotnet":
       return {
         label: `dotnet ${config.kind === "run" ? "run" : "build"}${profileArgs.length ? " " + profileArgs.join(" ") : ""}`,
@@ -171,9 +174,10 @@ export function resolveSpec(
         args: [config.kind === "run" ? "run" : "build", ...profileArgs],
         env,
         cwd,
+        linked: config.linked,
       };
     case "cmake":
-      return { label: "cmake --build build", program: "cmake", args: ["--build", "build", ...profileArgs], env, cwd };
+      return { label: "cmake --build build", program: "cmake", args: ["--build", "build", ...profileArgs], env, cwd, linked: config.linked };
     case "shell":
       return null; // shell method requires config.command, which was absent above
     default:

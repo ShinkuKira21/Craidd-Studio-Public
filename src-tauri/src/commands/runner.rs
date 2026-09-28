@@ -75,6 +75,8 @@ pub struct RunSpec {
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     pub cwd: String,
+    #[serde(default)]
+    pub linked: Option<crate::types::LinkedLaunch>,
 }
 
 #[derive(Clone, Serialize)]

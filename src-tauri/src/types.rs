@@ -174,7 +174,27 @@ pub struct ConfigEntry {
     /// The default profile's name. Must match one of `profiles`, if any.
     #[serde(default)]
     pub default_profile: Option<String>,
+
+    /// Optional orchestration policy used only when this configuration is
+    /// launched as part of a linked action. Lower priorities start first;
+    /// the next priority waits for this configuration's readiness probe.
+    #[serde(default)]
+    pub linked: Option<LinkedLaunch>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedLaunch {
+    #[serde(default = "default_linked_priority")]
+    pub priority: u8,
+    #[serde(default)]
+    pub ready_url: Option<String>,
+    #[serde(default = "default_linked_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+pub fn default_linked_priority() -> u8 { 50 }
+pub fn default_linked_timeout_ms() -> u64 { 30_000 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]

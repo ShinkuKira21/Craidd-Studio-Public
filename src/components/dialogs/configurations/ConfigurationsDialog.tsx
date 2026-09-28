@@ -9,7 +9,9 @@ import ToolchainConfigurationDialog from "../ToolchainConfigurationDialog";
 interface Props { onClose: () => void; }
 type Row = { key: string; entry?: ConfigEntry; label?: string };
 const actionClass = "px-2 py-1 rounded text-[11px] text-zinc-300 hover:bg-zinc-800 hover:text-white disabled:text-zinc-700 disabled:cursor-default";
-const clone = (entry: ConfigEntry): ConfigEntry => ({ ...entry, slots: entry.slots ? { ...entry.slots } : undefined, profiles: entry.profiles?.map((p) => ({ ...p, args: [...p.args], env: { ...p.env } })) ?? [] });
+const clone = (entry: ConfigEntry): ConfigEntry => ({ ...entry, slots: entry.slots ? { ...entry.slots } : undefined,
+  linked: entry.linked ? { ...entry.linked } : undefined,
+  profiles: entry.profiles?.map((p) => ({ ...p, args: [...p.args], env: { ...p.env } })) ?? [] });
 
 export default function ConfigurationsDialog({ onClose }: Props) {
   const solution = useSolution((s) => s.solution);
