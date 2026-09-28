@@ -369,17 +369,19 @@ export const useBuild = create<BuildState>((set, get) => ({
     }
 
     if (action === "debug") {
-      if (chosen.method !== "cargo") {
-        set({ status: "failed", output: `A real debugger adapter is currently available only for Rust Cargo configurations.\n` });
+      if (chosen.method !== "cargo" && chosen.method !== "dotnet" && chosen.method !== "cmake") {
+        set({ status: "failed", output: `Debugging is available for Cargo, .NET, and CMake configurations.\n` });
         return;
       }
       const { useDebug } = await import("./debugStore");
-      set({ action: "debug", activeConfigName: chosen.name, output: "Rust debug session starting…\n" });
-      // Rust separates Cargo's command/profile arguments from any program
-      // arguments after `--` before launching the resulting executable.
+      const profile = state.selectedProfileName
+        ?? chosen.defaultProfile
+        ?? (chosen.method === "cargo" ? "debug" : "Debug");
+      set({ action: "debug", activeConfigName: chosen.name, output: `${chosen.method} debug session starting…\n` });
       await useDebug.getState().start(
+        chosen.method,
         spec.cwd,
-        state.selectedProfileName === "release",
+        profile,
         spec.args,
       );
       return;

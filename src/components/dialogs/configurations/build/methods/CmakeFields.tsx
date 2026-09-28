@@ -40,7 +40,7 @@ export default function CmakeFields({ config }: { config: ConfigEntry }) {
       {isLibraryOnly && (
         <div className="mt-1 text-[11px] text-zinc-500 leading-4 pl-28">
           This is a library with no entry point. To debug it, add a driver
-          project. <span className="text-zinc-600 italic">(Phase 3 feature)</span>
+          project.
         </div>
       )}
 

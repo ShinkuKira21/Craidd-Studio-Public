@@ -151,7 +151,7 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     projectKind: project?.kind ?? null,
     canBuild: Boolean(build.mainChoices.build),
     canRun: Boolean(build.mainChoices.run),
-    canDebug: debugChoice?.kind === "debug" && debugChoice.method === "cargo",
+    canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""),
     debugging: ["building", "running", "paused"].includes(debug.status),
     status: ["building", "running", "paused"].includes(debug.status) ? debug.status : build.status,
     selectedConfigName: build.selectedConfigName,
@@ -391,7 +391,7 @@ export async function dispatchLinkedWindowCommand(targetLabel: string, kind: str
       selectedConfigName: selected.name, selectedProfileName: profileName,
       projectPath: project?.path ?? null, projectName: project?.name ?? null, projectKind: project?.kind ?? null,
       canBuild: Boolean(choices.build), canRun: Boolean(choices.run),
-      canDebug: debugChoice?.kind === "debug" && debugChoice.method === "cargo", specs,
+      canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""), specs,
     } });
     return;
   }

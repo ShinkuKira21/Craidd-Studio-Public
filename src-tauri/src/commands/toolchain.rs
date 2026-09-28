@@ -41,8 +41,12 @@ fn catalog(language: &str) -> Result<&'static [(&'static str, &'static str)], St
             ("debugger", "lldb-dap"), ("debugger", "lldb-dap-19"), ("debugger", "lldb-dap-18"),
             ("debugger", "lldb-dap-17"), ("debugger", "lldb-vscode")]),
         "typescript" | "javascript" => Ok(&[("runtime", "node"), ("package_manager", "pnpm"), ("package_manager", "yarn"), ("package_manager", "npm"), ("package_manager", "bun")]),
-        "cpp" => Ok(&[("compiler", "g++"), ("compiler", "clang++"), ("build_system", "cmake"), ("build_system", "ninja"), ("build_system", "make")]),
-        "csharp" => Ok(&[("sdk", "dotnet")]),
+        "cpp" => Ok(&[("compiler", "g++"), ("compiler", "clang++"), ("build_system", "cmake"),
+            ("build_system", "ninja"), ("build_system", "make"),
+            ("debugger", "lldb-dap"), ("debugger", "lldb-dap-19"),
+            ("debugger", "lldb-dap-18"), ("debugger", "lldb-dap-17"),
+            ("debugger", "lldb-vscode")]),
+        "csharp" => Ok(&[("sdk", "dotnet"), ("debugger", "netcoredbg")]),
         "python" => Ok(&[("runtime", "python3"), ("package_manager", "uv"), ("package_manager", "poetry"), ("package_manager", "pdm"), ("package_manager", "pip3")]),
         "config" => Ok(&[]),
         _ => Err(format!("Unsupported language: {language}")),
@@ -185,7 +189,8 @@ pub async fn ensure_project_toolchain(language: String) -> Result<ProjectToolcha
             };
             (!available).then(|| (*name).to_string())
         }).collect();
-        let debugger_missing = language == "rust" && !super::debug::adapter_available();
+        let debugger_missing = matches!(language.as_str(), "rust" | "cpp" | "csharp")
+            && !super::debug::adapter_available_for_language(&language);
         Ok(ProjectToolchainCheck {
             language,
             newly_found: newly_scanned && missing.is_empty() && !snapshot.tools.is_empty(),

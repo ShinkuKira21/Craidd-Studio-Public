@@ -25,7 +25,7 @@ use commands::window::{WindowRequests, get_startup_state, record_workspace_open,
 use commands::runner::{RunnerManager, start_config, stop_config, cancel_window_run};
 use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, set_linked_window_visible, update_parked_window_configuration, close_linked_window, view_linked_window, focus_linked_window, dispatch_linked_window_command, start_linked_action, acknowledge_linked_action, stop_linked_action, reveal_linked_problem, remove_linked_window, prepare_native_close, note_window_shown, get_linked_runtime, mark_linked_window_ready, abort_parked_restore, clear_native_close_guard, reset_linked_action};
 use commands::breakpoints::{load_breakpoints, save_breakpoints};
-use commands::debug::{DebugBuildManager, DebugManager, start_rust_debug, debug_control, cancel_window_debug};
+use commands::debug::{DebugBuildManager, DebugManager, start_debug, debug_control, cancel_window_debug};
 
 #[tauri::command]
 fn show_main_window(w: tauri::WebviewWindow) -> Result<(), String> {
@@ -131,7 +131,7 @@ pub fn run() {
             dispatch_linked_window_command,
             load_breakpoints,
             save_breakpoints,
-            start_rust_debug,
+            start_debug,
             debug_control,
             start_linked_action,
             acknowledge_linked_action,

@@ -289,7 +289,8 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let all = members.iter().filter_map(|member| registry.windows.get(member));
     let can_build = linked && all.clone().all(|participant| participant.can_build);
     let can_run = linked && all.clone().all(|participant| participant.can_run);
-    let debug_adapter_available = super::debug::adapter_available();
+    let debug_adapter_available = linked && all.clone().all(|participant| participant.specs.get("debug")
+        .is_some_and(|spec| super::debug::adapter_available_for_method(&spec.program)));
     let busy = action.is_some() || (linked && all.clone().any(|participant| is_busy(&participant.status)));
     // Once an action starts, its count describes the launched windows even if
     // another window opens or changes its project while the action is active.
@@ -764,13 +765,16 @@ pub fn update_parked_window_configuration(
 async fn launch_parked(app: AppHandle, label: String, participant: Participant, action: String) -> Result<(), String> {
     let spec = participant.specs.get(&action).ok_or(format!("The hidden window has no {action} configuration"))?.clone();
     if action == "debug" {
-        let request = super::debug::RustDebugRequest {
+        let method = super::debug::normalize_debug_method(&spec.program)
+            .ok_or_else(|| format!("The hidden window's debug command is not supported: {}", spec.program))?;
+        let request = super::debug::DebugRequest {
             cwd: spec.cwd,
-            release: participant.selected_profile_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("release")),
+            method: method.into(),
+            profile: participant.selected_profile_name.unwrap_or_else(|| if method == "cargo" { "debug".into() } else { "Debug".into() }),
             command_args: spec.args, solution_path: participant.solution_path.clone(),
             breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
         };
-        super::debug::start_rust_debug_for_label(app, label, request).await
+        super::debug::start_debug_for_label(app, label, request).await
     } else {
         super::runner::start_config_for_label(app, label, spec).await.map(|_| ())
     }
@@ -1061,8 +1065,10 @@ pub fn start_linked_action(
     if members.iter().any(|label| registry.windows.get(label).is_some_and(|participant| participant.dirty_count > 0)) {
         return Err("Save the unsaved files in every linked IDE window before launching them together".into());
     }
-    if action == "debug" && !super::debug::adapter_available() {
-        return Err("lldb-dap is required for linked Rust debugging".into());
+    if action == "debug" && members.iter().any(|label| registry.windows.get(label)
+        .and_then(|participant| participant.specs.get("debug"))
+        .is_none_or(|spec| !super::debug::adapter_available_for_method(&spec.program))) {
+        return Err("Every linked debug configuration needs its installed debugger adapter (lldb-dap or netcoredbg)".into());
     }
     if members.iter().any(|label| registry.windows.get(label).is_none_or(|participant| {
         if action == "build" { !participant.can_build } else if action == "debug" { !participant.can_debug } else { !participant.can_run }

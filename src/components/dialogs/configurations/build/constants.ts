@@ -10,8 +10,8 @@ export const KINDS: { id: ConfigKind; label: string }[] = [
 export const METHODS: { id: string; label: string; available: boolean }[] = [
   { id: "cargo", label: "Cargo (Rust)", available: true },
   { id: "npm", label: "npm (Node)", available: false },
-  { id: "dotnet", label: ".NET", available: false },
-  { id: "cmake", label: "CMake (C++)", available: false },
+  { id: "dotnet", label: ".NET", available: true },
+  { id: "cmake", label: "CMake (C++)", available: true },
   { id: "shell", label: "Shell", available: false },
   { id: "composed", label: "Composed", available: false },
   { id: "python", label: "Python", available: false },

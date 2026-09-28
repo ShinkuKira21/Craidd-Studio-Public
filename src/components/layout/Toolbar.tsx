@@ -138,7 +138,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   const missingDebug = linked.members.filter((member) => !member.canDebug);
   const debugBlockers = [
     missingDebug.length > 0 ? `Select a Rust Cargo Debug configuration in ${missingDebug.map((member) => `CS${member.windowId} (${member.projectName})`).join(", ")}` : null,
-    !linked.debugAdapterAvailable ? "Install or select lldb-dap in Preferences → Toolchain, then rescan Rust tools" : null,
+    !linked.debugAdapterAvailable ? "Install/select the required lldb-dap or netcoredbg adapter in Preferences → Toolchain, then rescan" : null,
   ].filter(Boolean).join("; ");
   const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
     : kind === "debug" && !linked.canDebug ? `Cannot debug ${count} linked windows: ${debugBlockers}`

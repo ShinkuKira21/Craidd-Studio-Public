@@ -122,9 +122,10 @@ export default function ConfigurationsDialog({ onClose }: Props) {
           if (ref && !allConfigs.some((candidate) => candidate.name === ref && candidate.kind === kind && !candidate.slots)) return `${name}: ${kind} references a missing configuration.`;
         }
       } else {
-        const derived = entry.method === "cargo" || entry.method === "dotnet" || (entry.method === "cmake" && entry.kind === "build");
+        const derived = entry.method === "cargo" || entry.method === "dotnet"
+          || (entry.method === "cmake" && (entry.kind === "build" || entry.kind === "debug"));
         if (!entry.command?.trim() && !derived) return `${name}: add an executable command.`;
-        if (entry.kind === "debug" && entry.method !== "cargo") return `${name}: debugging currently requires the Cargo adapter.`;
+        if (entry.kind === "debug" && !["cargo", "dotnet", "cmake"].includes(entry.method ?? "")) return `${name}: debugging requires a Cargo, .NET, or CMake configuration.`;
         if (entry.cwd && (entry.cwd.startsWith("/") || entry.cwd.split(/[\\/]/).includes(".."))) return `${name}: working directory must stay inside the solution.`;
       }
       const profileNames = new Set<string>();

@@ -128,6 +128,31 @@ fn stream_lines<R: Read + Send + 'static>(
     })
 }
 
+/// Configure a CMake build tree with the selected profile, then let the normal
+/// runner stream the build. Reconfiguration is how single-config generators
+/// switch between Debug and Release; CMake preserves the project's other cache
+/// values.
+fn prepare_cmake_build(program: &Path, spec: &RunSpec) -> Result<Option<String>, String> {
+    if Path::new(&spec.program).file_name().and_then(|name| name.to_str()) != Some("cmake")
+        || spec.args.first().map(String::as_str) != Some("--build") {
+        return Ok(None);
+    }
+    let build_dir = spec.args.get(1).ok_or("cmake --build requires a build directory")?;
+    let build_path = { let path = Path::new(build_dir); if path.is_absolute() { path.to_path_buf() } else { Path::new(&spec.cwd).join(path) } };
+    let profile = spec.args.iter().position(|arg| arg == "--config")
+        .and_then(|index| spec.args.get(index + 1)).map(String::as_str).unwrap_or("Debug");
+    let build_type = format!("-DCMAKE_BUILD_TYPE={profile}");
+    let output = Command::new(program).current_dir(&spec.cwd)
+        .args(["-S", ".", "-B", build_dir, build_type.as_str()])
+        .stdin(Stdio::null()).output().map_err(|e| format!("Could not configure CMake build tree: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!("CMake configure failed ({}).\n{}{}", output.status, stdout, stderr));
+    }
+    Ok(Some(format!("Configured CMake build tree at {}.\n{}{}", build_path.display(), stdout, stderr)))
+}
+
 #[tauri::command]
 pub async fn start_config(
     window: WebviewWindow,
@@ -151,6 +176,10 @@ pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec
     let program = tauri::async_runtime::spawn_blocking(move || resolve_known_program(&requested_program))
         .await.map_err(|error| error.to_string())??
         .unwrap_or_else(|| spec.program.clone().into());
+    let prepare_program = program.clone();
+    let prepare_spec = spec.clone();
+    let preparation = tauri::async_runtime::spawn_blocking(move || prepare_cmake_build(&prepare_program, &prepare_spec))
+        .await.map_err(|error| error.to_string())??;
     let mut command = Command::new(&program);
     command
         .current_dir(cwd)
@@ -196,6 +225,7 @@ pub async fn start_config_for_label(app: AppHandle, label: String, spec: RunSpec
     drop(active);
 
     emit(&app, &label, id, "start", Some(format!("$ {}  (in {})", spec.label, spec.cwd)), None);
+    if let Some(text) = preparation { emit(&app, &label, id, "output", Some(text), None); }
     if dev_lease.is_some() {
         emit(&app, &label, id, "output", Some("Using the shared Tauri frontend dev server.".into()), None);
     }

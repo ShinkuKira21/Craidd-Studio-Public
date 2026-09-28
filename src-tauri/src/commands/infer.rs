@@ -110,6 +110,23 @@ pub fn infer_configs(solution: CraiddSolution) -> Result<Vec<ConfigEntry>, Strin
                 build.kind = "build".into();
                 build.command = Some("dotnet build".into());
                 out.push(build);
+                let mut debug = entry.clone();
+                debug.name = format!("{}: dotnet debug", project.name);
+                debug.kind = "debug".into();
+                debug.command = Some("dotnet build".into());
+                out.push(debug);
+            }
+            if entry.method.as_deref() == Some("cmake") && entry.kind == "build" {
+                let targets = project.manifests.iter().find(|manifest| manifest.kind == "cmake")
+                    .and_then(|manifest| array_at(&manifest.values, "executables"));
+                if let Some(target) = targets.filter(|targets| targets.len() == 1)
+                    .and_then(|targets| targets[0].as_str()) {
+                    entry.command = Some(format!("cmake --build build --target {target}"));
+                    let mut debug = entry.clone();
+                    debug.name = format!("{}: cmake debug", project.name);
+                    debug.kind = "debug".into();
+                    out.push(debug);
+                }
             }
             out.push(entry);
         }
@@ -587,5 +604,34 @@ mod tests {
         let config = infer_project_default(&project).unwrap();
         assert_eq!(config.kind, "build");
         assert_eq!(config.command.as_deref(), Some("cmake --build build"));
+    }
+
+    #[test]
+    fn runnable_dotnet_project_infers_build_run_and_debug() {
+        let project = mk_project("Api", "csharp", "Api/api.craidd",
+            vec![mk_manifest("dotnet", serde_json::json!({ "outputType": "Exe", "targetFramework": "net10.0" }))]);
+        let solution = CraiddSolution {
+            name: "managed".into(), root: "/tmp".into(), projects: vec![project], build: vec![],
+            run_default: None, debug_default: None, autostart: vec![], default_project: None,
+            default_build: None, configs: vec![], default_config: None, inferred_configs: vec![],
+        };
+        let inferred = infer_configs(solution).unwrap();
+        assert_eq!(inferred.len(), 3);
+        assert!(inferred.iter().any(|entry| entry.kind == "debug" && entry.method.as_deref() == Some("dotnet")));
+    }
+
+    #[test]
+    fn single_cmake_executable_infers_targeted_build_and_debug() {
+        let project = mk_project("Native", "cpp", "Native/native.craidd",
+            vec![mk_manifest("cmake", serde_json::json!({ "executables": ["native"] }))]);
+        let solution = CraiddSolution {
+            name: "native".into(), root: "/tmp".into(), projects: vec![project], build: vec![],
+            run_default: None, debug_default: None, autostart: vec![], default_project: None,
+            default_build: None, configs: vec![], default_config: None, inferred_configs: vec![],
+        };
+        let inferred = infer_configs(solution).unwrap();
+        assert_eq!(inferred.len(), 2);
+        assert!(inferred.iter().all(|entry| entry.command.as_deref() == Some("cmake --build build --target native")));
+        assert!(inferred.iter().any(|entry| entry.kind == "debug" && entry.method.as_deref() == Some("cmake")));
     }
 }

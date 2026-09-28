@@ -76,10 +76,11 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
   const savedProject = solution?.projects.find((project) => project.path === savedConfig?.target);
   const selectionName = savedConfig?.bestFit ? savedConfig.name : savedProject?.name ?? savedConfig?.name ?? null;
   const missingChecks = toolchainChecks.filter((check) => check.missing.length > 0);
-  const rustDebugConfigured = Boolean(solution && [...(solution.configs ?? []), ...(solution.inferredConfigs ?? [])]
-    .some((config) => config.kind === "debug" && config.method === "cargo"
-      && (config.target === "." || solution.projects.some((project) => project.language === "rust" && project.path === config.target))));
-  const debuggerMissing = rustDebugConfigured && toolchainChecks.some((check) => check.language === "rust" && check.debuggerMissing);
+  const debugLanguages: Set<string> = new Set([...((solution?.configs) ?? []), ...((solution?.inferredConfigs) ?? [])]
+    .filter((config) => config.kind === "debug")
+    .map((config) => config.method === "cargo" ? "rust" : config.method === "dotnet" ? "csharp" : config.method === "cmake" ? "cpp" : ""));
+  const missingDebuggers = toolchainChecks.filter((check) => debugLanguages.has(check.language) && check.debuggerMissing);
+  const debuggerMissing = missingDebuggers.length > 0;
   const openPreferences = (area: "editor" | "toolchains" = "editor", language = "rust") => {
     setPrefsArea(area);
     setPrefsLanguage(language);
@@ -262,10 +263,10 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
         </EnvironmentNotice>
       )}
       {!debugDismissed && debuggerMissing && (
-        <EnvironmentNotice tone="warning" title="Rust debugger not detected" action="Learn more"
+        <EnvironmentNotice tone="warning" title="Debugger not detected" action="Learn more"
           onAction={() => setDebugDetailsOpen((open) => !open)} onDismiss={() => setDebugDismissed(true)}>
-          lldb-dap is missing for this Rust debug configuration.
-          {debugDetailsOpen && <span className="block mt-1">Install lldb-dap, then rescan Rust tools in File → Preferences → Toolchain. Craidd uses it for breakpoints, stepping, stack frames, and variables.</span>}
+          {missingDebuggers.map((check) => `${LANGUAGE_LABELS[check.language] ?? check.language}: ${check.language === "csharp" ? "netcoredbg" : "lldb-dap"}`).join(" · ")} is missing.
+          {debugDetailsOpen && <span className="block mt-1">Install the adapter, then rescan that language in File → Preferences → Toolchain. Craidd uses it for breakpoints, stepping, stack frames, and variables.</span>}
         </EnvironmentNotice>
       )}
 
