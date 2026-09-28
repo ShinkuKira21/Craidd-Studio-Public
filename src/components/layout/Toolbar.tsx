@@ -1,10 +1,12 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useSolution } from "../../store/solutionStore";
 import { useBuild, syncMainChoices, choicesForConfig } from "../../store/buildStore";
 import { controlViewedDebug, selectViewedConfiguration, selectViewedProfile, startViewedAction, stopViewedAction } from "../../lib/viewedActions";
 import type { ConfigEntry, CraiddProject } from "../../types/project";
 import ConfigurationsDialog from "../dialogs/configurations/ConfigurationsDialog";
-import { useLinkedWindows, startLinkedAction, stopLinkedAction, type LinkedSnapshot } from "../../store/linkedWindowsStore";
+import { useLinkedWindows, previewLinkedAction, startLinkedAction, stopLinkedAction, type LinkedSnapshot, type LinkedLaunchPlanPhase } from "../../store/linkedWindowsStore";
+import { detectLinkedStartupSuggestions } from "../../lib/linkedStartup";
+import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
 import WindowManager from "./WindowManager";
 import { useDebug } from "../../store/debugStore";
 
@@ -23,12 +25,15 @@ function Toolbar() {
   const linked = useLinkedWindows();
   const debugStatus = useDebug((s) => s.status);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [startupSetupRequested, setStartupSetupRequested] = useState(false);
   const [previewName, setPreviewName] = useState<string | null>(null);
 
   const configs: ConfigEntry[] = [
     ...(solution?.inferredConfigs ?? []),
     ...(solution?.configs ?? []),
   ];
+  const startupSuggestions = useMemo(() => solution
+    ? detectLinkedStartupSuggestions(solution, [...solution.inferredConfigs, ...solution.configs]) : [], [solution]);
 
   useEffect(() => {
     if (solution) syncMainChoices(solution);
@@ -65,8 +70,12 @@ function Toolbar() {
         selectedName={viewedConfigName}
         onSelect={onChipSelect}
         onPreview={setPreviewName}
-        onOpenDialog={() => setDialogOpen(true)}
+        onOpenDialog={() => { setStartupSetupRequested(false); setDialogOpen(true); }}
       />
+
+      {startupSuggestions.length > 0 && <button type="button" onClick={() => { setStartupSetupRequested(true); setDialogOpen(true); }}
+        title="A server and client reference the same local address. Review their linked startup order."
+        className="rounded px-2 py-1 text-[11px] text-amber-300 hover:bg-amber-900/30">Set up startup order…</button>}
 
       {selectedConfig && (selectedConfig.profiles?.length ?? 0) > 0 && (
         <ProfileChip
@@ -117,7 +126,7 @@ function Toolbar() {
       <WindowManager />
 
       {dialogOpen && (
-        <ConfigurationsDialog onClose={() => setDialogOpen(false)} />
+        <ConfigurationsDialog initialStartupSetup={startupSetupRequested} onClose={() => setDialogOpen(false)} />
       )}
     </div>
   );
@@ -129,15 +138,43 @@ function DebugTransport({ label, icon, onClick }: { label: string; icon: string;
 }
 
 function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
+  const [plan, setPlan] = useState<LinkedLaunchPlanPhase[] | null>(null);
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const isStop = linked.activeAction === kind && (kind === "run" || kind === "debug");
   const available = kind === "build" ? linked.canBuild : kind === "run" ? linked.canRun : linked.canDebug;
-  const disabled = !isStop && (!linked.linked || linked.busy || !available);
+  const disabled = !isStop && (launching || !linked.linked || linked.busy || !available);
+  const launch = async () => {
+    setLaunching(true);
+    setLaunchError(null);
+    try {
+      const currentPlan = await previewLinkedAction(kind);
+      if (plan && JSON.stringify(currentPlan) !== JSON.stringify(plan)) {
+        setPlan(currentPlan);
+        setLaunchError("Linked configurations changed. Review the updated plan before starting.");
+        return;
+      }
+      await startLinkedAction(kind); setPlan(null);
+    }
+    catch (error) { if (plan) setLaunchError(String(error)); else alert(`Linked ${kind} failed: ${String(error)}`); }
+    finally { setLaunching(false); }
+  };
+  const reviewOrLaunch = async () => {
+    if (isStop) { await stopLinkedAction(); return; }
+    setLaunching(true);
+    try {
+      const phases = await previewLinkedAction(kind);
+      if (phases.length > 1 || phases.some((phase) => phase.members.some((member) => member.readyUrl))) {
+        setLaunchError(null); setPlan(phases);
+      } else { await startLinkedAction(kind); }
+    } finally { setLaunching(false); }
+  };
   const projects = linked.members.map((member) => member.projectName).join(" + ");
   const count = linked.members.length;
   const activeCount = linked.activeCount;
   const missingDebug = linked.members.filter((member) => !member.canDebug);
   const debugBlockers = [
-    missingDebug.length > 0 ? `Select a Rust Cargo Debug configuration in ${missingDebug.map((member) => `CS${member.windowId} (${member.projectName})`).join(", ")}` : null,
+    missingDebug.length > 0 ? `Select a supported Debug configuration in ${missingDebug.map((member) => `CS${member.windowId} (${member.projectName})`).join(", ")}` : null,
     !linked.debugAdapterAvailable ? "Install/select the required lldb-dap or netcoredbg adapter in Preferences → Toolchain, then rescan" : null,
   ].filter(Boolean).join("; ");
   const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
@@ -149,7 +186,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     <span className="inline-flex" title={title} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? title : undefined}>
       <button type="button" aria-label={isStop ? `Stop ${activeCount} active linked ${activeCount === 1 ? "instance" : "instances"} of ${count}` : `${KIND_TITLE[kind]} ${count} linked instances`}
       disabled={disabled}
-      onClick={() => void (isStop ? stopLinkedAction() : startLinkedAction(kind)).catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
+      onClick={() => void reviewOrLaunch().catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
       onContextMenu={(event) => {
         event.preventDefault();
         if (window.confirm("Reset linked action state? Use this if the gold button is stuck.")) {
@@ -164,6 +201,8 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
       <sup aria-hidden="true" className="absolute top-0 right-0 text-[9px] leading-none font-semibold tabular-nums">{count}</sup>
       {isStop && <sub aria-hidden="true" className="absolute bottom-0 right-0 text-[9px] leading-none font-semibold tabular-nums text-zinc-100">{activeCount}</sub>}
       </button>
+      {plan && <LinkedLaunchPlanDialog action={kind} phases={plan} launching={launching} error={launchError}
+        onStart={() => void launch()} onClose={() => { if (!launching) setPlan(null); }} />}
     </span>
   );
 }

@@ -7,6 +7,11 @@ import { useDebug, type DebugFrame, type DebugVariable } from "./debugStore";
 
 type Action = "build" | "run" | "debug";
 
+export interface LinkedLaunchPlanPhase {
+  priority: number;
+  members: { projectName: string; windowId: number; command: string; readyUrl: string | null; timeoutMs: number }[];
+}
+
 export interface LinkedSnapshot {
   sequence: number;
   linked: boolean;
@@ -175,6 +180,11 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
 export async function startLinkedAction(action: Action): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("start_linked_action", { action });
+}
+
+export async function previewLinkedAction(action: Action): Promise<LinkedLaunchPlanPhase[]> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LinkedLaunchPlanPhase[]>("preview_linked_action", { action });
 }
 
 export async function stopLinkedAction(): Promise<void> {

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:linked-startup": "node --test tests/linkedStartup.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -227,6 +227,23 @@ pub struct LinkedProblem {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LinkedLaunchPlanMember {
+    project_name: String,
+    window_id: u32,
+    command: String,
+    ready_url: Option<String>,
+    timeout_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedLaunchPlanPhase {
+    priority: u8,
+    members: Vec<LinkedLaunchPlanMember>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RestoredRuntime {
     status: String,
     output: String,
@@ -1050,14 +1067,19 @@ fn wait_for_phase_start(app: &AppHandle, solution_path: &str, action_id: u64, la
 }
 
 fn parse_http_ready_url(url: &str) -> Result<(String, u16, String), String> {
-    let rest = url.strip_prefix("http://").ok_or("Readiness URL must start with http://")?;
-    let (authority, path) = rest.find('/').map_or((rest, "/"), |index| (&rest[..index], &rest[index..]));
-    if authority.is_empty() { return Err("Readiness URL has no host".into()); }
-    let (host, port) = authority.rsplit_once(':').map_or((authority, 80), |(host, port)| {
-        (host, port.parse::<u16>().unwrap_or(0))
-    });
-    if host.is_empty() || port == 0 { return Err(format!("Invalid readiness URL: {url}")); }
-    Ok((host.into(), port, path.into()))
+    if !url.starts_with("http://") { return Err("Readiness URL must start with http://".into()); }
+    if url.chars().any(|character| character.is_whitespace() || character.is_control() || character == '\\') {
+        return Err("Readiness URL must not contain whitespace or backslashes".into());
+    }
+    let parsed = tauri::Url::parse(url).map_err(|error| format!("Invalid readiness URL: {error}"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
+        return Err("Readiness URL must not contain credentials or a fragment".into());
+    }
+    let host = parsed.host_str().ok_or("Readiness URL has no host")?.trim_matches(['[', ']']);
+    let port = parsed.port_or_known_default().filter(|port| *port > 0).ok_or("Invalid readiness URL port")?;
+    let mut path = parsed.path().to_string();
+    if let Some(query) = parsed.query() { path.push('?'); path.push_str(query); }
+    Ok((host.into(), port, path))
 }
 
 fn http_ready(url: &str) -> Result<bool, String> {
@@ -1073,13 +1095,52 @@ fn http_ready(url: &str) -> Result<bool, String> {
     let Some(mut stream) = stream else { return Ok(false); };
     stream.set_read_timeout(Some(Duration::from_millis(500))).map_err(|error| error.to_string())?;
     stream.set_write_timeout(Some(Duration::from_millis(500))).map_err(|error| error.to_string())?;
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n")
+    let authority = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
         .map_err(|error| error.to_string())?;
     let mut first_line = String::new();
     BufReader::new(stream).read_line(&mut first_line).map_err(|error| error.to_string())?;
     let status = first_line.split_whitespace().nth(1)
         .and_then(|value| value.parse::<u16>().ok());
     Ok(status.is_some_and(|status| (200..400).contains(&status)))
+}
+
+#[tauri::command]
+pub async fn probe_linked_readiness(url: String) -> Result<bool, String> {
+    parse_http_ready_url(&url)?;
+    tauri::async_runtime::spawn_blocking(move || http_ready(&url)).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn preview_linked_action(
+    window: WebviewWindow,
+    state: tauri::State<'_, LinkedWindowRegistry>,
+    action: String,
+) -> Result<Vec<LinkedLaunchPlanPhase>, String> {
+    if !matches!(action.as_str(), "build" | "run" | "debug") { return Err("Unsupported linked action".into()); }
+    let registry = state.0.lock().map_err(|error| error.to_string())?;
+    let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
+    let members = group_members(&registry, &participant.solution_path);
+    if !members.iter().any(|label| label == window.label()) { return Err("Linked windows are not ready".into()); }
+    linked_plan_phases(&registry, members, &action)
+}
+
+fn linked_plan_phases(registry: &Registry, members: Vec<String>, action: &str) -> Result<Vec<LinkedLaunchPlanPhase>, String> {
+    let mut phases: BTreeMap<u8, Vec<LinkedLaunchPlanMember>> = BTreeMap::new();
+    for label in members {
+        let participant = registry.windows.get(&label).ok_or("Linked window disappeared")?;
+        let spec = participant.specs.get(action).ok_or_else(|| format!("{} has no {action} command",
+            participant.project_name.as_deref().unwrap_or(&label)))?;
+        let priority = spec.linked.as_ref().map_or(crate::types::default_linked_priority(), |linked| linked.priority);
+        phases.entry(priority).or_default().push(LinkedLaunchPlanMember {
+            project_name: participant.project_name.clone().unwrap_or(label),
+            window_id: participant.window_id,
+            command: spec.label.clone(),
+            ready_url: spec.linked.as_ref().and_then(|linked| linked.ready_url.clone()).filter(|url| !url.is_empty()),
+            timeout_ms: spec.linked.as_ref().map_or(crate::types::default_linked_timeout_ms(), |linked| linked.timeout_ms),
+        });
+    }
+    Ok(phases.into_iter().map(|(priority, members)| LinkedLaunchPlanPhase { priority, members }).collect())
 }
 
 fn wait_for_http_ready(app: &AppHandle, solution_path: &str, action_id: u64, url: &str, timeout_ms: u64) -> Result<(), String> {
@@ -1562,5 +1623,41 @@ mod tests {
         assert!(http_ready(&url).unwrap());
         server.join().unwrap();
         assert!(parse_http_ready_url("https://127.0.0.1/health").is_err());
+    }
+
+    #[test]
+    fn validates_readiness_urls_and_preserves_queries() {
+        assert_eq!(parse_http_ready_url("http://localhost:5087?ready=1").unwrap(),
+            ("localhost".into(), 5087, "/?ready=1".into()));
+        assert_eq!(parse_http_ready_url("http://[::1]:5087/health").unwrap(),
+            ("::1".into(), 5087, "/health".into()));
+        for url in ["http://", "http://localhost:0/health", "http://localhost:bad/health",
+            "http://user:pass@localhost/health", "http://localhost/health#fragment",
+            "http://localhost/health\r\nX-Header: value", "http://localhost\\health"] {
+            assert!(parse_http_ready_url(url).is_err(), "accepted {url:?}");
+        }
+    }
+
+    #[test]
+    fn launch_preview_groups_visible_and_parked_instances_by_priority() {
+        let mut registry = Registry::default();
+        for (label, priority, ready_url, visible) in [
+            ("client-a", 50, None, true), ("api", 20, Some("http://localhost:5087/health"), true),
+            ("client-b", 50, None, false),
+        ] {
+            let mut item = participant("/one.cln", label, "application");
+            item.visible = visible;
+            item.specs.insert("run".into(), RunSpec { label: format!("run {label}"), program: "echo".into(),
+                args: vec![], env: BTreeMap::new(), cwd: "/tmp".into(),
+                linked: Some(crate::types::LinkedLaunch { priority, ready_url: ready_url.map(String::from), timeout_ms: 45000 }) });
+            registry.windows.insert(label.into(), item);
+        }
+        let phases = linked_plan_phases(&registry, group_members(&registry, "/one.cln"), "run").unwrap();
+        assert_eq!(phases.iter().map(|phase| phase.priority).collect::<Vec<_>>(), vec![20, 50]);
+        assert_eq!(phases[0].members[0].ready_url.as_deref(), Some("http://localhost:5087/health"));
+        assert_eq!(phases[0].members[0].timeout_ms, 45000);
+        assert_eq!(phases[1].members.len(), 2);
+        assert_eq!(phases[1].members[1].command, "run client-b");
+        assert!(linked_plan_phases(&registry, group_members(&registry, "/one.cln"), "debug").is_err());
     }
 }

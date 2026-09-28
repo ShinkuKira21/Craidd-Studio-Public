@@ -146,6 +146,7 @@ fn parse_cargo(path: &Path) -> Manifest {
                     .and_then(|p| p.get("default-run"))
                     .and_then(|v| v.as_str()),
                 "dependencyNames": dep_keys,
+                "referencedUrls": startup_referenced_urls(Path::new(&folder)),
             })
         }
         None => serde_json::json!({ "parseError": true }),
@@ -189,6 +190,7 @@ fn parse_package_json(path: &Path) -> Manifest {
                 "lockfile": lockfile,
                 "dependencyNames": dep_keys,
                 "devDependencyNames": dev_dep_keys,
+                "referencedUrls": startup_referenced_urls(Path::new(&folder)),
             })
         }
         None => serde_json::json!({ "parseError": true }),
@@ -220,6 +222,7 @@ fn parse_csproj(path: &Path) -> Manifest {
             let package_refs = extract_xml_tag_attrs(&text, "PackageReference", "Include");
             let project_refs = extract_xml_tag_attrs(&text, "ProjectReference", "Include");
             let native_libs = extract_xml_tag_attrs(&text, "NativeLibrary", "Include");
+            let launch_urls = dotnet_launch_urls(path);
 
             serde_json::json!({
                 "sdk": sdk,
@@ -232,6 +235,8 @@ fn parse_csproj(path: &Path) -> Manifest {
                 "packageReferences": package_refs,
                 "projectReferences": project_refs,
                 "nativeLibraries": native_libs,
+                "launchUrls": launch_urls,
+                "readinessPaths": dotnet_readiness_paths(path),
             })
         }
         None => serde_json::json!({ "parseError": true }),
@@ -243,6 +248,57 @@ fn parse_csproj(path: &Path) -> Manifest {
         folder,
         values,
     }
+}
+
+fn dotnet_launch_urls(project: &Path) -> Vec<String> {
+    let Some(folder) = project.parent() else { return vec![]; };
+    let Some(text) = read_text(&folder.join("Properties").join("launchSettings.json")) else { return vec![]; };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![]; };
+    let mut urls = value.get("profiles").and_then(|profiles| profiles.as_object()).into_iter()
+        .flat_map(|profiles| profiles.values())
+        .filter_map(|profile| profile.get("applicationUrl").and_then(|url| url.as_str()))
+        .flat_map(|urls| urls.split(';'))
+        .map(str::trim).filter(|url| !url.is_empty()).map(String::from).collect::<Vec<_>>();
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+// Small, bounded hints for the startup wizard. These are suggestions, not a
+// dependency parser; only conventional entry points and Tauri config are read.
+fn startup_referenced_urls(folder: &Path) -> Vec<String> {
+    let mut urls = Vec::new();
+    for relative in ["tauri.conf.json", "src-tauri/tauri.conf.json", "src/App.tsx", "src/App.jsx", "src/main.ts", "src/main.tsx", "src/main.rs", "src/lib.rs"] {
+        let path = folder.join(relative);
+        if path.symlink_metadata().is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 256_000) {
+            if let Some(text) = read_text(&path) {
+                urls.extend(text.split(|character: char| character.is_whitespace()
+                    || matches!(character, '"' | '\'' | '`' | '<' | '>' | ';' | ')' | ']' | ','))
+                    .filter(|part| part.starts_with("http://")).map(String::from));
+            }
+        }
+    }
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+fn dotnet_readiness_paths(project: &Path) -> Vec<String> {
+    let Some(folder) = project.parent() else { return vec![]; };
+    let Some(text) = read_text(&folder.join("Program.cs")) else { return vec![]; };
+    let mut paths = Vec::new();
+    for line in text.lines().filter(|line| !line.trim_start().starts_with("//")) {
+        for marker in [".MapGet(\"", ".MapHealthChecks(\""] {
+            if let Some(rest) = line.split_once(marker).map(|(_, rest)| rest) {
+                if let Some(path) = rest.split('"').next().filter(|path| path.starts_with('/') && path.contains("health")) {
+                    paths.push(path.into());
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 fn extract_csproj_sdk(text: &str) -> Option<String> {
@@ -429,6 +485,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("craidd-mf-csproj-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(dir.join("Properties")).unwrap();
         fs::write(dir.join("demo.csproj"), r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -436,12 +493,29 @@ mod tests {
     <Configurations>Debug;Release;Staging</Configurations>
   </PropertyGroup>
 </Project>"#).unwrap();
+        fs::write(dir.join("Properties").join("launchSettings.json"),
+            r#"{"profiles":{"http":{"applicationUrl":"http://localhost:5087;https://localhost:7087"}}}"#).unwrap();
+        fs::write(dir.join("Program.cs"), "app.MapGet(\"/api/health\", () => Results.Ok());\napp.MapHealthChecks(\"/health\");\n// app.MapGet(\"/unused-health\", () => Results.Ok());\napp.MapGet(\"/items\", () => items);\n").unwrap();
         let m = parse_csproj(&dir.join("demo.csproj"));
         assert_eq!(m.kind, "dotnet");
         assert_eq!(m.values["sdk"], "Microsoft.NET.Sdk");
         assert_eq!(m.values["outputType"], "Exe");
         assert_eq!(m.values["targetFramework"], "net8.0");
         assert_eq!(m.values["configurations"], "Debug;Release;Staging");
+        assert_eq!(m.values["launchUrls"][0], "http://localhost:5087");
+        assert_eq!(m.values["readinessPaths"], serde_json::json!(["/api/health", "/health"]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_bounded_client_startup_hints_without_scanning_unrelated_files() {
+        let dir = std::env::temp_dir().join(format!("craidd-mf-startup-{}", std::process::id()));
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/App.tsx"), "fetch(\"http://127.0.0.1:5087/api/items\");\nfetch('http://127.0.0.1:5087/api/items');").unwrap();
+        fs::write(dir.join("tauri.conf.json"), r#"{"build":{"devUrl":"http://localhost:1420"}}"#).unwrap();
+        fs::write(dir.join("src/unrelated.ts"), "http://localhost:9999").unwrap();
+        fs::write(dir.join("src/main.ts"), format!("{} http://localhost:8888", "x".repeat(256_001))).unwrap();
+        assert_eq!(startup_referenced_urls(&dir), vec!["http://127.0.0.1:5087/api/items", "http://localhost:1420"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
