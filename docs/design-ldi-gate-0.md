@@ -1,7 +1,9 @@
 # LDI Gate 0: standalone held-frame test plan
 
-**Status:** Test specification, 29 September 2026. The files and CLI below are
-proposed artifacts, not tools already implemented or tests already passed.
+**Status:** Test specification plus an implemented first mechanism harness,
+29 September 2026. See [the runnable fixture](../workspaces/ldi-gate-0/README.md).
+The complete fault/acceptance matrix below is broader than the tests currently
+implemented; do not treat it as a record that every case passed.
 This plan follows [section 3 of the design](design-ldi-debugging.md#3-execution-and-ownership).
 
 **One mode:** A stops at blue; the harness reads supported scalars from that
@@ -66,8 +68,9 @@ do not prove adapter/runtime compatibility; the smoke test must do that.
 
 ## 2. Files to implement
 
-Suggested location: `workspaces/ldi-gate-0/`. No solution marker, linked-window
-registry, frontend, or IDE imports.
+Implemented location: `workspaces/ldi-gate-0/`. The Python mechanism harness has
+no IDE imports and does not load its optional `.cln`/`.craidd` demo markers.
+Those additional markers let the same fixture be opened in two IDE windows.
 
 ```text
 ldi-gate-0/
@@ -176,8 +179,9 @@ stopped, and ensure the supervising test process cleans up.
 
 ## 4. Build and run commands
 
-These are the required interface of the proposed artifact. They become runnable
-after the files above exist; `ldi_probe.py` is not yet implemented.
+These commands run the implemented fixture. The runner builds the native library
+and managed host itself. Its binding is the fixed scalar fixture in `binding.json`,
+not a general-purpose ABI/configuration format.
 From `workspaces/ldi-gate-0`:
 
 ```bash
@@ -192,18 +196,24 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --parallel
 dotnet build Host/Host.csproj -c Debug --nologo
 
-python3 tools/ldi_probe.py check-tools \
+python3 tools/ldi_probe.py run --case all \
   --netcoredbg "$(command -v netcoredbg)" \
   --lldb-dap /usr/bin/lldb-dap-19
 
-python3 tools/ldi_probe.py run --case all \
-  --host "$PWD/Host/bin/Debug/net10.0/Host.dll" \
-  --real "$PWD/build/native/libgate_native.so" \
-  --binding "$PWD/binding.json" \
-  --netcoredbg "$(command -v netcoredbg)" \
-  --lldb-dap /usr/bin/lldb-dap-19 \
-  --report "$PWD/build/gate0-report.json"
+python3 -m unittest discover -s tools -p 'test_*.py'
 ```
+
+`--report` optionally selects a **new directory**, not a JSON filename.
+Otherwise each run retains its artifacts in a fresh `captures/<run-id>/`.
+The implemented CLI supports `run` with `smoke`, `all`, and `unsupported` cases.
+The later `make-driver`/`replay` sketches below remain proposals.
+
+Observed real-adapter passes: four signed input vectors, held-frame extraction,
+native red hit/source stepping, denied resumes/evaluations/edits, stale/wrong/
+failed/duplicate release rejection, original invocation count and errno after
+release, unsupported inline-producer hold, actual B input failure, and dormant
+White/disabled/incomplete bindings. These establish the mechanism on the
+recorded tools, not all subsequent fault cases or the interactive IDE flow.
 
 Launch netcoredbg with `--interpreter=vscode`; DAP-launch the built DLL with
 the real library directory in its native search path. Do not use `dotnet run`,

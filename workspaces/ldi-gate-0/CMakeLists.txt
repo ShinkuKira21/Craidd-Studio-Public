@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(ldi_gate LANGUAGES CXX)
+add_library(gate_native SHARED native/real.cpp)
+target_compile_features(gate_native PRIVATE cxx_std_17)
+target_compile_options(gate_native PRIVATE -O0 -g -fno-omit-frame-pointer)
+set_target_properties(gate_native PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native")

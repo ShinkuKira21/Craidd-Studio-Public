@@ -5,6 +5,7 @@ import { controlViewedDebug, selectViewedConfiguration, selectViewedProfile, sta
 import type { ConfigEntry, CraiddProject } from "../../types/project";
 import ConfigurationsDialog from "../dialogs/configurations/ConfigurationsDialog";
 import { useLinkedWindows, previewLinkedAction, startLinkedAction, stopLinkedAction, type LinkedSnapshot, type LinkedLaunchPlanPhase } from "../../store/linkedWindowsStore";
+import { useLdi } from "../../store/ldiStore";
 import { detectLinkedStartupSuggestions } from "../../lib/linkedStartup";
 import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
 import WindowManager from "./WindowManager";
@@ -23,6 +24,7 @@ function Toolbar() {
   const activeConfigName = useBuild((s) => s.activeConfigName);
 
   const linked = useLinkedWindows();
+  const ldi = useLdi((state) => state.session);
   const debugStatus = useDebug((s) => s.status);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [startupSetupRequested, setStartupSetupRequested] = useState(false);
@@ -41,6 +43,7 @@ function Toolbar() {
 
   const remote = linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
     && item.windowLabel !== linked.ownWindowLabel);
+  const heldByLdi = Boolean(ldi?.held && ldi.phase !== "stopped" && ldi.originLabel === (remote?.windowLabel ?? linked.ownWindowLabel));
   const viewedStatus = remote?.status ?? (["building", "running", "paused"].includes(debugStatus) ? debugStatus : status);
   const running = ["starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
@@ -104,10 +107,10 @@ function Toolbar() {
       {(linked.linked || linked.activeAction) && <GoldButton kind="debug" linked={linked} />}
       {(remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running")) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {viewedStatus === "paused" ? <>
-          <DebugTransport label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
-          <DebugTransport label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
-          <DebugTransport label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
-          <DebugTransport label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
+          <DebugTransport disabled={heldByLdi} label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
+          <DebugTransport disabled={heldByLdi} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
+          <DebugTransport disabled={heldByLdi} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
+          <DebugTransport disabled={heldByLdi} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
         </> : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
       </div>}
 
@@ -132,9 +135,9 @@ function Toolbar() {
   );
 }
 
-function DebugTransport({ label, icon, onClick }: { label: string; icon: string; onClick: () => void }) {
-  return <button type="button" title={label} aria-label={label} onClick={onClick}
-    className="w-7 h-7 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 text-sm">{icon}</button>;
+function DebugTransport({ label, icon, onClick, disabled = false }: { label: string; icon: string; onClick: () => void; disabled?: boolean }) {
+  return <button type="button" disabled={disabled} title={disabled ? "A is held by LDI; finish B to release it" : label} aria-label={label} onClick={onClick}
+    className="w-7 h-7 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 disabled:opacity-30 text-sm">{icon}</button>;
 }
 
 function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
@@ -172,7 +175,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   const projects = linked.members.map((member) => member.projectName).join(" + ");
   const count = linked.members.length;
   const activeCount = linked.activeCount;
-  const missingDebug = linked.members.filter((member) => !member.canDebug);
+  const missingDebug = linked.members.filter((member) => !member.canDebug && member.ldiRole !== "native-library");
   const debugBlockers = [
     missingDebug.length > 0 ? `Select a supported Debug configuration in ${missingDebug.map((member) => `CS${member.windowId} (${member.projectName})`).join(", ")}` : null,
     !linked.debugAdapterAvailable ? "Install/select the required lldb-dap or netcoredbg adapter in Preferences → Toolchain, then rescan" : null,

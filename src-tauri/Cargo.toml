@@ -26,6 +26,7 @@ toml = "0.8"
 toml_edit = "=0.20.2"
 tauri-plugin-dialog = "2.7.3"
 libc = "0.2"
+regex = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

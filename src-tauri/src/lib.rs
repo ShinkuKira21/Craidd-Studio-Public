@@ -53,6 +53,7 @@ pub fn run() {
         .manage(commands::tauri_dev::TauriDevServers::default())
         .manage(DebugManager::default())
         .manage(DebugBuildManager::default())
+        .manage(commands::ldi::LdiManager::default())
         .manage(commands::build_order::OrderManager::default())
         .manage(LinkedWindowRegistry::default())
         .on_window_event(|window, event| {
@@ -82,6 +83,10 @@ pub fn run() {
             delete_path,
             rename_path,
             show_main_window,
+            commands::ldi::set_ldi_blue,
+            commands::ldi::remove_ldi_blue,
+            commands::ldi::get_ldi_blues,
+            commands::ldi::abandon_ldi_reproduction,
             get_linked_runtime,
             mark_linked_window_ready,
             abort_parked_restore,

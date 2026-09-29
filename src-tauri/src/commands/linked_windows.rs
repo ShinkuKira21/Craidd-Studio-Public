@@ -46,6 +46,8 @@ pub struct LinkedWindowUpdate {
     pub project_path: Option<String>,
     pub project_name: Option<String>,
     pub project_kind: Option<String>,
+    #[serde(default)]
+    pub native_library: bool,
     pub can_build: bool,
     pub can_run: bool,
     pub can_debug: bool,
@@ -91,6 +93,7 @@ pub(crate) struct Participant {
     project_path: Option<String>,
     project_name: Option<String>,
     project_kind: Option<String>,
+    native_library: bool,
     can_build: bool,
     can_run: bool,
     can_debug: bool,
@@ -180,6 +183,7 @@ pub struct LinkedMember {
     pub window_label: String,
     pub window_id: u32,
     pub instance_id: String,
+    pub ldi_role: Option<String>,
     pub project_name: String,
     pub status: String,
     pub visible: bool,
@@ -307,21 +311,71 @@ fn group_members(registry: &Registry, solution: &str) -> Vec<String> {
     entries.into_iter().map(|(label, _)| label.clone()).collect()
 }
 
+fn ldi_role(item: &Participant) -> Option<&'static str> {
+    if is_application(item.project_kind.as_deref()) && item.specs.get("debug")
+        .is_some_and(|spec| super::debug::normalize_debug_method(&spec.program) == Some("dotnet")) {
+        Some("managed")
+    } else if (item.project_kind.as_deref() == Some("library") || item.native_library) && item.specs.get("build")
+        .is_some_and(|spec| super::debug::normalize_debug_method(&spec.program) == Some("cmake")) {
+        Some("native-library")
+    } else { None }
+}
+
+/// V1 deliberately has one origin and one library, selected by Power slots.
+fn ldi_pair(registry: &Registry, solution: &str) -> Option<(String, String)> {
+    let selected = registry.windows.iter().filter(|(_, item)| item.solution_path == solution && item.project_path.is_some()).collect::<Vec<_>>();
+    if selected.len() != 2 { return None; }
+    let origin = selected.iter().find(|(_, item)| ldi_role(item) == Some("managed"))?.0;
+    let partner = selected.iter().find(|(_, item)| ldi_role(item) == Some("native-library"))?.0;
+    Some((origin.clone(), partner.clone()))
+}
+
+#[derive(Clone)]
+pub(crate) struct LdiSelection {
+    pub label: String,
+    pub instance_id: String,
+    pub window_id: u32,
+    pub solution: String,
+    pub spec: RunSpec,
+}
+
+pub(crate) fn ldi_selections(app: &AppHandle, origin: &str, partner: &str) -> Result<(LdiSelection, LdiSelection), String> {
+    let state = app.state::<LinkedWindowRegistry>();
+    let registry = state.0.lock().map_err(|error| error.to_string())?;
+    let a = registry.windows.get(origin).ok_or("Managed window is no longer open")?;
+    if ldi_pair(&registry, &a.solution_path) != Some((origin.into(), partner.into())) {
+        return Err("LDI v1 needs exactly two windows: a C# Debug Power slot and a CMake Library Build Power slot".into());
+    }
+    let b = &registry.windows[partner];
+    if [a, b].iter().any(|item| !item.visible || item.restoring) { return Err("Show both LDI windows before pairing".into()); }
+    let selection = |label: &str, item: &Participant, action: &str| LdiSelection {
+        label: label.into(), instance_id: item.instance_id.clone(), window_id: item.window_id,
+        solution: item.solution_path.clone(),
+        spec: item.specs[action].clone(),
+    };
+    Ok((selection(origin, a, "debug"), selection(partner, b, "build")))
+}
+
 fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let Some(window) = registry.windows.get(label) else {
         return LinkedSnapshot { sequence: registry.sequence, linked: false, members: vec![], windows: vec![],
             can_build: false, can_run: false, can_debug: false, debug_adapter_available: false, busy: false, active_action: None, active_count: 0,
             problems: vec![] };
     };
-    let members = group_members(registry, &window.solution_path);
+    let pair = ldi_pair(registry, &window.solution_path);
+    let members = pair.as_ref().map(|(a, b)| vec![a.clone(), b.clone()])
+        .unwrap_or_else(|| group_members(registry, &window.solution_path));
     let action = registry.actions.get(&window.solution_path)
         .filter(|action| action.members.iter().any(|member| member == label));
     let linked = members.iter().any(|member| member == label);
     let all = members.iter().filter_map(|member| registry.windows.get(member));
-    let can_build = linked && all.clone().all(|participant| participant.can_build);
-    let can_run = linked && all.clone().all(|participant| participant.can_run);
-    let debug_adapter_available = linked && all.clone().all(|participant| participant.specs.get("debug")
-        .is_some_and(|spec| super::debug::adapter_available_for_method(&spec.program)));
+    let can_build = pair.is_none() && linked && all.clone().all(|participant| participant.can_build);
+    let can_run = pair.is_none() && linked && all.clone().all(|participant| participant.can_run);
+    let debug_adapter_available = if pair.is_some() {
+        super::debug::adapter_available_for_language("csharp") && super::debug::adapter_available_for_language("cpp")
+    } else { linked && all.clone().all(|participant| participant.specs.get("debug")
+        .is_some_and(|spec| super::debug::adapter_available_for_method(&spec.program)))
+    };
     let busy = action.is_some() || (linked && all.clone().any(|participant| is_busy(&participant.status)));
     // Once an action starts, its count describes the launched windows even if
     // another window opens or changes its project while the action is active.
@@ -339,7 +393,7 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
         members: if linked || action.is_some() { displayed_members.iter().filter_map(|label| registry.windows.get(label)
             .map(|item| member(label, item, false))).collect() } else { vec![] },
         can_build, can_run,
-        can_debug: linked && all.clone().all(|participant| participant.can_debug)
+        can_debug: linked && (pair.is_some() || all.clone().all(|participant| participant.can_debug))
             && debug_adapter_available,
         debug_adapter_available,
         busy,
@@ -359,6 +413,7 @@ fn member(label: &str, item: &Participant, include_context: bool) -> LinkedMembe
         window_label: label.into(),
         window_id: item.window_id,
         instance_id: item.instance_id.clone(),
+        ldi_role: ldi_role(item).map(String::from),
         project_name: item.project_name.clone().unwrap_or_else(|| label.into()),
         status: item.status.clone(), visible: item.visible, restoring: item.restoring,
         selected_config_name: item.selected_config_name.clone(),
@@ -443,6 +498,7 @@ pub fn update_linked_window(
             solution_path, window_id, instance_id: update.instance_id.filter(|id| !id.is_empty()).unwrap_or_else(|| window.label().into()),
             project_path: update.project_path, project_name: update.project_name,
             project_kind: update.project_kind, can_build: update.can_build, can_run: update.can_run,
+            native_library: update.native_library,
             can_debug: update.can_debug, debugging: update.debugging,
             status: staged_status.unwrap_or(update.status), visible: window.is_visible().unwrap_or(true), restoring,
             selected_config_name: update.selected_config_name,
@@ -519,6 +575,11 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
         }
     }
     if matches!(status, "terminated" | "error") { finish_group_member(&mut registry, label); }
+    else if matches!(status, "building" | "running" | "paused") {
+        for group in registry.actions.values_mut().filter(|group| !group.cancelled && group.members.iter().any(|member| member == label)) {
+            group.unfinished.insert(label.into());
+        }
+    }
     reconcile(&mut registry);
     registry.sequence += 1;
     broadcast(app, &registry);
@@ -810,6 +871,7 @@ async fn launch_parked(app: AppHandle, label: String, participant: Participant, 
             command_args: spec.args, env: spec.env, solution_path: participant.solution_path.clone(),
             order: spec.order,
             breakpoints: super::breakpoints::load_breakpoints(participant.solution_path)?,
+            ldi_token: None,
         };
         super::debug::start_debug_for_label(app, label, request).await
     } else {
@@ -1127,6 +1189,19 @@ pub fn preview_linked_action(
     if !matches!(action.as_str(), "build" | "run" | "debug") { return Err("Unsupported linked action".into()); }
     let registry = state.0.lock().map_err(|error| error.to_string())?;
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
+    if action == "debug" {
+        if let Some((origin, partner)) = ldi_pair(&registry, &participant.solution_path) {
+            return Ok(vec![LinkedLaunchPlanPhase { priority: 1, members: [origin, partner].iter().map(|label| {
+                let item = &registry.windows[label];
+                LinkedLaunchPlanMember {
+                    project_name: item.project_name.clone().unwrap_or(label.clone()), window_id: item.window_id,
+                    command: if ldi_role(item) == Some("managed") { "LDI: stop at the blue C# call site" } else { "LDI: wait for blue, then debug the generated native driver" }.into(),
+                    ready_url: None, timeout_ms: 120000,
+                    preparation: vec!["A stays held until B finishes. Server connections may time out while held.".into()], after: vec![],
+                }
+            }).collect() }]);
+        }
+    }
     let members = group_members(&registry, &participant.solution_path);
     if !members.iter().any(|label| label == window.label()) { return Err("Linked windows are not ready".into()); }
     linked_plan_phases(&registry, members, &action)
@@ -1333,6 +1408,48 @@ pub fn start_linked_action(
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
     let solution_path = participant.solution_path.clone();
+    if action == "debug" {
+        if let Some((origin, partner)) = ldi_pair(&registry, &solution_path) {
+            if registry.actions.contains_key(&solution_path) || [&origin, &partner].iter().any(|label| is_busy(&registry.windows[*label].status)) {
+                return Err("An LDI window is already busy".into());
+            }
+            if [&origin, &partner].iter().any(|label| registry.windows[*label].dirty_count > 0) {
+                return Err("Save both LDI windows before Gold Linked Debug".into());
+            }
+            drop(registry);
+            let mut request = super::ldi::prepare_pair(&app, &origin, &partner)?;
+            let mut registry = state.0.lock().map_err(|e| e.to_string())?;
+            if registry.actions.contains_key(&solution_path) { return Err("A linked action is already active".into()); }
+            registry.next_id += 1;
+            let id = registry.next_id;
+            registry.actions.insert(solution_path, GroupAction {
+                action: "debug".into(), members: vec![origin.clone(), partner.clone()], pending: HashSet::new(),
+                unfinished: [origin.clone()].into_iter().collect(), id, cancelled: false,
+            });
+            registry.windows.get_mut(&origin).unwrap().status = "building".into();
+            registry.sequence += 1;
+            broadcast(&app, &registry);
+            drop(registry);
+            super::debug::emit(&app, &origin, serde_json::json!({"status":"building", "text":"Preparing Gold LDI Debug: library first, then the managed host."}));
+            tauri::async_runtime::spawn(async move {
+                let preparation = tauri::async_runtime::spawn_blocking({
+                    let app = app.clone(); let origin = origin.clone();
+                    move || { super::ldi::prepare_origin(&app, &origin, &mut request)?; Ok::<_, String>(request) }
+                }).await.map_err(|error| error.to_string()).and_then(|result| result);
+                let result = match preparation {
+                    Ok(request) => super::debug::start_debug_for_label(app.clone(), origin.clone(), request).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    super::ldi::cancel(&app, &origin);
+                    super::debug::emit(&app, &partner, serde_json::json!({"status":"error", "text":error}));
+                    super::debug::emit(&app, &origin, serde_json::json!({"status":"error", "text":error}));
+                    note_debug_state(&app, &origin, "error", None, None, Some(&error));
+                }
+            });
+            return Ok(());
+        }
+    }
     let members = group_members(&registry, &solution_path);
     if !members.iter().any(|member| member == window.label()) { return Err("Linked windows are not ready".into()); }
     if registry.actions.contains_key(&solution_path) || members.iter().any(|label| registry.windows.get(label)
@@ -1428,6 +1545,7 @@ pub fn stop_linked_action(
     if !group.members.iter().any(|label| label == window.label()) { return Err("Window is not in linked action".into()); }
     if group.action == "build" { return Err("Linked Build has no group Stop control".into()); }
     let command = LinkedCommand { kind: "stop".into(), action: None, action_id: group.id };
+    let debug_group = group.action == "debug";
     let targets: Vec<(String, bool)> = group.members.iter().map(|label| (label.clone(), registry.windows.get(label)
         .is_some_and(|member| member.visible))).collect();
     let busy: HashSet<String> = targets.iter().filter_map(|(label, _)| registry.windows.get(label)
@@ -1442,6 +1560,11 @@ pub fn stop_linked_action(
     registry.sequence += 1;
     broadcast(&app, &registry);
     drop(registry);
+    // Invalidate an LDI hold before any renderer receives Stop. A successful
+    // partner exit racing Gold Stop must not continue the origin.
+    if debug_group {
+        for (label, _) in &targets { super::debug::cancel_debug_by_label(&app, label); }
+    }
     for (label, visible) in targets {
         super::build_order::cancel(&app, &label);
         if visible { let _ = app.emit_to(label.as_str(), COMMAND_EVENT, &command); }
@@ -1541,7 +1664,7 @@ mod tests {
     fn participant(solution: &str, project: &str, kind: &str) -> Participant {
         Participant { solution_path: solution.into(), window_id: 1, project_path: Some(project.into()),
             instance_id: project.into(),
-            project_name: Some(project.into()), project_kind: Some(kind.into()),
+            project_name: Some(project.into()), project_kind: Some(kind.into()), native_library: false,
             can_build: true, can_run: true, can_debug: true, debugging: false, status: "idle".into(), visible: true,
             selected_config_name: None, selected_profile_name: None,
             active_file: None, tabs: vec![], output: String::new(), dirty_count: 0, debug_frames: vec![], debug_variables: vec![],
@@ -1566,6 +1689,28 @@ mod tests {
         registry.windows.get_mut("b").unwrap().project_kind = Some("application".into());
         registry.windows.get_mut("b").unwrap().solution_path = "/other.cln".into();
         assert!(group_members(&registry, "/one.cln").is_empty());
+    }
+
+    #[test]
+    fn ldi_pair_requires_selected_managed_debug_and_library_build_slots() {
+        let mut registry = Registry::default();
+        let mut origin = participant("/one.cln", "host", "console");
+        let mut native = participant("/one.cln", "native", "library");
+        let spec = |program: &str| RunSpec { label: program.into(), program: program.into(), args: vec![], env: BTreeMap::new(), cwd: "/tmp".into(), linked: None, order: None };
+        origin.specs.insert("debug".into(), spec("dotnet"));
+        native.specs.insert("build".into(), spec("cmake"));
+        registry.windows.insert("A".into(), origin);
+        registry.windows.insert("B".into(), native);
+        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), "B".into())));
+        assert!(group_members(&registry, "/one.cln").is_empty(), "Run's application-only grouping remains unchanged");
+        registry.windows.get_mut("B").unwrap().project_kind = Some("application".into());
+        assert!(ldi_pair(&registry, "/one.cln").is_none());
+        registry.windows.get_mut("B").unwrap().project_kind = Some("library".into());
+        registry.windows.get_mut("B").unwrap().specs.clear();
+        assert!(ldi_pair(&registry, "/one.cln").is_none());
+        registry.windows.get_mut("B").unwrap().specs.insert("build".into(), spec("cmake"));
+        registry.windows.insert("C".into(), participant("/one.cln", "other", "console"));
+        assert!(ldi_pair(&registry, "/one.cln").is_none(), "V1 does not guess among extra windows");
     }
 
     #[test]

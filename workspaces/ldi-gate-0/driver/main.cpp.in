@@ -1,0 +1,36 @@
+// Generated driver: scalar input remains data, not generated C++ expressions.
+#include <cerrno>
+#include <charconv>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <dlfcn.h>
+#include <fstream>
+#include <string>
+#include <vector>
+
+static int32_t number(const std::string& text) {
+    int32_t result{};
+    auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) std::exit(64);
+    return result;
+}
+
+int main(int argc, char** argv) {
+    if (argc != 3) return 64;
+    std::ifstream input(argv[2]);
+    std::vector<std::string> values;
+    for (std::string line; std::getline(input, line);) values.push_back(line);
+    if (!input.eof() || values.size() != 2) return 64;
+    int32_t left = number(values[0]), right = number(values[1]);
+    void* library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    if (!library) { std::fprintf(stderr, "%s\n", dlerror()); return 65; }
+    auto add = reinterpret_cast<int32_t(*)(int32_t, int32_t)>(dlsym(library, "gate_add"));
+    auto count = reinterpret_cast<int(*)()>(dlsym(library, "gate_call_count"));
+    if (!add || !count) return 66;
+    int32_t result = add(left, right);
+    int error = errno;
+    std::printf("DRIVER result=%d errno=%d count=%d\n", result, error, count());
+    dlclose(library);
+    return 0;
+}

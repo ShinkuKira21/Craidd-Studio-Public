@@ -1,6 +1,8 @@
 # Design: LDI debugging through linked sessions
 
-**Status:** Proposed design; no LDI runtime or UI implemented by this document.
+**Status:** Design with an initial implementation slice on `feature/ldi-debugging`.
+The standalone mechanism has run with real debuggers; the interactive two-window
+flow still needs manual acceptance. This is not a claim that all gates below passed.
 **Recorded:** 29 September 2026.
 **Starting point:** `master` at `7594cc6`.
 
@@ -36,6 +38,12 @@ B executes a separate invocation of the real C++ function. Its return value,
 memory edits, and debugger changes do not transfer to A. On release, A executes
 its original call and receives its own result. C++ remains C++; C# remains C#.
 The IDE generates a small calling harness, not a translation of the application.
+
+**Return handoff:** successful B completion releases A and returns focus to A.
+Application-visible changes then appear as A executes its original call and
+continues into its own GUI-update code; they do not stream from B while it is
+being stepped. This familiar presentation timing does not imply shared native
+state, injected return values, transferred debugger edits, or hot-reloaded code.
 
 Start with readable signed 32-bit argument locals and a verified matching
 native C ABI. Prove stopped-frame extraction, partner-controlled release, and
@@ -514,6 +522,35 @@ Pass only if A remains at its original stop throughout B's work, unauthorized
 A-resume requests never reach netcoredbg, B hits the real C++ source with the
 captured values, and the matching partner release resumes A exactly once.
 Unreadable arguments fail while A remains stopped.
+
+**Implementation checkpoint, 29 September 2026:**
+[LDI Gate 0](../workspaces/ldi-gate-0/README.md) now provides a real netcoredbg/
+LLDB harness, generated driver/capture/transcripts, and an IDE demo solution.
+Observed passes cover positive/negative/signed-boundary inputs, native stepping
+while A stays stopped, original-call count/errno, denied controls, stale/duplicate
+releases, an actual failed B, and dormant/incomplete/White bindings. The IDE's
+own driver template and CMake File API artifact/source checks have also been
+compiled and executed in a separate real-tools Rust test.
+The IDE driver records that the native function actually returned before
+release; a native `exit(0)` alone is not success. This one-call mock deliberately
+does not reproduce library unloading or static-destructor behavior.
+
+The first IDE slice adds blue gutter markers, reciprocal library reminders,
+selected Power-slot eligibility, a backend hold, an on-demand native driver,
+per-stop inspection-response generations, partner release and return focus,
+Gold cancellation, and compact held-input presentation. It is deliberately
+narrower than the complete design: exactly two visible project windows,
+same-file named-class static DllImport, two materialized `int` arguments and an
+`int` return, explicit Cdecl, a CMake shared-library artifact, and red inside
+the selected export definition. It builds Debug output using the selected
+native build directory/target; native preparation plans are not supported yet.
+Bindings are session-only. Helpers-only pairing, arbitrary scalar signatures,
+automatic retry, the discovery banner, and buffers are not implemented.
+
+The Python harness and Rust coordinator are separate implementations of the
+held protocol: passing the harness does **not** certify the Rust/renderer handoff.
+Manual two-window acceptance, remaining fault/race cases in the Gate 0 plan,
+and the real-problem usefulness experiment are still outstanding.
 
 ### Gate 1: the smallest useful integration
 

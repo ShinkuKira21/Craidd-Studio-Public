@@ -1,0 +1,48 @@
+[solution]
+name = "LDI Gate 0"
+version = "1.0"
+projects = ["Host/Host.craidd", "native/Native.craidd"]
+default_project = "Host/Host.craidd"
+default_config = "LDI · Host"
+
+[[config]]
+name = "LDI · Host"
+kind = "run"
+target = "Host/Host.craidd"
+[config.slots]
+build = "Host · Build"
+run = "Host · Run"
+debug = "Host · Debug"
+
+[[config]]
+name = "Host · Build"
+kind = "build"
+target = "Host/Host.craidd"
+method = "dotnet"
+default_profile = "Debug"
+
+[[config]]
+name = "Host · Run"
+kind = "run"
+target = "Host/Host.craidd"
+method = "dotnet"
+command = "dotnet run --project Host.csproj -- 20 22"
+
+[[config]]
+name = "Host · Debug"
+kind = "debug"
+target = "Host/Host.craidd"
+method = "dotnet"
+command = "dotnet run --project Host.csproj -- 20 22"
+default_profile = "Debug"
+
+[[config]]
+name = "LDI · Native"
+kind = "build"
+target = "native/Native.craidd"
+method = "cmake"
+cwd = "."
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "gate_native"]

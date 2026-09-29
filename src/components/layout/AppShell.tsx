@@ -26,6 +26,7 @@ import { listenForBreakpointFocus } from "../../lib/breakpointFocus";
 import { RemoteEditorPane } from "./RemoteContext";
 import { listenForBreakpointChanges, useBreakpoints } from "../../store/breakpointStore";
 import { listenToDebug, useDebug } from "../../store/debugStore";
+import { listenToLdi } from "../../store/ldiStore";
 
 interface ProjectToolchainCheck {
   language: string;
@@ -100,6 +101,14 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
     let unlisten: (() => void) | undefined;
     void listenToDebug().then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; })
       .catch((error) => console.error("[craidd] Debug listener failed:", error));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenToLdi().then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; })
+      .catch((error) => console.error("[craidd] LDI listener failed:", error));
     return () => { disposed = true; unlisten?.(); };
   }, []);
 
