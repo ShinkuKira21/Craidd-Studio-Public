@@ -1,9 +1,0 @@
-[solution]
-name = "tauri-app"
-version = "1.0"
-
-projects = [
-  "src-tauri/src-tauri.craidd",
-  "src/src.craidd",
-  "src-tauri.craidd",
-]

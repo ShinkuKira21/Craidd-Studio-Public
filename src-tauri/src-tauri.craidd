@@ -1,8 +1,0 @@
-[project]
-name = "src-tauri"
-language = "rust"
-root = "."
-
-[config]
-name = "src-tauri (Config)"
-enabled = true
