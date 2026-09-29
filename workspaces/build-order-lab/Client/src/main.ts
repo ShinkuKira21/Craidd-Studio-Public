@@ -11,7 +11,8 @@ async function refresh() {
   const status = document.querySelector<HTMLParagraphElement>("#status")!;
   const value = document.querySelector<HTMLElement>("#value")!;
   try {
-    const response = await fetch(`${api}/health`);
+    // /health is only a readiness gate; /sum is the blue LDI call site.
+    const response = await fetch(`${api}/sum/20/22`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const result = await response.json();
     value.textContent = String(result.value);

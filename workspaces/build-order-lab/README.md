@@ -61,33 +61,33 @@ Neither arrangement implements native debugging inside the C# process.
 
 For the first GUI-driven LDI test, open
 [LDI GUI Lab](../ldi-gui-lab/README.md) instead: it has only C# GUI + C++ library,
-and its button triggers the call directly. The full three-window Tauri + API +
-library LDI arrangement is **not supported yet**; a Gold count of two there
-reflects the library being excluded, not a working three-project session.
+and its button triggers the call directly. This workspace is the larger
+three-window Tauri + API + library test. Gold Debug has been observed reaching
+the GUI's **42** result; the blue-to-red handoff still needs its own manual check.
 
 Use this same solution and its ordinary C# API / C++ shared library. No test
 hooks, hand-written driver, Python or capture files are needed in these projects.
 
 1. Restart Craidd with this branch's backend. Open `build-order-lab.cln`.
-2. Use **two linked IDE windows** for this solution: select **API · Local** in A
-   and **Native · LDI** in B. B's Power configuration has a Build slot targeting
-   the CMake shared library; it does not pretend the library is an executable.
-   For this first slice, don't select Tauri in a third linked window: pairing
-   currently requires exactly two selected project windows.
+2. Use **three linked IDE windows** for this solution: select **API · Local** in A,
+   **Native · LDI** in B, and **Tauri · Development** in C. B's Power configuration
+   has a Build slot targeting the CMake shared library; it does not pretend the
+   library is a continuously running process.
 3. In B expand **C++ Math Library** and open `math.cpp`. Put a normal red
    breakpoint on `return left + right;` inside `order_add`.
 4. In A open `Api/Program.cs`. Right-click the gutter on
    `int result = NativeMath.Add(left, right);` and choose
    **Native Debugging Breakpoint → CS…** for B. This is the call site, not the
    `DllImport` declaration. Arguments here are ordinary `int` endpoint parameters.
-5. Press **Gold Linked Debug** and confirm the plan. The IDE prepares the
-   shared library and API; B waits for the blue call. `/health` does not hit blue.
-6. Once A is listening, open `http://127.0.0.1:5187/sum/20/22` in a browser.
-   A stops at blue and holds the pending request. The IDE generates a small
+5. Press **Gold Linked Debug** and confirm the three-participant plan. The IDE
+   prepares the shared library and API, waits for `/health` readiness, then
+   launches Tauri. `/health` does not hit blue; Tauri's `/sum/20/22` request does.
+6. A stops at blue and holds the pending request. The IDE generates a small
    native driver, and B stops in the real `math.cpp` with `left=20`, `right=22`.
 7. Debug in B. Continue B to completion to release A and return focus to A.
-   A then executes its own original call; the browser receives `{"value":42}`.
-   Reload that URL to exercise another call.
+   A then executes its own original call; Tauri displays **42**. Click **Try
+   again** to exercise another call. A browser can also request
+   `http://127.0.0.1:5187/sum/20/22` without changing the pairing.
 
 White Debug does not activate LDI. A's Continue/Step controls are held until B
 releases the call. B's debugger changes/return value are not copied into A.
@@ -96,7 +96,7 @@ Gold Stop. Long pauses can time out the browser request. Blue bindings are
 session-only and must be recreated after reopening.
 
 The debugger-level API/library path has an automated acceptance test, but the
-two-window renderer flow still needs a manual visual check. Internal tests and
+three-window blue-to-red renderer flow still needs a manual visual check. Internal tests and
 their reports live under `tests/fixtures/ldi-gate-0`, outside this workspace.
 
 This is a focused prototype: ordered builds support .NET, CMake, and Cargo;

@@ -321,13 +321,49 @@ fn ldi_role(item: &Participant) -> Option<&'static str> {
     } else { None }
 }
 
-/// V1 deliberately has one origin and one library, selected by Power slots.
+/// One unambiguous managed/native pair may coexist with other runnable windows.
+/// Never guess when several managed hosts or libraries are selected.
 fn ldi_pair(registry: &Registry, solution: &str) -> Option<(String, String)> {
-    let selected = registry.windows.iter().filter(|(_, item)| item.solution_path == solution && item.project_path.is_some()).collect::<Vec<_>>();
-    if selected.len() != 2 { return None; }
-    let origin = selected.iter().find(|(_, item)| ldi_role(item) == Some("managed"))?.0;
-    let partner = selected.iter().find(|(_, item)| ldi_role(item) == Some("native-library"))?.0;
-    Some((origin.clone(), partner.clone()))
+    let selected = registry.windows.iter().filter(|(_, item)| item.solution_path == solution && item.project_path.is_some());
+    let managed = selected.clone().filter(|(_, item)| ldi_role(item) == Some("managed")).map(|(label, _)| label).collect::<Vec<_>>();
+    let native = selected.filter(|(_, item)| ldi_role(item) == Some("native-library")).map(|(label, _)| label).collect::<Vec<_>>();
+    if managed.len() != 1 || native.len() != 1 { return None; }
+    Some((managed[0].clone(), native[0].clone()))
+}
+
+fn ldi_members(registry: &Registry, solution: &str, origin: &str, partner: &str) -> Vec<String> {
+    let mut members = group_members(registry, solution);
+    if !members.iter().any(|label| label == origin) { members.push(origin.into()); }
+    if !members.iter().any(|label| label == partner) { members.push(partner.into()); }
+    members.sort();
+    members
+}
+
+fn ldi_runnable_phases(registry: &Registry, solution: &str, origin: &str) -> Result<Vec<Vec<PlannedLaunch>>, String> {
+    let mut members = group_members(registry, solution);
+    if !members.iter().any(|label| label == origin) { members.push(origin.into()); }
+    let mut launches = Vec::new();
+    for label in members {
+        let participant = registry.windows.get(&label).ok_or("Linked window disappeared")?;
+        let spec = participant.specs.get("debug").ok_or_else(|| format!("{} has no Debug Power slot", participant.project_name.as_deref().unwrap_or(&label)))?;
+        if !participant.can_debug || !super::debug::adapter_available_for_method(&spec.program) {
+            return Err(format!("{} needs a supported Debug Power slot and installed debugger", participant.project_name.as_deref().unwrap_or(&label)));
+        }
+        let priority = spec.linked.as_ref().map_or(crate::types::default_linked_priority(), |linked| linked.priority);
+        let timeout_ms = spec.linked.as_ref().map_or(crate::types::default_linked_timeout_ms(), |linked| linked.timeout_ms);
+        let ready_url = spec.linked.as_ref().and_then(|linked| linked.ready_url.clone()).filter(|url| !url.is_empty());
+        if !(1..=100).contains(&priority) || !(100..=300_000).contains(&timeout_ms) { return Err(format!("Invalid linked startup settings for {}", spec.label)); }
+        if let Some(url) = &ready_url { parse_http_ready_url(url)?; }
+        launches.push(PlannedLaunch { label, participant: participant.clone(), visible: participant.visible && !participant.restoring,
+            priority, ready_url, timeout_ms });
+    }
+    let input = launches.iter().map(|launch| {
+        let spec = &launch.participant.specs["debug"];
+        (launch.label.clone(), launch.participant.project_path.clone().unwrap_or_default(), launch.priority,
+            spec.linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default())
+    }).collect::<Vec<_>>();
+    Ok(order_phases(&input)?.into_iter().map(|labels| labels.into_iter()
+        .filter_map(|label| launches.iter().find(|launch| launch.label == label).cloned()).collect()).collect())
 }
 
 #[derive(Clone)]
@@ -344,7 +380,7 @@ pub(crate) fn ldi_selections(app: &AppHandle, origin: &str, partner: &str) -> Re
     let registry = state.0.lock().map_err(|error| error.to_string())?;
     let a = registry.windows.get(origin).ok_or("Managed window is no longer open")?;
     if ldi_pair(&registry, &a.solution_path) != Some((origin.into(), partner.into())) {
-        return Err("LDI v1 needs exactly two windows: a C# Debug Power slot and a CMake Library Build Power slot".into());
+        return Err("LDI needs one selected C# Debug Power slot and one selected CMake Library Build Power slot; multiple eligible pairs are ambiguous".into());
     }
     let b = &registry.windows[partner];
     if [a, b].iter().any(|item| !item.visible || item.restoring) { return Err("Show both LDI windows before pairing".into()); }
@@ -363,16 +399,20 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
             problems: vec![] };
     };
     let pair = ldi_pair(registry, &window.solution_path);
-    let members = pair.as_ref().map(|(a, b)| vec![a.clone(), b.clone()])
+    let members = pair.as_ref().map(|(a, b)| ldi_members(registry, &window.solution_path, a, b))
         .unwrap_or_else(|| group_members(registry, &window.solution_path));
     let action = registry.actions.get(&window.solution_path)
         .filter(|action| action.members.iter().any(|member| member == label));
     let linked = members.iter().any(|member| member == label);
     let all = members.iter().filter_map(|member| registry.windows.get(member));
-    let can_build = pair.is_none() && linked && all.clone().all(|participant| participant.can_build);
-    let can_run = pair.is_none() && linked && all.clone().all(|participant| participant.can_run);
+    let ordinary = group_members(registry, &window.solution_path);
+    let can_build = ordinary.iter().any(|member| member == label) && ordinary.iter().all(|member| registry.windows[member].can_build);
+    let can_run = ordinary.iter().any(|member| member == label) && ordinary.iter().all(|member| registry.windows[member].can_run);
     let debug_adapter_available = if pair.is_some() {
         super::debug::adapter_available_for_language("csharp") && super::debug::adapter_available_for_language("cpp")
+            && ordinary.iter().filter(|label| pair.as_ref().is_none_or(|(a, _)| *label != a))
+                .all(|label| registry.windows[label].specs.get("debug")
+                    .is_some_and(|spec| super::debug::adapter_available_for_method(&spec.program)))
     } else { linked && all.clone().all(|participant| participant.specs.get("debug")
         .is_some_and(|spec| super::debug::adapter_available_for_method(&spec.program)))
     };
@@ -393,7 +433,8 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
         members: if linked || action.is_some() { displayed_members.iter().filter_map(|label| registry.windows.get(label)
             .map(|item| member(label, item, false))).collect() } else { vec![] },
         can_build, can_run,
-        can_debug: linked && (pair.is_some() || all.clone().all(|participant| participant.can_debug))
+        can_debug: linked && (pair.is_some_and(|_| ordinary.iter().all(|label| registry.windows[label].can_debug))
+            || all.clone().all(|participant| participant.can_debug))
             && debug_adapter_available,
         debug_adapter_available,
         busy,
@@ -1191,15 +1232,31 @@ pub fn preview_linked_action(
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
     if action == "debug" {
         if let Some((origin, partner)) = ldi_pair(&registry, &participant.solution_path) {
-            return Ok(vec![LinkedLaunchPlanPhase { priority: 1, members: [origin, partner].iter().map(|label| {
-                let item = &registry.windows[label];
-                LinkedLaunchPlanMember {
-                    project_name: item.project_name.clone().unwrap_or(label.clone()), window_id: item.window_id,
-                    command: if ldi_role(item) == Some("managed") { "LDI: stop at the blue C# call site" } else { "LDI: wait for blue, then debug the generated native driver" }.into(),
-                    ready_url: None, timeout_ms: 120000,
-                    preparation: vec!["A stays held until B finishes. Server connections may time out while held.".into()], after: vec![],
+            let phases = ldi_runnable_phases(&registry, &participant.solution_path, &origin)?;
+            return phases.into_iter().enumerate().map(|(index, phase)| {
+                let mut members = Vec::new();
+                for launch in phase {
+                    let item = &launch.participant;
+                    let spec = &item.specs["debug"];
+                    members.push(LinkedLaunchPlanMember {
+                        project_name: item.project_name.clone().unwrap_or(launch.label.clone()), window_id: item.window_id,
+                        command: if launch.label == origin { "LDI: debug C# and hold at the blue call site".into() } else { spec.label.clone() },
+                        ready_url: launch.ready_url, timeout_ms: launch.timeout_ms,
+                        preparation: spec.order.as_ref().map(super::build_order::preview).transpose()?.unwrap_or_default(),
+                        after: spec.linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default(),
+                    });
+                    if launch.label == origin {
+                        let native = &registry.windows[&partner];
+                        members.push(LinkedLaunchPlanMember {
+                            project_name: native.project_name.clone().unwrap_or(partner.clone()), window_id: native.window_id,
+                            command: "LDI: prepare library now; native debugger starts only after blue".into(),
+                            ready_url: None, timeout_ms: 120000,
+                            preparation: vec!["A stays held until B finishes. Server requests may time out while held.".into()], after: vec![],
+                        });
+                    }
                 }
-            }).collect() }]);
+                Ok(LinkedLaunchPlanPhase { priority: (index + 1) as u8, members })
+            }).collect();
         }
     }
     let members = group_members(&registry, &participant.solution_path);
@@ -1311,7 +1368,8 @@ fn mark_phase_starting(app: &AppHandle, solution_path: &str, action_id: u64, lab
     true
 }
 
-async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, action_id: u64, phases: Vec<Vec<PlannedLaunch>>) {
+async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, action_id: u64,
+    phases: Vec<Vec<PlannedLaunch>>, mut ldi_origin: Option<(String, String, super::debug::DebugRequest)>) {
     let mut launched = HashSet::new();
     for phase in phases {
         if !linked_action_active(&app, &solution_path, action_id) { return; }
@@ -1321,7 +1379,37 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
         if !mark_phase_starting(&app, &solution_path, action_id, &labels) { return; }
         for launch in &phase {
             launched.insert(launch.label.clone());
-            if launch.visible {
+            if ldi_origin.as_ref().is_some_and(|(label, _, _)| label == &launch.label) {
+                let (label, partner, mut request) = ldi_origin.take().unwrap();
+                let app_task = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let preparation = tauri::async_runtime::spawn_blocking({
+                        let app = app_task.clone(); let label = label.clone();
+                        move || { super::ldi::prepare_origin(&app, &label, &mut request)?; Ok::<_, String>(request) }
+                    }).await.map_err(|error| error.to_string()).and_then(|result| result);
+                    let result = match preparation {
+                        Ok(request) => super::debug::start_debug_for_label(app_task.clone(), label.clone(), request).await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(ref error) = result {
+                        super::ldi::cancel(&app_task, &label);
+                        super::debug::emit(&app_task, &partner, serde_json::json!({"status":"error", "text":error}));
+                        super::debug::emit(&app_task, &label, serde_json::json!({"status":"error", "text":error}));
+                        note_debug_state(&app_task, &label, "error", None, None, Some(error));
+                    }
+                    if let Some(state) = app_task.try_state::<LinkedWindowRegistry>() {
+                        if let Ok(mut registry) = state.0.lock() {
+                            if let Some(group) = registry.actions.values_mut().find(|group| group.id == action_id) {
+                                group.pending.remove(&label);
+                                if result.is_err() { group.unfinished.remove(&label); }
+                            }
+                            reconcile(&mut registry);
+                            registry.sequence += 1;
+                            broadcast(&app_task, &registry);
+                        }
+                    }
+                });
+            } else if launch.visible {
                 if let Err(error) = app.emit_to(launch.label.as_str(), COMMAND_EVENT, &command) {
                     note_process_event(&app, &launch.label, "error", Some(&error.to_string()), None);
                 }
@@ -1410,43 +1498,34 @@ pub fn start_linked_action(
     let solution_path = participant.solution_path.clone();
     if action == "debug" {
         if let Some((origin, partner)) = ldi_pair(&registry, &solution_path) {
-            if registry.actions.contains_key(&solution_path) || [&origin, &partner].iter().any(|label| is_busy(&registry.windows[*label].status)) {
-                return Err("An LDI window is already busy".into());
+            let phases = ldi_runnable_phases(&registry, &solution_path, &origin)?;
+            let members = ldi_members(&registry, &solution_path, &origin, &partner);
+            if registry.actions.contains_key(&solution_path) || members.iter().any(|label| is_busy(&registry.windows[label].status)) {
+                return Err("A linked LDI window is already busy".into());
             }
-            if [&origin, &partner].iter().any(|label| registry.windows[*label].dirty_count > 0) {
-                return Err("Save both LDI windows before Gold Linked Debug".into());
+            if members.iter().any(|label| registry.windows[label].dirty_count > 0) {
+                return Err("Save every linked IDE window before Gold Linked Debug".into());
             }
             drop(registry);
-            let mut request = super::ldi::prepare_pair(&app, &origin, &partner)?;
+            let request = super::ldi::prepare_pair(&app, &origin, &partner)?;
             let mut registry = state.0.lock().map_err(|e| e.to_string())?;
-            if registry.actions.contains_key(&solution_path) { return Err("A linked action is already active".into()); }
+            if registry.actions.contains_key(&solution_path) {
+                super::ldi::cancel(&app, &origin);
+                return Err("A linked action is already active".into());
+            }
             registry.next_id += 1;
             let id = registry.next_id;
-            registry.actions.insert(solution_path, GroupAction {
-                action: "debug".into(), members: vec![origin.clone(), partner.clone()], pending: HashSet::new(),
-                unfinished: [origin.clone()].into_iter().collect(), id, cancelled: false,
+            let runnable = phases.iter().flat_map(|phase| phase.iter().map(|launch| launch.label.clone())).collect::<HashSet<_>>();
+            registry.actions.insert(solution_path.clone(), GroupAction {
+                action: "debug".into(), members, pending: runnable.clone(),
+                unfinished: runnable, id, cancelled: false,
             });
-            registry.windows.get_mut(&origin).unwrap().status = "building".into();
+            registry.windows.get_mut(&partner).unwrap().status = "waiting".into();
             registry.sequence += 1;
             broadcast(&app, &registry);
             drop(registry);
-            super::debug::emit(&app, &origin, serde_json::json!({"status":"building", "text":"Preparing Gold LDI Debug: library first, then the managed host."}));
-            tauri::async_runtime::spawn(async move {
-                let preparation = tauri::async_runtime::spawn_blocking({
-                    let app = app.clone(); let origin = origin.clone();
-                    move || { super::ldi::prepare_origin(&app, &origin, &mut request)?; Ok::<_, String>(request) }
-                }).await.map_err(|error| error.to_string()).and_then(|result| result);
-                let result = match preparation {
-                    Ok(request) => super::debug::start_debug_for_label(app.clone(), origin.clone(), request).await,
-                    Err(error) => Err(error),
-                };
-                if let Err(error) = result {
-                    super::ldi::cancel(&app, &origin);
-                    super::debug::emit(&app, &partner, serde_json::json!({"status":"error", "text":error}));
-                    super::debug::emit(&app, &origin, serde_json::json!({"status":"error", "text":error}));
-                    note_debug_state(&app, &origin, "error", None, None, Some(&error));
-                }
-            });
+            tauri::async_runtime::spawn(run_linked_plan(app.clone(),
+                solution_path, "debug".into(), id, phases, Some((origin, partner, request))));
             return Ok(());
         }
     }
@@ -1505,7 +1584,7 @@ pub fn start_linked_action(
     registry.sequence += 1;
     broadcast(&app, &registry);
     drop(registry);
-    tauri::async_runtime::spawn(run_linked_plan(app.clone(), solution_path, action, id, phases));
+    tauri::async_runtime::spawn(run_linked_plan(app.clone(), solution_path, action, id, phases, None));
     Ok(())
 }
 
@@ -1709,8 +1788,25 @@ mod tests {
         registry.windows.get_mut("B").unwrap().specs.clear();
         assert!(ldi_pair(&registry, "/one.cln").is_none());
         registry.windows.get_mut("B").unwrap().specs.insert("build".into(), spec("cmake"));
-        registry.windows.insert("C".into(), participant("/one.cln", "other", "console"));
-        assert!(ldi_pair(&registry, "/one.cln").is_none(), "V1 does not guess among extra windows");
+        let mut client = participant("/one.cln", "client", "application");
+        let mut client_debug = spec("cargo");
+        client_debug.linked = Some(crate::types::LinkedLaunch {
+            after: vec!["host".into()], priority: 50, ready_url: None, timeout_ms: 30_000,
+        });
+        client.specs.insert("debug".into(), client_debug);
+        registry.windows.insert("C".into(), client);
+        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), "B".into())));
+        assert_eq!(ldi_members(&registry, "/one.cln", "A", "B"), vec!["A", "B", "C"]);
+        let phases = ldi_runnable_phases(&registry, "/one.cln", "A").unwrap();
+        assert_eq!(phases.iter().map(|phase| phase.iter().map(|launch| launch.label.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            vec![vec!["A"], vec!["C"]], "Tauri waits for the managed API; B is on-demand");
+        assert_eq!(snapshot(&registry, "C").members.len(), 3);
+        assert!(snapshot(&registry, "C").can_run, "the ordinary API/Tauri linked run remains available");
+        assert!(!snapshot(&registry, "B").can_run, "the library is not a runnable process");
+        let mut other_managed = participant("/one.cln", "another-api", "service");
+        other_managed.specs.insert("debug".into(), spec("dotnet"));
+        registry.windows.insert("D".into(), other_managed);
+        assert!(ldi_pair(&registry, "/one.cln").is_none(), "Never guess between managed origins");
     }
 
     #[test]

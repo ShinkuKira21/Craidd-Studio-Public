@@ -559,7 +559,8 @@ The first IDE slice adds blue gutter markers, reciprocal library reminders,
 selected Power-slot eligibility, a backend hold, an on-demand native driver,
 per-stop inspection-response generations, partner release and return focus,
 Gold cancellation, and compact held-input presentation. It is deliberately
-narrower than the complete design: exactly two visible project windows,
+narrower than the complete design: one unambiguous visible C# host and one
+visible CMake library partner (other linked runnable windows may coexist),
 same-file named-class static DllImport, two materialized `int` arguments and an
 `int` return, explicit Cdecl, a CMake shared-library artifact, and red inside
 the selected export definition. It builds Debug output using the selected
@@ -569,8 +570,11 @@ automatic retry, the discovery banner, and buffers are not implemented.
 
 The Python harness and Rust coordinator are separate implementations of the
 held protocol: passing the harness does **not** certify the Rust/renderer handoff.
-Manual two-window acceptance, remaining fault/race cases in the Gate 0 plan,
-and the real-problem usefulness experiment are still outstanding.
+The three-window Tauri/API/library Gold Debug launch has been observed
+reaching the GUI's **42** result. That confirms startup and the real API/native
+call, not by itself the blue-stop/native-driver handoff. Manual acceptance of
+that handoff, remaining fault/race cases in the Gate 0 plan, and the
+real-problem usefulness experiment are still outstanding.
 
 ### Gate 1: the smallest useful integration
 
