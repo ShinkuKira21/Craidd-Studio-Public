@@ -40,6 +40,11 @@ its original call and receives its own result. C++ remains C++; C# remains C#.
 The IDE generates a small calling harness, not a translation of the application.
 
 **Return handoff:** successful B completion releases A and returns focus to A.
+If a native step lands in Craidd's verified private driver after the exported
+call returns, the IDE consumes that plumbing stop and continues B to its exit
+check; the user should not have to step through `driver.cpp`. An arbitrary
+driver-looking file, a non-step stop or a failed native call does not trigger
+this handoff. A still waits for a confirmed return record and successful B exit.
 Application-visible changes then appear as A executes its original call and
 continues into its own GUI-update code; they do not stream from B while it is
 being stepped. This familiar presentation timing does not imply shared native
@@ -524,8 +529,23 @@ captured values, and the matching partner release resumes A exactly once.
 Unreadable arguments fail while A remains stopped.
 
 **Implementation checkpoint, 29 September 2026:**
-[LDI Gate 0](../workspaces/ldi-gate-0/README.md) now provides a real netcoredbg/
-LLDB harness, generated driver/capture/transcripts, and an IDE demo solution.
+[LDI Gate 0](../tests/fixtures/ldi-gate-0/README.md) provides an internal real
+netcoredbg/LLDB harness with generated driver/capture/transcripts.
+[LDI GUI Lab](../workspaces/ldi-gui-lab/README.md)
+is the small user-facing C# GUI / C++ library example. Its projects do not need
+test instrumentation, capture files or Python; those belong to the test fixture,
+not the IDE's LDI runtime or the developer workflow.
+`build-order-lab` remains the broader Tauri → API → C++ build/readiness example.
+The current two-window LDI coordinator cannot include Tauri as a third participant.
+With those three selected projects, ordinary runnable-window grouping counts
+Tauri and the API but excludes the library, so Gold can misleadingly show two.
+This is an outstanding linked-session composition/UX bug, not a supported
+three-window LDI configuration. Fixing it is deferred until the small GUI pair
+works in the actual two-window IDE flow.
+The GUI demo's real button handler has now also been exercised under netcoredbg
+and the production driver under LLDB: readable stopped locals, native stepping
+while A stays held, and A reaching its label-update line with its own result.
+This is external mechanism evidence, not renderer/coordinator acceptance.
 Observed passes cover positive/negative/signed-boundary inputs, native stepping
 while A stays stopped, original-call count/errno, denied controls, stale/duplicate
 releases, an actual failed B, and dormant/incomplete/White bindings. The IDE's

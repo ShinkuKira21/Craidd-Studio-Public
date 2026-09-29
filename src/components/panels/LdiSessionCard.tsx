@@ -24,7 +24,7 @@ export default function LdiSessionCard() {
     <div className="text-zinc-300 mt-1 font-mono break-all">{session.entryPoint}({session.values?.join(", ") ?? session.locals.join(", ")})</div>
     <div className="text-zinc-500 mt-1">{session.file.split("/").pop()}:{session.line} → CS{session.partnerWindowId}</div>
     {session.held && <div className="text-zinc-400 mt-2">
-      {session.phase === "building-native" ? "Building B's native driver…" : partner ? "Step the real library here. Finish B to resume A." : "Continue and Step are held until B releases this call."}
+      {session.phase === "building-native" ? "Building B's native driver…" : session.phase === "finishing-native" ? "Native call returned; finishing B…" : partner ? "Step the real library here. Finish B to resume A." : "Continue and Step are held until B releases this call."}
     </div>}
     {session.error && <div role="alert" className="mt-2 text-amber-300">{session.error}</div>}
     {partner && session.held && session.phase !== "building-native" && <button type="button"

@@ -677,6 +677,11 @@ pub(crate) fn launch_prepared(
         let mut terminated_emitted = false;
         let mut stop_generation = 0u64;
         let mut inspection_generations: HashMap<u64, u64> = HashMap::new();
+        // A private driver stop after native return must not be presented as
+        // user source. Defer B's pause until its frame is verified.
+        let mut pending_native_stop: Option<(u64, Value)> = None;
+        let mut hidden_driver_frames: Option<Value> = None;
+        let mut auto_resume_after_control = false;
         let launch = if language == "csharp" {
             json!({"program": executable, "cwd": cwd, "args": args, "env": env, "stopAtEntry": false, "console":"internalConsole"})
         } else {
@@ -709,13 +714,22 @@ pub(crate) fn launch_prepared(
                         ready_reader.store(true, Ordering::Release);
                         let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
                         session.thread_id.store(thread_id, Ordering::Relaxed);
-                        emit(&app_reader, &label_reader, json!({"status":"paused", "reason":message["body"]["reason"], "threadId":thread_id}));
+                        if super::ldi::partner_stop_is_held(&app_reader, &label_reader, pgid) {
+                            pending_native_stop = Some((stop_generation, message["body"]["reason"].clone()));
+                        } else {
+                            pending_native_stop = None;
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "reason":message["body"]["reason"], "threadId":thread_id}));
+                        }
+                        hidden_driver_frames = None;
                         if let Ok(seq) = request(&session, "stackTrace", json!({"threadId":thread_id, "startFrame":0, "levels":20})) {
                             pending.insert(seq, "stackTrace".into()); inspection_generations.insert(seq, stop_generation);
                         }
                     }
                     "continued" => {
                         stop_generation += 1;
+                        pending_native_stop = None;
+                        hidden_driver_frames = None;
+                        auto_resume_after_control = false;
                         ready_reader.store(true, Ordering::Release);
                         if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0) {
                             session.thread_id.store(id, Ordering::Relaxed);
@@ -756,8 +770,37 @@ pub(crate) fn launch_prepared(
                 }
                 if matches!(message["command"].as_str(), Some("continue" | "pause" | "next" | "stepIn" | "stepOut")) {
                     session.transport_busy.store(false, Ordering::Release);
+                    if auto_resume_after_control {
+                        auto_resume_after_control = false;
+                        let result = if message["success"] == true {
+                            continue_ldi_partner_after_return(&session)
+                        } else {
+                            Err(message["message"].as_str().unwrap_or("native step failed").to_string())
+                        };
+                        if let Err(error) = result {
+                            super::ldi::native_auto_resume_failed(&app_reader, &label_reader, pgid, &error);
+                            if let Some(frames) = hidden_driver_frames.take() {
+                                emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
+                                    "reason":"step", "threadId":session.thread_id.load(Ordering::Acquire)}));
+                            }
+                        }
+                    }
                 }
                 if message["success"] == false {
+                    if message["command"] == "stackTrace" {
+                        if let Some((_, reason)) = pending_native_stop.take().filter(|(generation, _)| *generation == stop_generation) {
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "reason":reason,
+                                "threadId":session.thread_id.load(Ordering::Acquire)}));
+                        }
+                    }
+                    if message["command"] == "continue" && hidden_driver_frames.is_some() {
+                        super::ldi::native_auto_resume_failed(&app_reader, &label_reader, pgid,
+                            message["message"].as_str().unwrap_or("native continue failed"));
+                        if let Some(frames) = hidden_driver_frames.take() {
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
+                                "reason":"step", "threadId":session.thread_id.load(Ordering::Acquire)}));
+                        }
+                    }
                     super::ldi::on_inspection_error(&app_reader, &label_reader, pgid,
                         message["command"].as_str().unwrap_or(""), message["message"].as_str().unwrap_or("DAP request failed"));
                     let fatal = message["command"] == "initialize" || message["command"] == "launch";
@@ -799,7 +842,28 @@ pub(crate) fn launch_prepared(
                     "stackTrace" => {
                         let frames = message["body"]["stackFrames"].clone();
                         let first = frames.as_array().and_then(|items| items.first());
-                        if let Some(frame) = first { super::ldi::on_frame(&app_reader, &label_reader, pgid, frame); }
+                        let reason = pending_native_stop.as_ref().filter(|(generation, _)| *generation == stop_generation)
+                            .and_then(|(_, reason)| reason.as_str());
+                        let finish_native = first.is_some_and(|frame| super::ldi::on_frame(
+                            &app_reader, &label_reader, pgid, frame, reason));
+                        if finish_native {
+                            pending_native_stop = None;
+                            hidden_driver_frames = Some(frames);
+                            if session.transport_busy.load(Ordering::Acquire) {
+                                auto_resume_after_control = true;
+                            } else if let Err(error) = continue_ldi_partner_after_return(&session) {
+                                super::ldi::native_auto_resume_failed(&app_reader, &label_reader, pgid, &error);
+                                if let Some(frames) = hidden_driver_frames.take() {
+                                    emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
+                                        "reason":"step", "threadId":session.thread_id.load(Ordering::Acquire)}));
+                                }
+                            }
+                            continue;
+                        }
+                        if let Some((_, reason)) = pending_native_stop.take().filter(|(generation, _)| *generation == stop_generation) {
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "reason":reason,
+                                "threadId":session.thread_id.load(Ordering::Acquire)}));
+                        }
                         emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
                             "file":first.and_then(|frame| frame["source"]["path"].as_str()),
                             "line":first.and_then(|frame| frame["line"].as_u64())}));
@@ -930,6 +994,24 @@ pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Re
     if thread_id <= 0 { return Err("Origin thread is unavailable".into()); }
     if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return Err("Origin debugger control is busy".into());
+    }
+    if let Err(error) = request(session, "continue", json!({"threadId":thread_id})) {
+        session.transport_busy.store(false, Ordering::Release);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Finish only the verified generated-driver handoff. A remains held until
+/// B reports a successful exit and the driver records an actual native return.
+fn continue_ldi_partner_after_return(session: &Session) -> Result<(), String> {
+    if !session.alive.load(Ordering::Acquire) {
+        return Err("Native debugger ended before completion".into());
+    }
+    let thread_id = session.thread_id.load(Ordering::Acquire);
+    if thread_id <= 0 { return Err("Native debugger thread is unavailable".into()); }
+    if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return Err("Native debugger control is busy".into());
     }
     if let Err(error) = request(session, "continue", json!({"threadId":thread_id})) {
         session.transport_busy.store(false, Ordering::Release);

@@ -1,0 +1,9 @@
+[project]
+name = "LDI Native Library"
+language = "cpp"
+root = ".."
+kind = "library"
+
+[membership]
+main_include = ["native"]
+main_exclude = ["captures", "tools", "driver", "previous-workspace-artifacts"]

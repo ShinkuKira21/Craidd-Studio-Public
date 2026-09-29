@@ -441,6 +441,26 @@ mod discovery_tests {
     }
 
     #[test]
+    fn ldi_fixture_source_tree_shows_native_not_test_reports() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("tests/fixtures/ldi-gate-0");
+        let marker = fs::read_to_string(root.join("native/Native.craidd")).unwrap();
+        let marker: toml::Value = marker.parse().unwrap();
+        let paths = |key: &str| marker["membership"][key].as_array().unwrap().iter()
+            .map(|path| path.as_str().unwrap().to_string()).collect();
+        let tree = read_dir_tree_filtered(
+            root.to_string_lossy().into_owned(),
+            vec!["cpp".into(), "h".into()], vec!["CMakeLists.txt".into()],
+            Some(true), Some(false), Some(paths("main_include")), Some(paths("main_exclude")),
+        ).unwrap();
+        assert!(has_path(&tree, "native/real.cpp"));
+        assert!(has_path(&tree, "native/gate_api.h"));
+        assert!(has_path(&tree, "CMakeLists.txt"));
+        assert!(!has_path(&tree, "captures"));
+        assert!(!has_path(&tree, "previous-workspace-artifacts"));
+    }
+
+    #[test]
     fn explicit_membership_crosses_nested_project_boundaries() {
         let root = std::env::temp_dir().join(format!("craidd-boundary-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

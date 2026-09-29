@@ -30,4 +30,4 @@ workspaces/*
 !workspaces/rust-debug-smoke/
 workspaces/rust-debug-smoke/target/
 !workspaces/build-order-lab/
-!workspaces/ldi-gate-0/
+!workspaces/ldi-gui-lab/

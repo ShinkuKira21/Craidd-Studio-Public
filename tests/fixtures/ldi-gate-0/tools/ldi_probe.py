@@ -8,7 +8,11 @@ import re
 import shutil
 import subprocess
 import sys
+import socket
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from urllib.request import urlopen
 
 from dap import Dap
 
@@ -218,10 +222,79 @@ def test_case(root, report, netcoredbg, lldb, left, right, unsupported=False, fa
         (folder / "assertions.json").write_text(json.dumps(assertions, indent=2) + "\n")
 
 
+def test_build_order_lab(root, report, netcoredbg, lldb):
+    """Ordinary ASP.NET parameters -> ordinary shared object; no instrumentation."""
+    repository = root.parents[2]
+    lab = repository / "workspaces/build-order-lab"
+    folder = report / "build-order-lab"
+    folder.mkdir()
+    # Private outputs: don't overwrite a developer's API/native build artifacts.
+    build = folder / "native-build"
+    host = folder / "host"
+    run(["cmake", "-S", lab / "Native", "-B", build, "-DCMAKE_BUILD_TYPE=Debug"])
+    run(["cmake", "--build", build])
+    run(["dotnet", "build", lab / "Api/OrderApi.csproj", "-c", "Debug", "--nologo", "-o", host])
+    run(["cmake", "--install", build, "--prefix", host])
+    managed = lab / "Api/Program.cs"
+    native = lab / "Native/math.cpp"
+    blue = marker(managed, "int result = NativeMath.Add(left, right);")
+    red = marker(native, "return left + right;")
+    template = repository / "src-tauri/src/commands/ldi_driver.cpp.in"
+    (folder / "driver.cpp").write_text(template.read_text().replace("@ENTRY_POINT@", "order_add"))
+    run(["c++", "-std=c++17", "-g", "-O0", folder / "driver.cpp", "-ldl", "-o", folder / "driver"])
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    url = f"http://127.0.0.1:{port}"
+    assertions = []
+    origin = Dap([netcoredbg, "--interpreter=vscode"], folder / "origin.dap.jsonl")
+    partner = None
+    requests = ThreadPoolExecutor(max_workers=1)
+    try:
+        origin.launch(host / "OrderApi.dll", lab / "Api", ["--urls", url], {managed: [blue]}, managed=True)
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                with urlopen(url + "/health", timeout=1) as response:
+                    check(json.load(response)["value"] == 42, "ordinary API readiness calls its real .so", assertions)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("API did not become ready")
+                time.sleep(0.1)
+        def fetch():
+            with urlopen(url + "/sum/20/22", timeout=30) as response:
+                return json.load(response)
+        pending = requests.submit(fetch)
+        stopped = origin.event("stopped")
+        hold = Hold(origin, stopped["threadId"])
+        frame = origin.frame(hold.thread)
+        inputs = [local_i32(origin.variables(frame), name) for name in ("left", "right")]
+        check(frame["line"] == blue and inputs == [20, 22], "real ASP.NET call-site parameters are readable without evaluation", assertions)
+        partner = Dap([lldb], folder / "partner.dap.jsonl")
+        hold.partner = uuid.uuid4().hex
+        completed = folder / "returned.txt"
+        partner.launch(folder / "driver", lab / "Native", [str(host / "liborder_math.so"), *map(str, inputs), str(completed)], {native: [red]})
+        stopped = partner.event("stopped")
+        frame = partner.frame(stopped["threadId"])
+        check(Path(frame["source"]["path"]).resolve() == native, "B stops in unmodified build-order-lab math.cpp", assertions)
+        check(origin.frame(hold.thread)["line"] == blue and not pending.done(), "A and its HTTP response stay held while B debugs", assertions)
+        partner.request("continue", {"threadId": stopped["threadId"]})
+        check(partner.event("exited").get("exitCode") == 0 and completed.read_text().strip() == "42", "production driver confirms the native return", assertions)
+        check(hold.release(hold.token, hold.partner, True), "B releases the ordinary API call", assertions)
+        check(pending.result(timeout=10) == {"value": 42}, "A executes its call and returns the real HTTP result", assertions)
+    finally:
+        if partner:
+            partner.close()
+        origin.close()
+        requests.shutdown(wait=True)
+        (folder / "assertions.json").write_text(json.dumps(assertions, indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["run"])
-    parser.add_argument("--case", choices=["smoke", "all", "unsupported"], default="smoke")
+    parser.add_argument("--case", choices=["smoke", "all", "unsupported", "build-order-lab"], default="smoke")
     parser.add_argument("--netcoredbg", default=shutil.which("netcoredbg"))
     parser.add_argument("--lldb-dap", default=shutil.which("lldb-dap-19") or shutil.which("lldb-dap"))
     parser.add_argument("--report", type=Path)
@@ -234,6 +307,14 @@ def main():
         parser.error("the fixture binding is not an enabled supported blue/red pair")
     report = (args.report or root / "captures" / uuid.uuid4().hex).resolve()
     report.mkdir(parents=True, exist_ok=False)
+    if args.case == "build-order-lab":
+        try:
+            test_build_order_lab(root, report, args.netcoredbg, args.lldb_dap)
+        except Exception as error:
+            print(f"FAIL: {error}\nTranscripts: {report}", file=sys.stderr)
+            return 1
+        print(f"PASS: ordinary build-order-lab API/library. Transcripts: {report}")
+        return 0
     run(["cmake", "-S", root, "-B", root / "build", "-DCMAKE_BUILD_TYPE=Debug"])
     run(["cmake", "--build", root / "build"])
     run(["dotnet", "build", root / "Host/Host.csproj", "--configuration", "Debug", "--nologo"])

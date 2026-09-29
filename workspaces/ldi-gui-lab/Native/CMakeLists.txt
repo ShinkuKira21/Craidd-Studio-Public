@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(GuiMath LANGUAGES CXX)
+add_library(gui_math SHARED math.cpp)
+target_compile_features(gui_math PRIVATE cxx_std_17)
+install(TARGETS gui_math LIBRARY DESTINATION ".")

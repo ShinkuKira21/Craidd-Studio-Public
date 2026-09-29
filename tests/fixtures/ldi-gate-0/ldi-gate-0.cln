@@ -40,6 +40,13 @@ default_profile = "Debug"
 name = "LDI · Native"
 kind = "build"
 target = "native/Native.craidd"
+[config.slots]
+build = "Native · Build"
+
+[[config]]
+name = "Native · Build"
+kind = "build"
+target = "native/Native.craidd"
 method = "cmake"
 cwd = "."
 default_profile = "Debug"

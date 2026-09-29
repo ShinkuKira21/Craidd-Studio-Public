@@ -1,0 +1,76 @@
+[solution]
+name = "LDI GUI Lab"
+version = "1.0"
+projects = ["Gui/Gui.craidd", "Native/Native.craidd"]
+default_project = "Gui/Gui.craidd"
+default_config = "GUI · Local"
+
+[[config]]
+name = "GUI · Local"
+kind = "run"
+target = "Gui/Gui.craidd"
+[config.slots]
+build = "Prepare GUI"
+run = "GUI · Run"
+debug = "GUI · Debug"
+
+[[config]]
+name = "Native · LDI"
+kind = "build"
+target = "Native/Native.craidd"
+[config.slots]
+build = "Native · Build"
+
+[[config]]
+name = "Prepare GUI"
+kind = "build"
+target = "."
+method = "plan"
+[[config.order.steps]]
+kind = "build"
+configuration = "GUI · Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native · Build"
+[[config.order.steps]]
+kind = "install"
+configuration = "Native · Build"
+destination = "GUI · Build"
+
+[[config]]
+name = "GUI · Build"
+kind = "build"
+target = "Gui/Gui.craidd"
+method = "dotnet"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "Native · Build"
+kind = "build"
+target = "Native/Native.craidd"
+method = "cmake"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "gui_math"]
+
+[[config]]
+name = "GUI · Run"
+kind = "run"
+target = "Gui/Gui.craidd"
+method = "dotnet"
+command = "dotnet run --project LdiGui.csproj --no-launch-profile"
+[config.order]
+before = "Prepare GUI"
+
+[[config]]
+name = "GUI · Debug"
+kind = "debug"
+target = "Gui/Gui.craidd"
+method = "dotnet"
+command = "dotnet run --project LdiGui.csproj --no-launch-profile"
+[config.order]
+before = "Prepare GUI"

@@ -1,9 +1,17 @@
-# Held LDI: first runnable slice
+# Internal LDI debugger test fixture
 
 This fixture exercises a real C# DllImport and a real C++ shared library on
-Linux. It is a mechanism demo, **not evidence of usefulness on a real bug**.
+Linux. It is a test fixture, not the application example or evidence of
+usefulness on a real bug. For an ordinary application, use
+[LDI GUI Lab](../../../workspaces/ldi-gui-lab/README.md).
 
-## Try it in Craidd Studio
+The call counter, PID logging, checked arithmetic and `errno` changes exist
+only to let tests verify what happened in each process. None is required in
+developer code. Python is only the external test runner; Craidd's LDI runtime
+is Rust coordinating C# and C++ debuggers and has no Python dependency.
+`captures/` contains test evidence, not a project or source-code requirement.
+
+## Optionally inspect the test fixture in Craidd Studio
 
 1. Open `ldi-gate-0.cln`. In window A select **LDI · Host**.
 2. Open a second linked window for this solution. Select **LDI · Native**
@@ -33,10 +41,19 @@ Prerequisites: .NET 10 SDK, netcoredbg, CMake, a C++ compiler, Python 3,
 and lldb-dap (`lldb-dap-19` is detected on this development machine).
 
 ```bash
-python3 workspaces/ldi-gate-0/tools/ldi_probe.py run --case all
-python3 -m unittest discover -s workspaces/ldi-gate-0/tools -p 'test_*.py'
+python3 tests/fixtures/ldi-gate-0/tools/ldi_probe.py run --case all
+python3 tests/fixtures/ldi-gate-0/tools/ldi_probe.py run --case build-order-lab
+python3 -m unittest discover -s tests/fixtures/ldi-gate-0/tools -p 'test_*.py'
 cargo test --manifest-path src-tauri/Cargo.toml --lib production_driver_and_cmake_artifact_with_real_tools -- --ignored --nocapture
 ```
+
+`tools/gui_probe.py` is an external X11 test for LDI GUI Lab's ordinary button
+handler and shared library. Build/install the GUI demo's Debug outputs first,
+then run `python3 tests/fixtures/ldi-gate-0/tools/gui_probe.py` from the repository
+root. It sends Return only to the PID-verified test application window; it does
+not inject global keyboard input or add application hooks. It tests real
+netcoredbg/LLDB, not Craidd's two-window coordinator. Python/X11 test helpers
+remain here, never in the GUI demo or the IDE runtime.
 
 The runner builds the fixture itself. It reads inputs through DAP variables,
 not host logs, launches B under LLDB, and audits the managed DAP transcript for

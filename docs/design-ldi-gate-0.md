@@ -1,7 +1,10 @@
 # LDI Gate 0: standalone held-frame test plan
 
 **Status:** Test specification plus an implemented first mechanism harness,
-29 September 2026. See [the runnable fixture](../workspaces/ldi-gate-0/README.md).
+29 September 2026. See [the internal test fixture](../tests/fixtures/ldi-gate-0/README.md).
+The small user-facing example is [LDI GUI Lab](../workspaces/ldi-gui-lab/README.md).
+Test counters, logging, capture reports and Python are test infrastructure,
+not requirements for developer projects or dependencies of the IDE's LDI runtime.
 The complete fault/acceptance matrix below is broader than the tests currently
 implemented; do not treat it as a record that every case passed.
 This plan follows [section 3 of the design](design-ldi-debugging.md#3-execution-and-ownership).
@@ -68,7 +71,7 @@ do not prove adapter/runtime compatibility; the smoke test must do that.
 
 ## 2. Files to implement
 
-Implemented location: `workspaces/ldi-gate-0/`. The Python mechanism harness has
+Implemented location: `tests/fixtures/ldi-gate-0/`. The Python mechanism harness has
 no IDE imports and does not load its optional `.cln`/`.craidd` demo markers.
 Those additional markers let the same fixture be opened in two IDE windows.
 
@@ -182,7 +185,7 @@ stopped, and ensure the supervising test process cleans up.
 These commands run the implemented fixture. The runner builds the native library
 and managed host itself. Its binding is the fixed scalar fixture in `binding.json`,
 not a general-purpose ABI/configuration format.
-From `workspaces/ldi-gate-0`:
+From `tests/fixtures/ldi-gate-0`:
 
 ```bash
 dotnet --info
@@ -205,7 +208,9 @@ python3 -m unittest discover -s tools -p 'test_*.py'
 
 `--report` optionally selects a **new directory**, not a JSON filename.
 Otherwise each run retains its artifacts in a fresh `captures/<run-id>/`.
-The implemented CLI supports `run` with `smoke`, `all`, and `unsupported` cases.
+The implemented CLI supports `run` with `smoke`, `all`, `unsupported`, and
+`build-order-lab` cases. The last exercises ordinary ASP.NET call-site parameters
+and the uninstrumented C++ shared library using the production driver template.
 The later `make-driver`/`replay` sketches below remain proposals.
 
 Observed real-adapter passes: four signed input vectors, held-frame extraction,

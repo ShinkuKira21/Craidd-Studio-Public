@@ -58,6 +58,7 @@ struct Pair {
     partner_cancelled: Arc<AtomicBool>,
     library: Option<PathBuf>,
     completion: Option<PathBuf>,
+    native_entered: bool,
 }
 
 #[derive(Default)]
@@ -405,6 +406,7 @@ pub(crate) fn prepare_pair(
             partner_cancelled: Arc::new(AtomicBool::new(false)),
             library: None,
             completion: None,
+            native_entered: false,
         },
     );
     Ok(super::debug::DebugRequest {
@@ -577,13 +579,30 @@ pub(crate) fn on_stop(app: &AppHandle, label: &str, pgid: i32) {
         pair.held = true;
         pair.phase = "checking-stop".into();
         notify(app, pair);
+    } else if let Some(pair) = state.pairs.values_mut().find(|pair| {
+        pair.binding.blue.partner_label == label
+            && pair.partner_pgid == Some(pgid)
+            && pair.held
+            && !pair.cancelled.load(Ordering::Acquire)
+            && !pair.partner_cancelled.load(Ordering::Acquire)
+    }) {
+        // Block a second B control until this stop's source is known.
+        pair.phase = "checking-native-stop".into();
     }
 }
 
-pub(crate) fn on_frame(app: &AppHandle, label: &str, pgid: i32, frame: &Value) {
+/// True only for the private driver frame reached by stepping out of the
+/// selected native function. The reader consumes that stop and completes B.
+pub(crate) fn on_frame(
+    app: &AppHandle,
+    label: &str,
+    pgid: i32,
+    frame: &Value,
+    reason: Option<&str>,
+) -> bool {
     let manager = app.state::<LdiManager>();
     let Ok(mut state) = manager.0.lock() else {
-        return;
+        return false;
     };
     if let Some(pair) = state
         .pairs
@@ -591,7 +610,7 @@ pub(crate) fn on_frame(app: &AppHandle, label: &str, pgid: i32, frame: &Value) {
         .filter(|pair| pair.origin_pgid == pgid && !pair.cancelled.load(Ordering::Acquire))
     {
         if pair.phase != "checking-stop" {
-            return;
+            return false;
         }
         let blue = &pair.binding.blue;
         let at_blue = frame["source"]["path"]
@@ -606,15 +625,81 @@ pub(crate) fn on_frame(app: &AppHandle, label: &str, pgid: i32, frame: &Value) {
             pair.partner_cancelled = Arc::new(AtomicBool::new(false));
             pair.values = None;
             pair.completion = None;
+            pair.native_entered = false;
             pair.error = None;
         }
         notify(app, pair);
-    } else if let Some(pair) = state.pairs.values().find(|pair| {
-        pair.partner_pgid == Some(pgid) && pair.binding.blue.partner_label == label && pair.held
+    } else if let Some(pair) = state.pairs.values_mut().find(|pair| {
+        pair.partner_pgid == Some(pgid)
+            && pair.binding.blue.partner_label == label
+            && pair.held
+            && !pair.cancelled.load(Ordering::Acquire)
+            && !pair.partner_cancelled.load(Ordering::Acquire)
     }) {
+        let source = frame["source"]["path"].as_str().map(Path::new);
+        if source.is_some_and(|source| same_source(source, Path::new(&pair.binding.native.file))) {
+            pair.native_entered = true;
+        }
+        let driver = pair
+            .completion
+            .as_ref()
+            .and_then(|file| file.parent())
+            .map(|folder| folder.join("driver.cpp"));
+        if should_finish_native_step(reason, pair.native_entered, source, driver.as_deref()) {
+            pair.phase = "finishing-native".into();
+            notify(app, pair);
+            return true;
+        }
+        pair.phase = "native".into();
+        notify(app, pair);
         if let Some(window) = app.get_webview_window(&pair.binding.blue.partner_label) {
             let _ = window.set_focus();
         }
+    }
+    false
+}
+
+fn should_finish_native_step(
+    reason: Option<&str>,
+    native_entered: bool,
+    source: Option<&Path>,
+    driver: Option<&Path>,
+) -> bool {
+    reason == Some("step")
+        && native_entered
+        && source
+            .zip(driver)
+            .is_some_and(|(source, driver)| same_source(source, driver))
+}
+
+pub(crate) fn partner_stop_is_held(app: &AppHandle, label: &str, pgid: i32) -> bool {
+    let manager = app.state::<LdiManager>();
+    manager.0.lock().is_ok_and(|state| {
+        state.pairs.values().any(|pair| {
+            pair.partner_pgid == Some(pgid)
+                && pair.binding.blue.partner_label == label
+                && pair.held
+                && !pair.cancelled.load(Ordering::Acquire)
+        })
+    })
+}
+
+pub(crate) fn native_auto_resume_failed(app: &AppHandle, label: &str, pgid: i32, error: &str) {
+    let manager = app.state::<LdiManager>();
+    let Ok(mut state) = manager.0.lock() else {
+        return;
+    };
+    if let Some(pair) = state.pairs.values_mut().find(|pair| {
+        pair.partner_pgid == Some(pgid)
+            && pair.binding.blue.partner_label == label
+            && pair.held
+            && pair.phase == "finishing-native"
+    }) {
+        pair.phase = "failed".into();
+        pair.error = Some(format!(
+            "Could not finish B after returning from native code: {error}. A remains held."
+        ));
+        notify(app, pair);
     }
 }
 
@@ -1082,6 +1167,19 @@ pub(crate) fn with_control(
                 pair.binding.blue.partner_window_id
             ));
         }
+        if pair.binding.blue.partner_label == label
+            && pair.held
+            && matches!(
+                pair.phase.as_str(),
+                "checking-native-stop" | "finishing-native"
+            )
+            && matches!(
+                action,
+                "continue" | "stepOver" | "stepInto" | "stepOut" | "pause"
+            )
+        {
+            return Err("B is completing an LDI native step; wait for its frame or release".into());
+        }
         if action == "stop" && origin == label {
             pair.cancelled.store(true, Ordering::Release);
             pair.partner_cancelled.store(true, Ordering::Release);
@@ -1243,7 +1341,81 @@ pub fn abandon_ldi_reproduction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const SOURCE: &str = include_str!("../../../workspaces/ldi-gate-0/Host/Program.cs");
+    const SOURCE: &str = include_str!("../../../tests/fixtures/ldi-gate-0/Host/Program.cs");
+    #[test]
+    fn gui_lab_pairs_button_call_with_ordinary_cpp_library() {
+        let source = include_str!("../../../workspaces/ldi-gui-lab/Gui/MainWindow.cs");
+        let line = source
+            .lines()
+            .position(|line| line.contains("int result = NativeMath.Add(left, right);"))
+            .unwrap() as u32
+            + 1;
+        let call = managed_call(source, line).unwrap();
+        assert_eq!(call.library, "gui_math");
+        assert_eq!(call.entry_point, "gui_add");
+        assert_eq!(call.locals, ["left", "right"]);
+        let native = include_str!("../../../workspaces/ldi-gui-lab/Native/math.cpp");
+        let red = native
+            .lines()
+            .position(|line| line.contains("int result = left + right;"))
+            .unwrap() as u32
+            + 1;
+        assert!(native_contains(native, red, &call.entry_point));
+    }
+    #[test]
+    fn only_a_step_from_this_native_call_into_our_driver_auto_finishes() {
+        let driver = Path::new("/ldi/private/driver.cpp");
+        assert!(should_finish_native_step(
+            Some("step"),
+            true,
+            Some(driver),
+            Some(driver)
+        ));
+        assert!(!should_finish_native_step(
+            Some("breakpoint"),
+            true,
+            Some(driver),
+            Some(driver)
+        ));
+        assert!(!should_finish_native_step(
+            Some("step"),
+            false,
+            Some(driver),
+            Some(driver)
+        ));
+        assert!(!should_finish_native_step(
+            Some("step"),
+            true,
+            Some(Path::new("/other/driver.cpp")),
+            Some(driver)
+        ));
+        assert!(!should_finish_native_step(
+            Some("step"),
+            true,
+            Some(Path::new("/source/math.cpp")),
+            Some(driver)
+        ));
+    }
+    #[test]
+    fn build_order_lab_pairs_ordinary_api_and_shared_library() {
+        let source = include_str!("../../../workspaces/build-order-lab/Api/Program.cs");
+        let line = source
+            .lines()
+            .position(|line| line.contains("int result = NativeMath.Add(left, right);"))
+            .unwrap() as u32
+            + 1;
+        let call = managed_call(source, line).unwrap();
+        assert_eq!(call.library, "order_math");
+        assert_eq!(call.entry_point, "order_add");
+        assert_eq!(call.locals, ["left", "right"]);
+        let native = include_str!("../../../workspaces/build-order-lab/Native/math.cpp");
+        let red = native
+            .lines()
+            .position(|line| line.contains("return left + right;"))
+            .unwrap() as u32
+            + 1;
+        assert!(native_contains(native, red, &call.entry_point));
+    }
     #[test]
     fn reads_call_site_not_import_declaration() {
         let line = SOURCE
@@ -1304,7 +1476,7 @@ mod tests {
     }
     #[test]
     fn native_breakpoint_must_be_in_export_body() {
-        let source = include_str!("../../../workspaces/ldi-gate-0/native/real.cpp");
+        let source = include_str!("../../../tests/fixtures/ldi-gate-0/native/real.cpp");
         let line = source
             .lines()
             .position(|line| line.contains("NATIVE_STOP"))
@@ -1338,7 +1510,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("workspaces/ldi-gate-0");
+            .join("tests/fixtures/ldi-gate-0");
         let folder = std::env::temp_dir().join(format!(
             "craidd-ldi-driver-{}-{}",
             std::process::id(),
