@@ -133,6 +133,24 @@ Set Breakpoint here / Delete Breakpoint here
 Set/Delete Profile Breakpoint here (planned, disabled)
 ```
 
+**Planned LDI gutter action:** At an executable managed call to a native import,
+add **Native Debugging Breakpoint** (blue). A declaration instead offers **Find
+call sites to set Native Debugging Breakpoint**. The blue marker chooses the
+entry context; the native red marker chooses the stop within its reproduction.
+An enabled compatible pair activates only under Gold Linked Debug. At blue, A
+stays held until B releases it; white Continue/Step cannot bypass that hold.
+
+In a library's LDI context, a red marker without a compatible enabled blue call
+site carries a gentle reminder badge. Its tooltip identifies the relevant
+caller window when known and directs the user to right-click the call site's
+gutter. Clear that missing-link reminder when the library/entry/signature and
+call-site pairing resolve; show **Paired** or **Waiting for blue** separately
+from adapter verification and actual breakpoint hits. Matching names cannot
+promise that a branch will run. A library breakpoint already served by a
+standalone native driver does not require LDI pairing.
+See the proposed [LDI activation and reminder design](design-ldi-debugging.md#gold-activation-and-breakpoint-roles).
+These additions are design work, not currently implemented menu behavior.
+
 A normal click or **Set Breakpoint here** targets the session currently
 selected in this IDE window, including a session selected from another IDE
 window's tray. Each physical window may select a different session and set

@@ -5,6 +5,12 @@
 **Governs:** What Craidd does and does not attempt when two languages
 share a process, and why.
 
+**Current LDI design:** [LDI debugging](design-ldi-debugging.md) develops the
+separate-driver idea into a Gold Linked Debug workflow with blue managed
+call-site markers and native red markers. The managed caller remains at its
+source stop until the native partner releases it. That document also qualifies
+the blanket Linux mixed-debugging claims in this historical proposal.
+
 ---
 
 ## The thesis
