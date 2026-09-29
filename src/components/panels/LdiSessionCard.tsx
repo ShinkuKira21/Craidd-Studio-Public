@@ -10,6 +10,7 @@ export default function LdiSessionCard() {
       <div className="font-semibold mb-1">Native debugging · LDI</div>
       {blues.map((blue) => <div key={blue.file + blue.line} className="mb-2">
         <div>{blue.entryPoint} → CS{blue.partnerWindowId}</div>
+        {blue.condition && <div className="text-zinc-400">When {blue.condition}</div>}
         <div className="text-zinc-400">Gold Linked Debug activates this pair.</div>
         {blue.warning && <div className="text-amber-300 mt-1">⚠ {blue.warning}</div>}
       </div>)}

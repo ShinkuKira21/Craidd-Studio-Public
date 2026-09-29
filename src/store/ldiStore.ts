@@ -4,6 +4,7 @@ import type { Breakpoint } from "./breakpointStore";
 export interface LdiBlue {
   file: string; line: number; originLabel: string; partnerLabel: string;
   partnerWindowId: number; entryPoint: string; locals: [string, string];
+  condition: string | null;
   warning: string | null; nativePoints: Breakpoint[];
 }
 export interface LdiSession {
@@ -19,9 +20,9 @@ export async function refreshLdiBlues() {
   const blues = await invoke<LdiBlue[]>("get_ldi_blues");
   useLdi.setState({ blues });
 }
-export async function setLdiBlue(file: string, line: number, partnerLabel: string) {
+export async function setLdiBlue(file: string, line: number, partnerLabel: string, condition?: string) {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_ldi_blue", { file, line, partnerLabel });
+  await invoke("set_ldi_blue", { file, line, partnerLabel, condition: condition ?? null });
   await refreshLdiBlues();
 }
 export async function removeLdiBlue() {

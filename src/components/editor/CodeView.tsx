@@ -19,20 +19,24 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
     && /\.(c|cpp|cc|cxx|h|hpp|hh|hxx)$/.test(file ?? "");
   const managed = linked.windows.find((item) => item.ldiRole === "managed");
   const lines = [...new Set(points.filter((point) => point.file === file).map((point) => point.line))];
-  return [...lines.map((line) => ({
-    range: new monaco.Range(line, 1, line, 1),
-    options: {
-      isWholeLine: false,
-      glyphMarginClassName: library && !blues.some((blue) => blue.nativePoints.some((point) => point.file === file && point.line === line))
-        ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
-      glyphMarginHoverMessage: { value: library && !blues.some((blue) => blue.nativePoints.some((point) => point.file === file && point.line === line))
-        ? `LDI reminder: right-click the C# gutter in ${managed ? `CS${managed.windowId}` : "a linked managed window"} where this extern function is called (not defined), and choose Native Debugging Breakpoint. A red library marker alone does not launch a reproduction; use a .c/.cpp implementation, not a header prototype.`
-        : "Breakpoint · line " + line },
-    },
-  })), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => ({
+  return [...lines.map((line) => {
+    const condition = points.find((point) => point.file === file && point.line === line)?.condition;
+    const unmatchedLibrary = library && !blues.some((blue) => blue.nativePoints.some((point) => point.file === file && point.line === line));
+    const reminder = unmatchedLibrary
+      ? `LDI reminder: right-click the C# gutter in ${managed ? `CS${managed.windowId}` : "a linked managed window"} where this extern function is called (not defined), and choose Native Debugging Breakpoint. A red library marker alone does not launch a reproduction; use a .c/.cpp implementation, not a header prototype.`
+      : `Breakpoint · line ${line}`;
+    return {
+      range: new monaco.Range(line, 1, line, 1),
+      options: {
+        isWholeLine: false,
+        glyphMarginClassName: unmatchedLibrary ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
+        glyphMarginHoverMessage: { value: `${reminder}${condition ? `\nCondition: ${condition}` : ""}` },
+      },
+    };
+  }), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => ({
     range: new monaco.Range(blue.line, 1, blue.line, 1),
     options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${blue.warning ? " craidd-breakpoint-warning" : ""}`,
-      glyphMarginHoverMessage: { value: blue.warning ? `⚠ ${blue.warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}\n\nGold Linked Debug only. A remains held until B finishes.` } },
+      glyphMarginHoverMessage: { value: blue.warning ? `⚠ ${blue.warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\n\nGold Linked Debug only. A remains held until B finishes.` } },
   })), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }
 

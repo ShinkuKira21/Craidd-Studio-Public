@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export interface Breakpoint { file: string; line: number; scope: string }
+export interface Breakpoint { file: string; line: number; scope: string; condition?: string | null }
 
 // Older versions saved one record per linked window. A breakpoint now belongs
 // to the solution, so preserve each location once when reading legacy data.
@@ -11,7 +11,7 @@ export function normalizeBreakpoints(points: Breakpoint[]): Breakpoint[] {
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).map((point) => ({ file: point.file, line: point.line, scope: "all" }));
+  }).map((point) => ({ file: point.file, line: point.line, scope: "all", condition: point.condition?.trim() || null }));
 }
 
 interface BreakpointState {
@@ -19,6 +19,7 @@ interface BreakpointState {
   points: Breakpoint[];
   load: (solutionPath: string | null) => Promise<void>;
   toggle: (file: string, line: number) => Promise<void>;
+  setCondition: (file: string, line: number, condition: string) => Promise<void>;
   remove: (file: string, line: number) => Promise<void>;
   moveLines: (file: string, moves: { from: number; to: number }[]) => Promise<void>;
   movePath: (oldPath: string, newPath: string) => Promise<void>;
@@ -43,7 +44,16 @@ export const useBreakpoints = create<BreakpointState>((set, get) => ({
     if (!solutionPath) return;
     const next = points.some((point) => point.file === file && point.line === line)
       ? points.filter((point) => point.file !== file || point.line !== line)
-      : [...points, { file, line, scope: "all" }];
+      : [...points, { file, line, scope: "all", condition: null }];
+    set({ points: next });
+    try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
+  },
+  setCondition: async (file, line, condition) => {
+    const { solutionPath, points } = get();
+    if (!solutionPath) return;
+    if (!points.some((point) => point.file === file && point.line === line)) throw new Error("Add the red breakpoint first");
+    const next = points.map((point) => point.file === file && point.line === line
+      ? { ...point, condition: condition.trim() || null } : point);
     set({ points: next });
     try { await persist(solutionPath, next); } catch (error) { set({ points }); throw error; }
   },

@@ -44,7 +44,7 @@ struct Session {
     breakpoint_files: Mutex<HashSet<String>>,
     breakpoints_ready: AtomicBool,
     solution_path: String,
-    blue: Mutex<Option<Breakpoint>>,
+    blue: Mutex<Option<super::ldi::ManagedBlueBreakpoint>>,
     alive: Arc<AtomicBool>,
 }
 
@@ -469,6 +469,18 @@ fn breakpoint_lines(points: &[Breakpoint]) -> BTreeMap<String, Vec<u32>> {
     by_file
 }
 
+fn dap_line_breakpoint(file: &str, line: u32, points: &[Breakpoint], blue: Option<&super::ldi::ManagedBlueBreakpoint>) -> Value {
+    // One DAP location cannot represent independently conditioned red and blue
+    // stops. Blue owns that location during Gold; red owns it in White Debug.
+    let condition = if let Some(blue) = blue.filter(|blue| blue.file == file && blue.line == line) {
+        blue.condition.as_deref()
+    } else {
+        points.iter().find(|point| point.file == file && point.line == line).and_then(|point| point.condition.as_deref())
+    };
+    if let Some(condition) = condition { json!({"line":line,"condition":condition}) }
+    else { json!({"line":line}) }
+}
+
 fn send_breakpoints_locked(session: &Session, points: &[Breakpoint], files: &mut HashSet<String>) -> Result<(), String> {
     let mut by_file = breakpoint_lines(points);
     let blue = session.blue.lock().map_err(|error| error.to_string())?.clone();
@@ -479,7 +491,7 @@ fn send_breakpoints_locked(session: &Session, points: &[Breakpoint], files: &mut
     for previous in files.iter() { by_file.entry(previous.clone()).or_default(); }
     for (file, lines) in &by_file {
         request(session, "setBreakpoints", json!({"source":{"path":file},
-            "breakpoints":lines.iter().map(|line| json!({"line":line})).collect::<Vec<_>>() }))?;
+            "breakpoints":lines.iter().map(|line| dap_line_breakpoint(file, *line, points, blue.as_ref())).collect::<Vec<_>>() }))?;
     }
     *files = by_file.into_keys().collect();
     Ok(())
@@ -1195,11 +1207,21 @@ mod tests {
     #[test]
     fn dap_breakpoints_ignore_legacy_window_scope_and_deduplicate_lines() {
         let lines = breakpoint_lines(&[
-            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "window-a".into() },
-            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into() },
-            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into() },
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "window-a".into(), condition: None },
+            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into(), condition: None },
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into(), condition: None },
         ]);
         assert_eq!(lines.get("/project/main.rs"), Some(&vec![8, 10]));
+    }
+
+    #[test]
+    fn dap_red_condition_applies_unless_gold_blue_owns_the_same_line() {
+        let points = [Breakpoint { file: "/project/main.cs".into(), line: 8, scope: "all".into(), condition: Some("i > 6".into()) }];
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, None), json!({"line":8,"condition":"i > 6"}));
+        let blue = super::super::ldi::ManagedBlueBreakpoint { file: "/project/main.cs".into(), line: 8, condition: Some("i < 10".into()) };
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, Some(&blue)), json!({"line":8,"condition":"i < 10"}));
+        let blue = super::super::ldi::ManagedBlueBreakpoint { condition: None, ..blue };
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, Some(&blue)), json!({"line":8}));
     }
 
     #[test]

@@ -19,6 +19,7 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 pub struct Blue {
     file: String,
     line: u32,
+    condition: Option<String>,
     origin_label: String,
     partner_label: String,
     origin_instance: String,
@@ -28,6 +29,13 @@ pub struct Blue {
     locals: [String; 2],
     warning: Option<String>,
     native_points: Vec<Breakpoint>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ManagedBlueBreakpoint {
+    pub file: String,
+    pub line: u32,
+    pub condition: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -250,6 +258,7 @@ pub fn set_ldi_blue(
     file: String,
     line: u32,
     partner_label: String,
+    condition: Option<String>,
 ) -> Result<Blue, String> {
     let (origin, partner) =
         super::linked_windows::ldi_selections(&app, window.label(), &partner_label)?;
@@ -279,9 +288,14 @@ pub fn set_ldi_blue(
         &fs::read_to_string(&path).map_err(|error| error.to_string())?,
         line,
     )?;
+    let condition = condition.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+    if condition.as_ref().is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control)) {
+        return Err("A blue condition must be one line and at most 256 bytes".into());
+    }
     let blue = Blue {
         file: path.to_string_lossy().into_owned(),
         line,
+        condition,
         origin_label: origin.label.clone(),
         partner_label: partner.label.clone(),
         origin_instance: origin.instance_id,
@@ -422,17 +436,17 @@ pub(crate) fn prepare_pair(
     })
 }
 
-pub(crate) fn active_blue(app: &AppHandle, label: &str) -> Option<Breakpoint> {
+pub(crate) fn active_blue(app: &AppHandle, label: &str) -> Option<ManagedBlueBreakpoint> {
     let manager = app.state::<LdiManager>();
     let state = manager.0.lock().ok()?;
     let pair = state
         .pairs
         .get(label)
         .filter(|pair| !pair.cancelled.load(Ordering::Acquire))?;
-    Some(Breakpoint {
+    Some(ManagedBlueBreakpoint {
         file: pair.binding.blue.file.clone(),
         line: pair.binding.blue.line,
-        scope: "all".into(),
+        condition: pair.binding.blue.condition.clone(),
     })
 }
 
