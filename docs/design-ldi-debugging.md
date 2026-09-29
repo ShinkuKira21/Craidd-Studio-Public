@@ -465,9 +465,12 @@ driver or treat waiting for blue as a server-readiness dependency.
 | A Continue/Step while held | Rejected by the backend; A stays stopped |
 | B Step/Continue | Operates on B only |
 | B successful completion/release | Validates current hold, then resumes A once |
-| B crash/build failure | A stays held; retry, partner cancellation/release, or Stop |
+| B crash/build failure | A stays held; report why B did not return. A failed reproduction must never silently resume the original call |
 | Duplicate/stale B release | Ignored/rejected; cannot release a later stop |
-| Stop A or Gold Stop | Terminate owned sessions; do not first continue A |
+| White Stop A (C#) | Stop A and its paired B; invalidate the LDI hold without continuing A. Unpaired clients keep running |
+| White Stop B (C++ reproduction) | Stop only the current B reproduction, release the held A to execute its original call, and leave A's managed debugger and blue pairing armed for the next call |
+| White Stop an unpaired client | Stop that client's process/debugger only; do not stop the API, B, or another client |
+| Gold Stop | Stop **every** participant in the linked action, including both sides of every LDI pair and all clients; invalidate pending launches and releases |
 | Hide/park a viewport | Preserve the hold and session state |
 | End A externally | Invalidate hold/release target; no subsequent resume |
 | Edit bound inputs | Reject or invalidate/restart B before release |
@@ -480,6 +483,49 @@ Output and native build failures use the existing Output/Problems path with
 reproduction identity. Show `Held by B`, `Preparing reproduction`, `Paused in
 B`, and `Reproduction failed` distinctly. Route release/navigation through
 the linked-session model; do not require a physical B viewport to own the lock.
+
+White Stop B is an **intentional abandon-and-continue**, not a successful native
+reproduction: cancel its driver/build first, make stale completion tokens
+unusable, then continue A exactly once. A may then hit another red or blue
+breakpoint. An unexpected B crash remains held until the user chooses White
+Stop B (abandon and continue) or Gold Stop; a crash must not make that choice
+for them. White Stop A and Gold Stop must never execute a held original call.
+Closing B uses the same cancellation barrier, then removes only the injected
+blue marker before A continues; ordinary C# red markers stay active. If A's
+debugger has already vanished or refuses that detach/continue, stop the pair
+with an explicit error rather than leave A at an invisible hold.
+
+A White Stop on a linked window that is still waiting to launch cancels that
+window's pending start. If the stopped window owns a required readiness gate,
+dependent windows must be marked failed and not launched; already-running
+unpaired windows remain independent.
+
+### Fault and close acceptance matrix (not yet verified)
+
+Test this with A = C# API, B = C++ library, and two independent Tauri client
+windows. Both clients depend on API readiness at launch; that dependency does
+not make either client an LDI partner. Both Tauri debuggers may share one Vite
+server, but each owns a separate client process and debug session.
+
+| Scenario | Required observable result |
+| --- | --- |
+| C++ compile/syntax error during ordinary Build or Run preparation | Native file/line appears in Problems and Output; dependent install/launch steps do not start; Gold shows the failed participant |
+| Native failure during ordinary Run, after successful build | Report the failing process/signal and native output without pretending this is a compile error; surviving client sessions remain independently stoppable |
+| B throws, aborts, or otherwise fails before returning during LDI | B shows the failure; A remains at blue. White Stop B may deliberately abandon and continue A; Gold Stop ends everyone |
+| B returns successfully, then A's **original** native call fails | Report this as a managed-host/runtime failure after release, not as a B driver failure. The two client debug sessions remain independent |
+| White Stop A | Stop A and B; both clients keep their own debug sessions. Any pending client launch waiting on A must fail clearly rather than start against an unrelated listener |
+| White Stop B | Cancel B, release A's current hold exactly once, and keep A armed for the next blue hit; neither client stops |
+| White Stop either client | Only that client stops. The other client, A, and B are unaffected; shared Vite stays alive while a client still uses it |
+| Close A's IDE window | Cancel the A–B pair. Do not stop already-running unpaired clients; show them that their API dependency is gone |
+| Close either client's IDE window | Stop only that client's session; preserve the other client and A–B pair |
+| Close B's IDE window | Cancel any active B reproduction, release a held A to execute its original call, remove the injected blue marker, and continue A's ordinary red debugging. LDI stays disabled because B is gone; clients remain running |
+| Gold Stop from any linked window | Stop both clients, A, B, the shared frontend when its final lease ends, and any pending starts; no stale B completion may resume A |
+
+The White Stop B and Close B paths are implemented but still need a manual
+four-window test, especially a stop during B's driver build or native step.
+Closing an unpaired client is label-local in the backend; the four-window case
+and shared frontend lifetime still need an actual test. Do not mark these rows
+green based only on the three-language GUI displaying **42**.
 
 ## 10. Recursion and threads
 

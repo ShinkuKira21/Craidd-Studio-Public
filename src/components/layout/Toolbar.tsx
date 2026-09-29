@@ -45,7 +45,7 @@ function Toolbar() {
     && item.windowLabel !== linked.ownWindowLabel);
   const heldByLdi = Boolean(ldi?.held && ldi.phase !== "stopped" && ldi.originLabel === (remote?.windowLabel ?? linked.ownWindowLabel));
   const viewedStatus = remote?.status ?? (["building", "running", "paused"].includes(debugStatus) ? debugStatus : status);
-  const running = ["starting", "building", "running", "paused"].includes(viewedStatus);
+  const running = ["waiting", "starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
   const viewedProfileName = remote ? remote.selectedProfileName : selectedProfileName;
   const selectedConfig = configs.find((config) => config.name === viewedConfigName);
@@ -144,7 +144,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   const [plan, setPlan] = useState<LinkedLaunchPlanPhase[] | null>(null);
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
-  const isStop = linked.activeAction === kind && (kind === "run" || kind === "debug");
+  const isStop = linked.activeAction === kind;
   const available = kind === "build" ? linked.canBuild : kind === "run" ? linked.canRun : linked.canDebug;
   const disabled = !isStop && (launching || !linked.linked || linked.busy || !available);
   const launch = async () => {

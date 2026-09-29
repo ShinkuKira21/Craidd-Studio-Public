@@ -24,10 +24,10 @@ export default function LdiSessionCard() {
     <div className="text-zinc-300 mt-1 font-mono break-all">{session.entryPoint}({session.values?.join(", ") ?? session.locals.join(", ")})</div>
     <div className="text-zinc-500 mt-1">{session.file.split("/").pop()}:{session.line} → CS{session.partnerWindowId}</div>
     {session.held && <div className="text-zinc-400 mt-2">
-      {session.phase === "building-native" ? "Building B's native driver…" : session.phase === "finishing-native" ? "Native call returned; finishing B…" : partner ? "Step the real library here. Finish B to resume A." : "Continue and Step are held until B releases this call."}
+      {session.phase === "building-native" ? "Building B's native driver…" : session.phase === "finishing-native" ? "Native call returned; finishing B…" : session.phase === "stopping-native" ? "Stopping B; A will execute its original call when B ends." : session.phase === "closing-native" ? "Closing B; A will execute its original call and LDI will detach." : partner ? "Step the real library here. Finish B to resume A." : "Continue and Step are held until B releases this call."}
     </div>}
     {session.error && <div role="alert" className="mt-2 text-amber-300">{session.error}</div>}
-    {partner && session.held && session.phase !== "building-native" && <button type="button"
+    {partner && session.held && !["building-native", "stopping-native", "closing-native"].includes(session.phase) && <button type="button"
       className="mt-2 px-2 py-1 border border-zinc-600 rounded text-zinc-300 hover:bg-zinc-800"
       onClick={() => {
         if (window.confirm("Abandon this reproduction and let A execute its original call? B's values and edits are not copied to A.")) {

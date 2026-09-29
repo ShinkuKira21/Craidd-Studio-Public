@@ -208,13 +208,14 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   const unlistenTitle = await currentWindow.listen<{ title: string }>("craidd:linked-title", (event) => {
     void currentWindow.setTitle(event.payload.title).catch(() => { /* best effort */ });
   });
-  const unlistenCommand = await currentWindow.listen<{ kind: "start" | "stop"; action: Action | null; actionId: number }>(
+  const stopLocalAction = () => ["building", "running", "paused"].includes(useDebug.getState().status)
+    ? useDebug.getState().control("stop") : useBuild.getState().stop();
+  const unlistenCommand = await currentWindow.listen<{ kind: "start" | "stop" | "cancel_member"; action: Action | null; actionId: number }>(
     "craidd:linked-command", (event) => {
       const command = event.payload;
-      if (command.kind === "stop") {
+      if (command.kind === "stop" || command.kind === "cancel_member") {
         cancelledActions.add(command.actionId);
-        void (["building", "running", "paused"].includes(useDebug.getState().status)
-          ? useDebug.getState().control("stop") : useBuild.getState().stop());
+        if (command.kind === "stop") void stopLocalAction();
         return;
       }
       if (command.action) {
@@ -232,8 +233,14 @@ export async function listenToLinkedWindows(): Promise<() => void> {
             .catch((error) => console.error("[craidd] Linked action acknowledgement failed:", error));
         };
         Promise.resolve()
-          .then(() => useBuild.getState().start(command.action!))
-          .then(() => ack(actionStatus(command.action!)))
+          .then(() => cancelledActions.has(command.actionId) ? undefined : useBuild.getState().start(command.action!))
+          .then(async () => {
+            if (cancelledActions.has(command.actionId)
+              && ["starting", "building", "running", "paused"].includes(actionStatus(command.action!))) {
+              await stopLocalAction();
+            }
+            ack(cancelledActions.has(command.actionId) ? "cancelled" : actionStatus(command.action!));
+          })
           .catch((error) => {
             console.error("[craidd] Linked action start failed:", error);
             ack("failed");

@@ -795,17 +795,36 @@ pub(crate) fn on_variables(app: &AppHandle, label: &str, pgid: i32, variables: &
         if let Err(error) = result {
             let manager = app.state::<LdiManager>();
             let mut current = false;
+            let mut abandoned = false;
+            let mut detach_failed = false;
             if let Ok(mut state) = manager.0.lock() {
                 if let Some(pair) = state.pairs.get_mut(&label).filter(|pair| {
                     pair.token == token && pair.held && !pair.cancelled.load(Ordering::Acquire)
                 }) {
-                    current = true;
-                    pair.phase = "failed".into();
-                    pair.error = Some(error.clone());
-                    notify(&app, pair);
+                    if pair.phase == "stopping-native" && pair.partner_cancelled.load(Ordering::Acquire) {
+                        abandoned = finish_abandoned_partner(&app, pair).is_ok();
+                    } else if pair.phase == "closing-native" && pair.partner_cancelled.load(Ordering::Acquire) {
+                        match finish_partner_close(&app, pair) {
+                            Ok(()) => abandoned = true,
+                            Err(_) => detach_failed = true,
+                        }
+                    } else {
+                        current = true;
+                        pair.phase = "failed".into();
+                        pair.error = Some(error.clone());
+                        notify(&app, pair);
+                    }
                 }
             }
-            if current {
+            if detach_failed {
+                // B is already gone. An A that cannot be detached/resumed
+                // must be stopped instead of left at an invisible hold.
+                super::debug::cancel_debug_by_label(&app, &label);
+            }
+            if abandoned {
+                super::debug::emit(&app, &binding.blue.partner_label,
+                    json!({"status":"terminated", "text":"B stopped; A continues its original call."}));
+            } else if current {
                 super::debug::emit(
                     &app,
                     &binding.blue.partner_label,
@@ -1169,6 +1188,13 @@ pub(crate) fn with_control(
         }
         if pair.binding.blue.partner_label == label
             && pair.held
+            && action == "stop"
+            && matches!(pair.phase.as_str(), "stopping-native" | "closing-native")
+        {
+            return Ok(());
+        }
+        if pair.binding.blue.partner_label == label
+            && pair.held
             && matches!(
                 pair.phase.as_str(),
                 "checking-native-stop" | "finishing-native"
@@ -1191,17 +1217,96 @@ pub(crate) fn with_control(
                 }
             }
         } else if action == "stop" && pair.binding.blue.partner_label == label && pair.held {
+            let building = pair.phase == "building-native";
             pair.partner_cancelled.store(true, Ordering::Release);
-            pair.partner_pgid = None;
-            pair.phase = "failed".into();
-            pair.error = Some(
-                "B was stopped. A remains held; abandon and release from B, or use Gold Stop."
-                    .into(),
-            );
+            pair.phase = "stopping-native".into();
+            pair.error = None;
             notify(app, pair);
+            if let Err(error) = operation() {
+                pair.phase = "failed".into();
+                pair.error = Some(format!("Could not stop B: {error}. A remains held."));
+                notify(app, pair);
+                return Err(error);
+            }
+            // A must not run alongside an unfinished B. The build task or
+            // adapter-end callback releases it after B has actually stopped.
+            if !building && pair.partner_pgid.is_none() {
+                finish_abandoned_partner(app, pair)?;
+            }
+            return Ok(());
         }
     }
     operation()
+}
+
+fn finish_abandoned_partner(app: &AppHandle, pair: &mut Pair) -> Result<(), String> {
+    if !pair.held || pair.cancelled.load(Ordering::Acquire) || pair.phase != "stopping-native" {
+        return Ok(());
+    }
+    pair.completion = None;
+    if let Err(error) = release(app, pair) {
+        pair.phase = "failed".into();
+        pair.error = Some(format!("B stopped, but A could not resume: {error}. A remains held."));
+        notify(app, pair);
+        return Err(error);
+    }
+    pair.phase = "abandoned".into();
+    notify(app, pair);
+    Ok(())
+}
+
+fn finish_partner_close(app: &AppHandle, pair: &mut Pair) -> Result<(), String> {
+    if pair.cancelled.load(Ordering::Acquire) || pair.phase != "closing-native" {
+        return Ok(());
+    }
+    // Remove the injected blue DAP marker before A can reach another call.
+    // Explicit red C# markers, including one on the same line, remain.
+    if pair.origin_pgid > 0 {
+        if let Err(error) = super::debug::disable_ldi_blue(app, &pair.binding.blue.origin_label) {
+            pair.phase = "failed".into();
+            pair.error = Some(format!("B closed, but the blue marker could not be detached: {error}. A remains held."));
+            notify(app, pair);
+            return Err(error);
+        }
+    }
+    pair.completion = None;
+    if pair.held {
+        if let Err(error) = release(app, pair) {
+            pair.phase = "failed".into();
+            pair.error = Some(format!("B closed, but A could not resume: {error}. A remains held."));
+            notify(app, pair);
+            return Err(error);
+        }
+    }
+    pair.cancelled.store(true, Ordering::Release);
+    pair.partner_cancelled.store(true, Ordering::Release);
+    pair.phase = "stopped".into();
+    notify(app, pair);
+    Ok(())
+}
+
+/// A library viewport closing is pair detachment, not a solution-wide stop.
+/// B's build/adapter is cancelled by the caller; a held A is resumed only
+/// after that cancellation finishes. The binding is not rearmed without B.
+pub(crate) fn partner_window_closing(app: &AppHandle, label: &str) -> Result<bool, String> {
+    let manager = app.state::<LdiManager>();
+    let mut state = manager.0.lock().map_err(|error| error.to_string())?;
+    let Some((origin, pair)) = state.pairs.iter_mut().find(|(_, pair)| {
+        pair.binding.blue.partner_label == label && !pair.cancelled.load(Ordering::Acquire)
+    }) else { return Ok(false); };
+    let origin = origin.clone();
+    let building = pair.phase == "building-native";
+    pair.partner_cancelled.store(true, Ordering::Release);
+    pair.phase = "closing-native".into();
+    pair.error = None;
+    notify(app, pair);
+    if (!pair.held || !building) && pair.partner_pgid.is_none() {
+        finish_partner_close(app, pair)?;
+    }
+    state.blues.remove(&origin);
+    drop(state);
+    let _ = app.emit("craidd:ldi-blues", ());
+    Ok(true)
 }
 
 fn release(app: &AppHandle, pair: &mut Pair) -> Result<(), String> {
@@ -1230,10 +1335,24 @@ pub(crate) fn on_exit(app: &AppHandle, label: &str, pgid: i32, code: Option<i64>
     }) else {
         return;
     };
+    if pair.phase == "stopping-native" {
+        pair.partner_pgid = None;
+        let _ = finish_abandoned_partner(app, pair);
+        return;
+    }
+    if pair.phase == "closing-native" {
+        pair.partner_pgid = None;
+        let failed = finish_partner_close(app, pair).is_err();
+        let origin = pair.binding.blue.origin_label.clone();
+        drop(state);
+        if failed { super::debug::cancel_debug_by_label(app, &origin); }
+        return;
+    }
     let returned = pair.completion.as_ref().is_some_and(|file| {
         fs::read_to_string(file).is_ok_and(|text| text.trim().parse::<i32>().is_ok())
     });
-    if code == Some(0) && returned && !pair.cancelled.load(Ordering::Acquire) {
+    if code == Some(0) && returned && !pair.cancelled.load(Ordering::Acquire)
+        && !pair.partner_cancelled.load(Ordering::Acquire) {
         if let Err(error) = release(app, pair) {
             pair.phase = "failed".into();
             pair.error = Some(error);
@@ -1258,6 +1377,7 @@ pub(crate) fn on_adapter_end(app: &AppHandle, label: &str, pgid: i32) {
     let Ok(mut state) = manager.0.lock() else {
         return;
     };
+    let mut failed_close = Vec::new();
     for (origin, pair) in &mut state.pairs {
         if origin == label && pair.origin_pgid == pgid {
             pair.cancelled.store(true, Ordering::Release);
@@ -1273,6 +1393,14 @@ pub(crate) fn on_adapter_end(app: &AppHandle, label: &str, pgid: i32) {
             }
         } else if pair.binding.blue.partner_label == label && pair.partner_pgid == Some(pgid) {
             pair.partner_pgid = None;
+            if pair.phase == "stopping-native" {
+                let _ = finish_abandoned_partner(app, pair);
+                continue;
+            }
+            if pair.phase == "closing-native" {
+                if finish_partner_close(app, pair).is_err() { failed_close.push(origin.clone()); }
+                continue;
+            }
             if pair.held && !pair.cancelled.load(Ordering::Acquire) {
                 pair.phase = "failed".into();
                 pair.error = Some(
@@ -1282,6 +1410,8 @@ pub(crate) fn on_adapter_end(app: &AppHandle, label: &str, pgid: i32) {
             }
         }
     }
+    drop(state);
+    for origin in failed_close { super::debug::cancel_debug_by_label(app, &origin); }
 }
 
 pub(crate) fn cancel(app: &AppHandle, label: &str) {

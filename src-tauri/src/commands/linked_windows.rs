@@ -146,6 +146,7 @@ struct GroupAction {
     members: Vec<String>,
     pending: HashSet<String>,
     unfinished: HashSet<String>,
+    skipped: HashSet<String>,
     id: u64,
     cancelled: bool,
 }
@@ -515,10 +516,14 @@ pub fn update_linked_window(
         .map(|path| path.to_string_lossy().into_owned());
     if let Some(solution_path) = path {
         let staged_status = registry.actions.get(&solution_path)
-            .filter(|group| group.pending.contains(window.label()))
-            .and_then(|_| registry.windows.get(window.label()))
-            .filter(|participant| matches!(participant.status.as_str(), "waiting" | "starting"))
-            .map(|participant| participant.status.clone());
+            .and_then(|group| {
+                if group.skipped.contains(window.label()) { Some("cancelled".into()) }
+                else if group.pending.contains(window.label()) {
+                    registry.windows.get(window.label())
+                        .filter(|participant| matches!(participant.status.as_str(), "waiting" | "starting"))
+                        .map(|participant| participant.status.clone())
+                } else { None }
+            });
         let paused_line = registry.windows.get(window.label()).and_then(|item| item.paused_line);
         let pause_reason = registry.windows.get(window.label()).and_then(|item|
             (update.status == "paused").then(|| item.pause_reason.clone())).flatten();
@@ -617,7 +622,8 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
     }
     if matches!(status, "terminated" | "error") { finish_group_member(&mut registry, label); }
     else if matches!(status, "building" | "running" | "paused") {
-        for group in registry.actions.values_mut().filter(|group| !group.cancelled && group.members.iter().any(|member| member == label)) {
+        for group in registry.actions.values_mut().filter(|group| !group.cancelled && !group.skipped.contains(label)
+            && group.members.iter().any(|member| member == label)) {
             group.unfinished.insert(label.into());
         }
     }
@@ -1076,7 +1082,7 @@ pub fn close_linked_window(
         drop(registry);
         super::build::cancel_build_by_label(&app, &target_label);
         super::runner::cancel_run_by_label(&app, &target_label);
-        super::debug::cancel_debug_by_label(&app, &target_label);
+        super::debug::cancel_closing_window_debug_by_label(&app, &target_label);
         return Ok(());
     }
     registry.allowed_closes.insert(target_label.clone());
@@ -1103,7 +1109,7 @@ pub fn close_linked_window(
     // window itself is destroyed without firing CloseRequested.
     super::build::cancel_build_by_label(&app, &target_label);
     super::runner::cancel_run_by_label(&app, &target_label);
-    super::debug::cancel_debug_by_label(&app, &target_label);
+    super::debug::cancel_closing_window_debug_by_label(&app, &target_label);
 
     let Some(window) = app.get_webview_window(&target_label) else { return Ok(()); };
     window.destroy().map_err(|e| e.to_string())
@@ -1150,6 +1156,26 @@ fn linked_action_active(app: &AppHandle, solution_path: &str, action_id: u64) ->
         registry.actions.get(solution_path).is_some_and(|group| group.id == action_id && !group.cancelled)))
 }
 
+fn linked_member_skipped(app: &AppHandle, solution_path: &str, action_id: u64, label: &str) -> bool {
+    app.try_state::<LinkedWindowRegistry>().is_none_or(|state| state.0.lock().map_or(true, |registry|
+        registry.actions.get(solution_path).is_none_or(|group|
+            group.id != action_id || group.cancelled || group.skipped.contains(label))))
+}
+
+fn skip_group_member(registry: &mut Registry, solution_path: &str, label: &str) -> Option<(String, u64, bool)> {
+    let group = registry.actions.get_mut(solution_path)?;
+    if !group.members.iter().any(|member| member == label) { return None; }
+    let was_pending = group.pending.remove(label);
+    group.unfinished.remove(label);
+    group.skipped.insert(label.into());
+    if let Some(participant) = registry.windows.get_mut(label) {
+        participant.status = "cancelled".into();
+        participant.debugging = false;
+        participant.failure_message = None;
+    }
+    Some((group.action.clone(), group.id, was_pending))
+}
+
 fn wait_for_phase_start(app: &AppHandle, solution_path: &str, action_id: u64, labels: &[String], timeout_ms: u64) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
@@ -1159,14 +1185,14 @@ fn wait_for_phase_start(app: &AppHandle, solution_path: &str, action_id: u64, la
             .ok_or("Linked action stopped")?;
         if group.cancelled { return Err("Linked action stopped".into()); }
         if labels.iter().all(|label| !group.pending.contains(label)) {
-            if let Some(failed) = labels.iter().find_map(|label| registry.windows.get(label)
+            if let Some(failed) = labels.iter().filter(|label| !group.skipped.contains(*label)).find_map(|label| registry.windows.get(label)
                 .filter(|participant| matches!(participant.status.as_str(), "failed" | "error" | "cancelled"))
                 .map(|participant| participant.failure_message.clone().unwrap_or_else(|| format!("{} did not start", participant.project_name.as_deref().unwrap_or(label))))) {
                 return Err(failed);
             }
             // Starting a build process is not completing a build. Named
             // dependencies must wait for successful exit before advancing.
-            if group.action != "build" || labels.iter().all(|label| !group.unfinished.contains(label)) {
+            if group.action != "build" || labels.iter().all(|label| group.skipped.contains(label) || !group.unfinished.contains(label)) {
                 return Ok(());
             }
         }
@@ -1320,11 +1346,21 @@ fn order_phases(input: &[(String, String, u8, Vec<String>)]) -> Result<Vec<Vec<S
     Ok(phases)
 }
 
-fn wait_for_http_ready(app: &AppHandle, solution_path: &str, action_id: u64, url: &str, timeout_ms: u64) -> Result<(), String> {
+fn wait_for_http_ready(app: &AppHandle, solution_path: &str, action_id: u64,
+    owner: &str, url: &str, timeout_ms: u64) -> Result<(), String> {
     parse_http_ready_url(url)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         if !linked_action_active(app, solution_path, action_id) { return Err("Linked action stopped".into()); }
+        if linked_member_skipped(app, solution_path, action_id, owner) { return Err("Linked member stopped".into()); }
+        if let Some(state) = app.try_state::<LinkedWindowRegistry>() {
+            let registry = state.0.lock().map_err(|error| error.to_string())?;
+            let participant = registry.windows.get(owner).ok_or("Readiness owner window closed before its dependents started")?;
+            if matches!(participant.status.as_str(), "terminated" | "error" | "failed" | "cancelled" | "success") {
+                return Err(format!("{} stopped before becoming ready at {url}",
+                    participant.project_name.as_deref().unwrap_or(owner)));
+            }
+        }
         match http_ready(url) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
@@ -1340,8 +1376,17 @@ fn mark_orchestration_failure(app: &AppHandle, solution_path: &str, action_id: u
     let Some(state) = app.try_state::<LinkedWindowRegistry>() else { return; };
     let Ok(mut registry) = state.0.lock() else { return; };
     let Some(group) = registry.actions.get_mut(solution_path).filter(|group| group.id == action_id) else { return; };
+    let not_started = group.pending.iter().filter(|label| !launched.contains(*label) && !group.skipped.contains(*label))
+        .cloned().collect::<Vec<_>>();
     group.pending.retain(|label| launched.contains(label));
     group.unfinished.retain(|label| launched.contains(label));
+    for label in not_started {
+        if let Some(participant) = registry.windows.get_mut(&label) {
+            participant.status = "failed".into();
+            participant.failure_message = Some(message.into());
+            append_output(participant, message);
+        }
+    }
     if let Some(label) = launched.iter().next() {
         if let Some(participant) = registry.windows.get_mut(label) {
             participant.failure_message = Some(message.into());
@@ -1358,6 +1403,7 @@ fn mark_phase_starting(app: &AppHandle, solution_path: &str, action_id: u64, lab
     let Ok(mut registry) = state.0.lock() else { return false; };
     if !registry.actions.get(solution_path).is_some_and(|group| group.id == action_id && !group.cancelled) { return false; }
     for label in labels {
+        if registry.actions.get(solution_path).is_some_and(|group| group.skipped.contains(label)) { continue; }
         if let Some(participant) = registry.windows.get_mut(label) {
             participant.status = "starting".into();
             participant.failure_message = None;
@@ -1371,13 +1417,28 @@ fn mark_phase_starting(app: &AppHandle, solution_path: &str, action_id: u64, lab
 async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, action_id: u64,
     phases: Vec<Vec<PlannedLaunch>>, mut ldi_origin: Option<(String, String, super::debug::DebugRequest)>) {
     let mut launched = HashSet::new();
+    let mut ready_owners = Vec::<String>::new();
     for phase in phases {
         if !linked_action_active(&app, &solution_path, action_id) { return; }
+        if ready_owners.iter().any(|label| linked_member_skipped(&app, &solution_path, action_id, label)) {
+            mark_orchestration_failure(&app, &solution_path, action_id, &launched,
+                "A required linked server stopped; dependent windows were not started.");
+            return;
+        }
+        if phase.iter().any(|launch| launch.ready_url.is_some()
+            && linked_member_skipped(&app, &solution_path, action_id, &launch.label)) {
+            mark_orchestration_failure(&app, &solution_path, action_id, &launched,
+                "A required linked server was stopped before becoming ready; dependent windows were not started.");
+            return;
+        }
+        let phase = phase.into_iter().filter(|launch| !linked_member_skipped(&app, &solution_path, action_id, &launch.label)).collect::<Vec<_>>();
+        if phase.is_empty() { continue; }
         let command = LinkedCommand { kind: "start".into(), action: Some(action.clone()), action_id };
         let labels = phase.iter().map(|launch| launch.label.clone()).collect::<Vec<_>>();
         let start_timeout_ms = phase.iter().map(|launch| launch.timeout_ms).max().unwrap_or(crate::types::default_linked_timeout_ms());
         if !mark_phase_starting(&app, &solution_path, action_id, &labels) { return; }
         for launch in &phase {
+            if linked_member_skipped(&app, &solution_path, action_id, &launch.label) { continue; }
             launched.insert(launch.label.clone());
             if ldi_origin.as_ref().is_some_and(|(label, _, _)| label == &launch.label) {
                 let (label, partner, mut request) = ldi_origin.take().unwrap();
@@ -1418,8 +1479,16 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
                 let action_task = action.clone();
                 let label = launch.label.clone();
                 let participant = launch.participant.clone();
+                let member_solution = participant.solution_path.clone();
                 tauri::async_runtime::spawn(async move {
+                    if linked_member_skipped(&app_task, &member_solution, action_id, &label) { return; }
                     let result = launch_parked(app_task.clone(), label.clone(), participant, action_task).await;
+                    if linked_member_skipped(&app_task, &member_solution, action_id, &label) {
+                        super::debug::cancel_debug_by_label(&app_task, &label);
+                        super::runner::cancel_run_by_label(&app_task, &label);
+                        super::build::cancel_build_by_label(&app_task, &label);
+                        return;
+                    }
                     if let Err(ref error) = result { note_process_event(&app_task, &label, "error", Some(error), None); }
                     if let Some(state) = app_task.try_state::<LinkedWindowRegistry>() {
                         if let Ok(mut registry) = state.0.lock() {
@@ -1446,7 +1515,14 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
             if error != "Linked action stopped" { mark_orchestration_failure(&app, &solution_path, action_id, &launched, &error); }
             return;
         }
+        if phase.iter().any(|launch| launch.ready_url.is_some()
+            && linked_member_skipped(&app, &solution_path, action_id, &launch.label)) {
+            mark_orchestration_failure(&app, &solution_path, action_id, &launched,
+                "A required linked server was stopped before becoming ready; dependent windows were not started.");
+            return;
+        }
         for launch in &phase {
+            if linked_member_skipped(&app, &solution_path, action_id, &launch.label) { continue; }
             let Some(url) = launch.ready_url.clone() else { continue; };
             if action == "build" { continue; }
             if let Some(state) = app.try_state::<LinkedWindowRegistry>() {
@@ -1463,7 +1539,8 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
                 let solution_path = solution_path.clone();
                 let url = url.clone();
                 let timeout_ms = launch.timeout_ms;
-                move || wait_for_http_ready(&app, &solution_path, action_id, &url, timeout_ms)
+                let owner = launch.label.clone();
+                move || wait_for_http_ready(&app, &solution_path, action_id, &owner, &url, timeout_ms)
             }).await;
             let readiness = readiness.map_err(|error| error.to_string()).and_then(|result| result);
             if let Err(error) = readiness {
@@ -1479,6 +1556,7 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
                     broadcast(&app, &registry);
                 }
             }
+            ready_owners.push(launch.label.clone());
         }
     }
 }
@@ -1518,7 +1596,7 @@ pub fn start_linked_action(
             let runnable = phases.iter().flat_map(|phase| phase.iter().map(|launch| launch.label.clone())).collect::<HashSet<_>>();
             registry.actions.insert(solution_path.clone(), GroupAction {
                 action: "debug".into(), members, pending: runnable.clone(),
-                unfinished: runnable, id, cancelled: false,
+                unfinished: runnable, skipped: HashSet::new(), id, cancelled: false,
             });
             registry.windows.get_mut(&partner).unwrap().status = "waiting".into();
             registry.sequence += 1;
@@ -1573,7 +1651,7 @@ pub fn start_linked_action(
         action: action.clone(), members: members.clone(),
         pending: members.iter().cloned().collect(), id,
         unfinished: members.iter().cloned().collect(),
-        cancelled: false,
+        skipped: HashSet::new(), cancelled: false,
     });
     for label in &members {
         if let Some(participant) = registry.windows.get_mut(label) {
@@ -1599,6 +1677,7 @@ pub fn acknowledge_linked_action(
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(group) = registry.actions.values_mut().find(|group| group.id == action_id
         && group.members.iter().any(|member| member == window.label())) {
+        if group.skipped.contains(window.label()) { return Ok(()); }
         group.pending.remove(window.label());
         if !is_busy(&status) { group.unfinished.remove(window.label()); }
         if let Some(participant) = registry.windows.get_mut(window.label()) {
@@ -1608,6 +1687,59 @@ pub fn acknowledge_linked_action(
     reconcile(&mut registry);
     registry.sequence += 1;
     broadcast(&app, &registry);
+    Ok(())
+}
+
+/// White Stop is local to the selected participant, including a participant
+/// still queued behind a readiness gate. Gold Stop remains solution-wide.
+#[tauri::command]
+pub fn stop_linked_member(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, LinkedWindowRegistry>,
+    target_label: String,
+) -> Result<(), String> {
+    let mut registry = state.0.lock().map_err(|error| error.to_string())?;
+    let source = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
+    let solution_path = source.solution_path.clone();
+    let target = registry.windows.get(&target_label).ok_or("Linked window is no longer open")?;
+    if target.solution_path != solution_path { return Err("Window belongs to another solution".into()); }
+    let is_ldi_partner = ldi_pair(&registry, &solution_path)
+        .is_some_and(|(_, partner)| partner == target_label);
+    if is_ldi_partner {
+        let group = registry.actions.get(&solution_path).ok_or("No linked action is active")?;
+        if group.action != "debug" || !group.members.iter().any(|member| member == &target_label) {
+            return Err("Window is not in an active linked debug action".into());
+        }
+        drop(registry);
+        // B is a reusable on-demand reproduction, not a queued launch.
+        // White Stop ends only this attempt and keeps the next blue armed.
+        return super::debug::control_debug_by_label(&app, &target_label, "stop");
+    }
+    let visible = target.visible && !target.restoring;
+    let Some((action, action_id, _)) = skip_group_member(&mut registry, &solution_path, &target_label) else {
+        return Err("Window is not in an active linked action".into());
+    };
+    registry.sequence += 1;
+    broadcast(&app, &registry);
+    drop(registry);
+
+    // The renderer may already have a queued Start event. Tell it to discard
+    // that action ID, then cancel any process that crossed the launch boundary.
+    if visible {
+        let _ = app.emit_to(target_label.as_str(), COMMAND_EVENT,
+            LinkedCommand { kind: "cancel_member".into(), action: None, action_id });
+    }
+    match action.as_str() {
+        "debug" => super::debug::control_debug_by_label(&app, &target_label, "stop")?,
+        "run" => super::runner::cancel_run_by_label(&app, &target_label),
+        "build" => {
+            super::build_order::cancel(&app, &target_label);
+            super::runner::cancel_run_by_label(&app, &target_label);
+            super::build::cancel_build_by_label(&app, &target_label);
+        }
+        _ => return Err("Unsupported linked action".into()),
+    }
     Ok(())
 }
 
@@ -1622,7 +1754,6 @@ pub fn stop_linked_action(
     let solution_path = participant.solution_path.clone();
     let group = registry.actions.get(&solution_path).ok_or("No linked action is active")?;
     if !group.members.iter().any(|label| label == window.label()) { return Err("Window is not in linked action".into()); }
-    if group.action == "build" { return Err("Linked Build has no group Stop control".into()); }
     let command = LinkedCommand { kind: "stop".into(), action: None, action_id: group.id };
     let debug_group = group.action == "debug";
     let targets: Vec<(String, bool)> = group.members.iter().map(|label| (label.clone(), registry.windows.get(label)
@@ -1803,10 +1934,65 @@ mod tests {
         assert_eq!(snapshot(&registry, "C").members.len(), 3);
         assert!(snapshot(&registry, "C").can_run, "the ordinary API/Tauri linked run remains available");
         assert!(!snapshot(&registry, "B").can_run, "the library is not a runnable process");
+        registry.windows.insert("D".into(), registry.windows["C"].clone());
+        assert_eq!(snapshot(&registry, "D").members.len(), 4);
+        let four_phases = ldi_runnable_phases(&registry, "/one.cln", "A").unwrap();
+        assert_eq!(four_phases.iter().map(|phase| phase.iter().map(|launch| launch.label.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            vec![vec!["A"], vec!["C", "D"]], "both clients start after the same API readiness gate");
+        registry.actions.insert("/one.cln".into(), GroupAction {
+            action: "debug".into(), members: vec!["A".into(), "B".into(), "C".into(), "D".into()],
+            pending: HashSet::new(), unfinished: HashSet::from(["A".into(), "C".into(), "D".into()]),
+            skipped: HashSet::new(), id: 1, cancelled: false,
+        });
+        finish_group_member(&mut registry, "C");
+        reconcile(&mut registry);
+        assert_eq!(snapshot(&registry, "D").active_count, 2, "one stopped client does not end the API or other client");
         let mut other_managed = participant("/one.cln", "another-api", "service");
         other_managed.specs.insert("debug".into(), spec("dotnet"));
-        registry.windows.insert("D".into(), other_managed);
+        registry.windows.insert("E".into(), other_managed);
         assert!(ldi_pair(&registry, "/one.cln").is_none(), "Never guess between managed origins");
+    }
+
+    #[test]
+    fn white_stop_of_one_queued_client_preserves_the_other_three_members() {
+        let mut registry = Registry::default();
+        for (label, project, kind) in [("A", "api", "service"), ("B", "native", "library"),
+            ("C", "client", "application"), ("D", "client", "application")] {
+            registry.windows.insert(label.into(), participant("/one.cln", project, kind));
+        }
+        registry.actions.insert("/one.cln".into(), GroupAction {
+            action: "debug".into(), members: vec!["A".into(), "B".into(), "C".into(), "D".into()],
+            pending: HashSet::from(["C".into(), "D".into()]),
+            unfinished: HashSet::from(["A".into(), "C".into(), "D".into()]),
+            skipped: HashSet::new(), id: 1, cancelled: false,
+        });
+        let (action, id, pending) = skip_group_member(&mut registry, "/one.cln", "C").unwrap();
+        assert_eq!((action.as_str(), id, pending), ("debug", 1, true));
+        let group = &registry.actions["/one.cln"];
+        assert!(group.skipped.contains("C"));
+        assert!(!group.pending.contains("C"));
+        assert_eq!(snapshot(&registry, "D").active_count, 2, "A and D remain in Gold Debug");
+        assert_eq!(registry.windows["C"].status, "cancelled");
+        assert_eq!(registry.windows["D"].status, "idle");
+        reconcile(&mut registry);
+        assert!(registry.actions.contains_key("/one.cln"));
+    }
+
+    #[test]
+    fn white_stop_of_managed_origin_does_not_stop_unpaired_clients() {
+        let mut registry = Registry::default();
+        for label in ["A", "C", "D"] {
+            registry.windows.insert(label.into(), participant("/one.cln", label, "application"));
+        }
+        registry.actions.insert("/one.cln".into(), GroupAction {
+            action: "debug".into(), members: vec!["A".into(), "C".into(), "D".into()],
+            pending: HashSet::new(), unfinished: HashSet::from(["A".into(), "C".into(), "D".into()]),
+            skipped: HashSet::new(), id: 1, cancelled: false,
+        });
+        skip_group_member(&mut registry, "/one.cln", "A").unwrap();
+        assert_eq!(snapshot(&registry, "C").active_count, 2);
+        assert!(!registry.actions["/one.cln"].cancelled);
+        assert!(registry.actions["/one.cln"].unfinished.contains("D"));
     }
 
     #[test]
@@ -1859,7 +2045,7 @@ mod tests {
         registry.actions.insert("/one.cln".into(), GroupAction {
             action: "run".into(), members: vec!["a".into(), "b".into(), "c".into()],
             pending: HashSet::from(["a".into(), "b".into(), "c".into()]),
-            unfinished: HashSet::from(["a".into(), "b".into(), "c".into()]), id: 1, cancelled: false,
+            unfinished: HashSet::from(["a".into(), "b".into(), "c".into()]), skipped: HashSet::new(), id: 1, cancelled: false,
         });
         assert_eq!(snapshot(&registry, "a").active_action.as_deref(), Some("run"));
         assert_eq!(snapshot(&registry, "a").active_count, 3);
@@ -1911,7 +2097,7 @@ mod tests {
         registry.actions.insert("/one.cln".into(), GroupAction {
             action: "run".into(), members: vec!["a".into(), "b".into()],
             pending: HashSet::from(["a".into(), "b".into()]),
-            unfinished: HashSet::from(["a".into(), "b".into()]), id: 1, cancelled: false,
+            unfinished: HashSet::from(["a".into(), "b".into()]), skipped: HashSet::new(), id: 1, cancelled: false,
         });
         registry.windows.insert("c".into(), participant("/one.cln", "server", "service"));
         assert_eq!(snapshot(&registry, "a").members.len(), 2);

@@ -51,6 +51,13 @@ export async function startViewedAction(action: Action, configName?: string): Pr
 }
 
 export async function stopViewedAction(): Promise<void> {
+  const linked = useLinkedWindows.getState();
+  const targetLabel = linked.viewedWindowLabel ?? linked.ownWindowLabel;
+  if (linked.activeAction && targetLabel && linked.members.some((member) => member.windowLabel === targetLabel)) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("stop_linked_member", { targetLabel });
+    return;
+  }
   const remote = viewedHiddenWindow();
   if (remote) { await dispatchLinkedWindowCommand(remote.windowLabel, "stop"); return; }
   if (["building", "running", "paused"].includes(useDebug.getState().status)) {

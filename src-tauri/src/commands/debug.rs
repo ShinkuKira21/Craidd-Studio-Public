@@ -44,7 +44,7 @@ struct Session {
     breakpoint_files: Mutex<HashSet<String>>,
     breakpoints_ready: AtomicBool,
     solution_path: String,
-    blue: Option<Breakpoint>,
+    blue: Mutex<Option<Breakpoint>>,
     alive: Arc<AtomicBool>,
 }
 
@@ -471,7 +471,8 @@ fn breakpoint_lines(points: &[Breakpoint]) -> BTreeMap<String, Vec<u32>> {
 
 fn send_breakpoints_locked(session: &Session, points: &[Breakpoint], files: &mut HashSet<String>) -> Result<(), String> {
     let mut by_file = breakpoint_lines(points);
-    if let Some(blue) = &session.blue {
+    let blue = session.blue.lock().map_err(|error| error.to_string())?.clone();
+    if let Some(blue) = &blue {
         let lines = by_file.entry(blue.file.clone()).or_default();
         if !lines.contains(&blue.line) { lines.push(blue.line); lines.sort_unstable(); }
     }
@@ -496,6 +497,19 @@ fn initialize_breakpoints(session: &Session, fallback: &[Breakpoint]) -> Result<
         .unwrap_or_else(|_| fallback.to_vec());
     session.breakpoints_ready.store(true, Ordering::Release);
     send_breakpoints_locked(session, &points, &mut files)
+}
+
+/// Detach a closing LDI partner without terminating the managed debugger.
+/// An explicit red marker at the same location remains a normal breakpoint.
+pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str) -> Result<(), String> {
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(label).cloned().ok_or("Managed debugger is no longer active")?;
+    session.blue.lock().map_err(|error| error.to_string())?.take();
+    if session.breakpoints_ready.load(Ordering::Acquire) {
+        let points = super::breakpoints::load_breakpoints(session.solution_path.clone())?;
+        send_breakpoints(&session, &points)?;
+    }
+    Ok(())
 }
 
 fn dap_ready_for_configuration(initialized_event: bool, launch_succeeded: bool, configured: bool) -> bool {
@@ -645,7 +659,7 @@ pub(crate) fn launch_prepared(
         breakpoint_files: Mutex::new(HashSet::new()),
         breakpoints_ready: AtomicBool::new(false),
         solution_path,
-        blue: if ldi_token.is_some() { super::ldi::active_blue(&app, &label) } else { None },
+        blue: Mutex::new(if ldi_token.is_some() { super::ldi::active_blue(&app, &label) } else { None }),
         alive: Arc::new(AtomicBool::new(true)),
     });
     let stdout = child.stdout.take().ok_or("Debugger output unavailable")?;
@@ -1065,11 +1079,28 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
 }
 
 pub fn cancel_window_debug(window: &tauri::Window) {
-    cancel_debug_by_label(window.app_handle(), window.label());
+    cancel_closing_window_debug_by_label(window.app_handle(), window.label());
 }
 
 pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
     super::ldi::cancel(app, label);
+    cancel_debug_session_only(app, label);
+}
+
+/// Closing B detaches LDI; it is not Gold Stop and must not kill A.
+pub fn cancel_closing_window_debug_by_label(app: &AppHandle, label: &str) {
+    match super::ldi::partner_window_closing(app, label) {
+        Ok(true) => cancel_debug_session_only(app, label),
+        Ok(false) => cancel_debug_by_label(app, label),
+        Err(error) => {
+            emit(app, label, json!({"status":"error", "text":format!("Could not detach LDI partner: {error}")}));
+            // Fail closed rather than leave A invisibly held after B vanishes.
+            cancel_debug_by_label(app, label);
+        }
+    }
+}
+
+fn cancel_debug_session_only(app: &AppHandle, label: &str) {
     super::build_order::cancel(app, label);
     if let Some(builds) = app.try_state::<DebugBuildManager>() {
         if let Ok(active) = builds.0.lock() {
