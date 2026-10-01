@@ -31,6 +31,8 @@ pub struct DebugRequest {
     pub order: Option<super::build_order::OrderRequest>,
     #[serde(default)]
     pub breakpoints: Vec<Breakpoint>,
+    #[serde(skip)]
+    pub ldi_token: Option<u64>,
 }
 
 struct Session {
@@ -42,6 +44,9 @@ struct Session {
     breakpoint_files: Mutex<HashSet<String>>,
     breakpoints_ready: AtomicBool,
     solution_path: String,
+    blue: Mutex<Vec<super::ldi::ManagedBlueBreakpoint>>,
+    private_breakpoints: Vec<Breakpoint>,
+    alive: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -69,12 +74,12 @@ impl Drop for DebugBuildManager {
 impl Drop for DebugManager {
     fn drop(&mut self) {
         if let Ok(active) = self.0.lock() {
-            for session in active.values() { unsafe { libc::killpg(session.pgid, libc::SIGTERM); } }
+            for session in active.values().filter(|session| session.alive.load(Ordering::Acquire)) { unsafe { libc::killpg(session.pgid, libc::SIGTERM); } }
         }
     }
 }
 
-fn emit(app: &AppHandle, label: &str, value: Value) {
+pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
     if let Some(status) = value["status"].as_str() {
         if matches!(status, "building" | "running" | "paused" | "terminated" | "error") {
             note_debug_state(app, label, status, value["file"].as_str(),
@@ -192,7 +197,7 @@ fn capture_build_lines<R: std::io::Read + Send + 'static>(
     })
 }
 
-fn run_build_command(
+pub(crate) fn run_build_command(
     app: &AppHandle,
     label: &str,
     cwd: &Path,
@@ -200,6 +205,14 @@ fn run_build_command(
     args: &[String],
     description: &str,
 ) -> Result<Vec<String>, String> {
+    run_build_with_cancel(app, label, cwd, program, args, description, Arc::new(AtomicBool::new(false)))
+}
+
+pub(crate) fn run_build_with_cancel(
+    app: &AppHandle, label: &str, cwd: &Path, program: &str, args: &[String],
+    description: &str, cancelled: Arc<AtomicBool>,
+) -> Result<Vec<String>, String> {
+    if cancelled.load(Ordering::Acquire) { return Err("Debug build cancelled".into()); }
     let executable = resolve_known_program(program)?.unwrap_or_else(|| PathBuf::from(program));
     let mut command = Command::new(&executable);
     command.current_dir(cwd).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -207,9 +220,9 @@ fn run_build_command(
     emit(app, label, json!({"status":"output", "text":format!("$ {} {}", executable.display(), args.join(" "))}));
     let mut child = command.spawn().map_err(|e| format!("Could not {description}: {e}"))?;
     let pgid = child.id() as i32;
-    let cancelled = Arc::new(AtomicBool::new(false));
     app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?
         .insert(label.into(), BuildJob { pgid, cancelled: cancelled.clone() });
+    if cancelled.load(Ordering::Acquire) { unsafe { libc::killpg(pgid, libc::SIGTERM); } }
 
     let stdout = child.stdout.take().ok_or_else(|| format!("{description} output unavailable"))?;
     let stderr = child.stderr.take().ok_or_else(|| format!("{description} error output unavailable"))?;
@@ -219,7 +232,9 @@ fn run_build_command(
     let status = child.wait().map_err(|e| format!("Could not wait for {description}: {e}"))?;
     let _ = out.join();
     let _ = err.join();
-    if let Ok(mut builds) = app.state::<DebugBuildManager>().0.lock() { builds.remove(label); }
+    if let Ok(mut builds) = app.state::<DebugBuildManager>().0.lock() {
+        if builds.get(label).is_some_and(|job| job.pgid == pgid) { builds.remove(label); }
+    }
     if cancelled.load(Ordering::Acquire) { return Err("Debug build cancelled".into()); }
     let lines = captured.lock().map_err(|e| e.to_string())?.clone();
     if !status.success() {
@@ -455,12 +470,34 @@ fn breakpoint_lines(points: &[Breakpoint]) -> BTreeMap<String, Vec<u32>> {
     by_file
 }
 
+fn dap_line_breakpoint(file: &str, line: u32, points: &[Breakpoint], blues: &[super::ldi::ManagedBlueBreakpoint]) -> Value {
+    // One DAP location cannot represent independently conditioned red and blue
+    // stops. Blue owns that location during Gold; red owns it in White Debug.
+    let condition = if let Some(blue) = blues.iter().find(|blue| blue.file == file && blue.line == line) {
+        blue.condition.as_deref()
+    } else {
+        points.iter().find(|point| point.file == file && point.line == line).and_then(|point| point.condition.as_deref())
+    };
+    if let Some(condition) = condition { json!({"line":line,"condition":condition}) }
+    else { json!({"line":line}) }
+}
+
 fn send_breakpoints_locked(session: &Session, points: &[Breakpoint], files: &mut HashSet<String>) -> Result<(), String> {
-    let mut by_file = breakpoint_lines(points);
+    // Private LDI entry stops survive edits to ordinary red breakpoints but
+    // are never persisted. At the same line, the private unconditional entry
+    // wins over a newly-added conditional red marker.
+    let mut effective = session.private_breakpoints.clone();
+    effective.extend_from_slice(points);
+    let mut by_file = breakpoint_lines(&effective);
+    let blues = session.blue.lock().map_err(|error| error.to_string())?.clone();
+    for blue in &blues {
+        let lines = by_file.entry(blue.file.clone()).or_default();
+        if !lines.contains(&blue.line) { lines.push(blue.line); lines.sort_unstable(); }
+    }
     for previous in files.iter() { by_file.entry(previous.clone()).or_default(); }
     for (file, lines) in &by_file {
         request(session, "setBreakpoints", json!({"source":{"path":file},
-            "breakpoints":lines.iter().map(|line| json!({"line":line})).collect::<Vec<_>>() }))?;
+            "breakpoints":lines.iter().map(|line| dap_line_breakpoint(file, *line, &effective, &blues)).collect::<Vec<_>>() }))?;
     }
     *files = by_file.into_keys().collect();
     Ok(())
@@ -478,6 +515,20 @@ fn initialize_breakpoints(session: &Session, fallback: &[Breakpoint]) -> Result<
         .unwrap_or_else(|_| fallback.to_vec());
     session.breakpoints_ready.store(true, Ordering::Release);
     send_breakpoints_locked(session, &points, &mut files)
+}
+
+/// Detach a closing LDI partner without terminating the managed debugger.
+/// An explicit red marker at the same location remains a normal breakpoint.
+pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str, locations: &[(String, u32)]) -> Result<(), String> {
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(label).cloned().ok_or("Managed debugger is no longer active")?;
+    session.blue.lock().map_err(|error| error.to_string())?.retain(|blue| !locations.iter().any(|(file, line)|
+        file == &blue.file && *line == blue.line));
+    if session.breakpoints_ready.load(Ordering::Acquire) {
+        let points = super::breakpoints::load_breakpoints(session.solution_path.clone())?;
+        send_breakpoints(&session, &points)?;
+    }
+    Ok(())
 }
 
 fn dap_ready_for_configuration(initialized_event: bool, launch_succeeded: bool, configured: bool) -> bool {
@@ -522,13 +573,14 @@ pub async fn start_debug(window: WebviewWindow, app: AppHandle, request_spec: De
 }
 
 pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: DebugRequest) -> Result<(), String> {
+    super::ldi::check_launch(&app, &label, request_spec.ldi_token)?;
     if app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window already has a debug session".into());
     }
     if app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window is already building a debug session".into());
     }
-    let DebugRequest { cwd: request_cwd, solution_path, method, profile, command_args, env, order, breakpoints } = request_spec;
+    let DebugRequest { cwd: request_cwd, solution_path, method, profile, command_args, env, order, breakpoints, ldi_token } = request_spec;
     let solution_path = PathBuf::from(solution_path).canonicalize().map_err(|e| e.to_string())?
         .to_string_lossy().into_owned();
     let cwd = PathBuf::from(&request_cwd).canonicalize().map_err(|e| e.to_string())?;
@@ -539,8 +591,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
         "cmake" => "cpp",
         _ => return Err(format!("Debugging is not supported for the {method} method")),
     };
-    let adapter = adapter_path(language)?;
-    let adapter_name = adapter.file_name().and_then(|name| name.to_str()).unwrap_or("debug adapter").to_string();
+    adapter_path(language)?;
     let (build_args, args) = split_debug_args(&method, command_args);
     emit(&app, &label, json!({"status":"building"}));
     let prepared = if let Some(request) = order {
@@ -596,6 +647,26 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
             }
         }
     } else { None };
+    launch_prepared(app, label, language, cwd, solution_path, executable, args, env, breakpoints, dev_lease, ldi_token)
+}
+
+/// Both normal debugging and the LDI library driver use the same DAP lifecycle.
+pub(crate) fn launch_prepared(
+    app: AppHandle, label: String, language: &'static str, cwd: PathBuf,
+    solution_path: String, executable: PathBuf, args: Vec<String>, mut env: BTreeMap<String, String>,
+    breakpoints: Vec<Breakpoint>, dev_lease: Option<super::tauri_dev::DevLease>,
+    ldi_token: Option<u64>,
+) -> Result<(), String> {
+    super::ldi::check_launch(&app, &label, ldi_token)?;
+    if ldi_token.is_some() && language == "csharp" {
+        super::ldi::validate_origin_program(&app, &label, &executable)?;
+        super::ldi::configure_origin_launch_env(&app, &label, &executable, &mut env)?;
+    }
+    let adapter = adapter_path(language)?;
+    let adapter_name = adapter.file_name().and_then(|name| name.to_str()).unwrap_or("debug adapter").to_string();
+    if app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
+        return Err("This IDE window already has a debug session".into());
+    }
     if dev_lease.is_some() { emit(&app, &label, json!({"status":"output", "text":"Tauri frontend is ready; launching native debugger."})); }
     let mut command = Command::new(&adapter);
     if language == "csharp" { command.arg("--interpreter=vscode"); }
@@ -610,16 +681,29 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
         breakpoint_files: Mutex::new(HashSet::new()),
         breakpoints_ready: AtomicBool::new(false),
         solution_path,
+        blue: Mutex::new(if ldi_token.is_some() { super::ldi::active_blues(&app, &label) } else { vec![] }),
+        private_breakpoints: if ldi_token.is_some() && language == "cpp" {
+            breakpoints.iter().filter(|point| point.scope == "ldi-auto-entry").cloned().collect()
+        } else { vec![] },
+        alive: Arc::new(AtomicBool::new(true)),
     });
     let stdout = child.stdout.take().ok_or("Debugger output unavailable")?;
     let stderr = child.stderr.take().ok_or("Debugger errors unavailable")?;
     app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.insert(label.clone(), session.clone());
+    if let Err(error) = super::ldi::adapter_started(&app, &label, pgid, ldi_token) {
+        session.alive.store(false, Ordering::Release);
+        unsafe { libc::killpg(pgid, libc::SIGTERM); }
+        let _ = child.wait();
+        if let Ok(mut sessions) = app.state::<DebugManager>().0.lock() { sessions.remove(&label); }
+        return Err(error);
+    }
     let app_reader = app.clone();
     let label_reader = label.clone();
     let initialized = Arc::new(AtomicBool::new(false));
     let initialized_reader = initialized.clone();
     let ready = Arc::new(AtomicBool::new(false));
     let ready_reader = ready.clone();
+    let watchdog_alive = session.alive.clone();
     thread::spawn(move || {
         let _dev_lease = dev_lease;
         let mut reader = BufReader::new(stdout);
@@ -627,6 +711,16 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
         let mut initialized_event = false;
         let mut launch_succeeded = false;
         let mut configured = false;
+        let mut stopped_variables = Vec::new();
+        let mut variable_requests = 0usize;
+        let mut terminated_emitted = false;
+        let mut stop_generation = 0u64;
+        let mut inspection_generations: HashMap<u64, u64> = HashMap::new();
+        // A private driver stop after native return must not be presented as
+        // user source. Defer B's pause until its frame is verified.
+        let mut pending_native_stop: Option<(u64, Value)> = None;
+        let mut hidden_driver_frames: Option<Value> = None;
+        let mut auto_resume_after_control = false;
         let launch = if language == "csharp" {
             json!({"program": executable, "cwd": cwd, "args": args, "env": env, "stopAtEntry": false, "console":"internalConsole"})
         } else {
@@ -652,13 +746,29 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
                         }
                     }
                     "stopped" => {
+                        stop_generation += 1;
+                        super::ldi::on_stop(&app_reader, &label_reader, pgid);
+                        stopped_variables.clear();
+                        variable_requests = 0;
                         ready_reader.store(true, Ordering::Release);
                         let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
                         session.thread_id.store(thread_id, Ordering::Relaxed);
-                        emit(&app_reader, &label_reader, json!({"status":"paused", "reason":message["body"]["reason"], "threadId":thread_id}));
-                        if let Ok(seq) = request(&session, "stackTrace", json!({"threadId":thread_id, "startFrame":0, "levels":20})) { pending.insert(seq, "stackTrace".into()); }
+                        if super::ldi::partner_stop_is_held(&app_reader, &label_reader, pgid) {
+                            pending_native_stop = Some((stop_generation, message["body"]["reason"].clone()));
+                        } else {
+                            pending_native_stop = None;
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "reason":message["body"]["reason"], "threadId":thread_id}));
+                        }
+                        hidden_driver_frames = None;
+                        if let Ok(seq) = request(&session, "stackTrace", json!({"threadId":thread_id, "startFrame":0, "levels":20})) {
+                            pending.insert(seq, "stackTrace".into()); inspection_generations.insert(seq, stop_generation);
+                        }
                     }
                     "continued" => {
+                        stop_generation += 1;
+                        pending_native_stop = None;
+                        hidden_driver_frames = None;
+                        auto_resume_after_control = false;
                         ready_reader.store(true, Ordering::Release);
                         if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0) {
                             session.thread_id.store(id, Ordering::Relaxed);
@@ -666,19 +776,72 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
                         emit(&app_reader, &label_reader, json!({"status":"running"}));
                     }
                     "thread" => {
-                        if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0) {
+                        if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0 && session.thread_id.load(Ordering::Relaxed) == 0) {
                             session.thread_id.store(id, Ordering::Relaxed);
                         }
                     }
                     "output" => emit(&app_reader, &label_reader, json!({"status":"output", "text":message["body"]["output"]})),
-                    "terminated" | "exited" => emit(&app_reader, &label_reader, json!({"status":"terminated"})),
+                    "exited" => {
+                        emit(&app_reader, &label_reader, json!({"status":"terminated"}));
+                        terminated_emitted = true;
+                        // Free B's slot before releasing A: A can reach its next
+                        // blue stop immediately. Never retain an exited adapter
+                        // as an active session or delete a replacement later.
+                        if let Ok(mut active) = app_reader.state::<DebugManager>().0.lock() {
+                            if active.get(&label_reader).is_some_and(|session| session.pgid == pgid) { active.remove(&label_reader); }
+                        }
+                        let _ = request(&session, "disconnect", json!({"terminateDebuggee":false}));
+                        super::ldi::on_exit(&app_reader, &label_reader, pgid, message["body"]["exitCode"].as_i64());
+                        break;
+                    }
+                    "terminated" => {
+                        emit(&app_reader, &label_reader, json!({"status":"terminated"}));
+                        terminated_emitted = true;
+                        break;
+                    }
                     _ => {}
                 }
             } else if message["type"] == "response" {
+                let response_seq = message["request_seq"].as_u64().unwrap_or(0);
+                if inspection_generations.remove(&response_seq).is_some_and(|generation| generation != stop_generation) {
+                    pending.remove(&response_seq);
+                    continue;
+                }
                 if matches!(message["command"].as_str(), Some("continue" | "pause" | "next" | "stepIn" | "stepOut")) {
                     session.transport_busy.store(false, Ordering::Release);
+                    if auto_resume_after_control {
+                        auto_resume_after_control = false;
+                        let result = if message["success"] == true {
+                            continue_ldi_partner_after_return(&session)
+                        } else {
+                            Err(message["message"].as_str().unwrap_or("native step failed").to_string())
+                        };
+                        if let Err(error) = result {
+                            super::ldi::native_auto_resume_failed(&app_reader, &label_reader, pgid, &error);
+                            if let Some(frames) = hidden_driver_frames.take() {
+                                emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
+                                    "reason":"step", "threadId":session.thread_id.load(Ordering::Acquire)}));
+                            }
+                        }
+                    }
                 }
                 if message["success"] == false {
+                    if message["command"] == "stackTrace" {
+                        if let Some((_, reason)) = pending_native_stop.take().filter(|(generation, _)| *generation == stop_generation) {
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "reason":reason,
+                                "threadId":session.thread_id.load(Ordering::Acquire)}));
+                        }
+                    }
+                    if message["command"] == "continue" && hidden_driver_frames.is_some() {
+                        super::ldi::native_auto_resume_failed(&app_reader, &label_reader, pgid,
+                            message["message"].as_str().unwrap_or("native continue failed"));
+                        if let Some(frames) = hidden_driver_frames.take() {
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
+                                "reason":"step", "threadId":session.thread_id.load(Ordering::Acquire)}));
+                        }
+                    }
+                    super::ldi::on_inspection_error(&app_reader, &label_reader, pgid,
+                        message["command"].as_str().unwrap_or(""), message["message"].as_str().unwrap_or("DAP request failed"));
                     let fatal = message["command"] == "initialize" || message["command"] == "launch";
                     emit(&app_reader, &label_reader, json!({"status":if fatal { "error" } else { "output" },
                         "text":format!("{}: {}", message["command"].as_str().unwrap_or("DAP request"),
@@ -712,35 +875,82 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
                     "threads" => {
                         if let Some(id) = message["body"]["threads"].as_array()
                             .and_then(|threads| threads.first()).and_then(|thread| thread["id"].as_i64()) {
-                            session.thread_id.store(id, Ordering::Relaxed);
+                            if session.thread_id.load(Ordering::Relaxed) == 0 { session.thread_id.store(id, Ordering::Relaxed); }
                         }
                     }
                     "stackTrace" => {
                         let frames = message["body"]["stackFrames"].clone();
                         let first = frames.as_array().and_then(|items| items.first());
+                        let reason = pending_native_stop.as_ref().filter(|(generation, _)| *generation == stop_generation)
+                            .and_then(|(_, reason)| reason.as_str());
+                        let finish_native = first.is_some_and(|frame| super::ldi::on_frame(
+                            &app_reader, &label_reader, pgid, frame, reason));
+                        if finish_native {
+                            pending_native_stop = None;
+                            hidden_driver_frames = Some(frames);
+                            if session.transport_busy.load(Ordering::Acquire) {
+                                auto_resume_after_control = true;
+                            } else if let Err(error) = continue_ldi_partner_after_return(&session) {
+                                super::ldi::native_auto_resume_failed(&app_reader, &label_reader, pgid, &error);
+                                if let Some(frames) = hidden_driver_frames.take() {
+                                    emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
+                                        "reason":"step", "threadId":session.thread_id.load(Ordering::Acquire)}));
+                                }
+                            }
+                            continue;
+                        }
+                        if let Some((_, reason)) = pending_native_stop.take().filter(|(generation, _)| *generation == stop_generation) {
+                            emit(&app_reader, &label_reader, json!({"status":"paused", "reason":reason,
+                                "threadId":session.thread_id.load(Ordering::Acquire)}));
+                        }
                         emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
                             "file":first.and_then(|frame| frame["source"]["path"].as_str()),
                             "line":first.and_then(|frame| frame["line"].as_u64())}));
                         if let Some(id) = first.and_then(|frame| frame["id"].as_i64()) {
-                            if let Ok(seq) = request(&session, "scopes", json!({"frameId":id})) { pending.insert(seq, "scopes".into()); }
+                            if let Ok(seq) = request(&session, "scopes", json!({"frameId":id})) {
+                                pending.insert(seq, "scopes".into()); inspection_generations.insert(seq, stop_generation);
+                            }
                         }
                     }
                     "scopes" => {
                         let scopes = message["body"]["scopes"].clone();
                         emit(&app_reader, &label_reader, json!({"status":"scopes", "scopes":scopes}));
-                        if let Some(reference) = scopes.as_array().and_then(|items| items.first()).and_then(|scope| scope["variablesReference"].as_i64()) {
-                            if let Ok(seq) = request(&session, "variables", json!({"variablesReference":reference})) { pending.insert(seq, "variables".into()); }
+                        if let Some(scopes) = scopes.as_array() {
+                            for scope in scopes.iter().filter(|scope| scope["expensive"] != true) {
+                                if let Some(reference) = scope["variablesReference"].as_i64().filter(|id| *id > 0) {
+                                    if let Ok(seq) = request(&session, "variables", json!({"variablesReference":reference})) {
+                                        pending.insert(seq, "variables".into());
+                                        inspection_generations.insert(seq, stop_generation);
+                                        variable_requests += 1;
+                                    }
+                                }
+                            }
+                            if variable_requests == 0 { super::ldi::on_variables(&app_reader, &label_reader, pgid, &[]); }
                         }
                     }
-                    "variables" => emit(&app_reader, &label_reader, json!({"status":"variables", "variables":message["body"]["variables"]})),
+                    "variables" => {
+                        if let Some(values) = message["body"]["variables"].as_array() { stopped_variables.extend(values.iter().cloned()); }
+                        variable_requests = variable_requests.saturating_sub(1);
+                        if variable_requests == 0 {
+                            emit(&app_reader, &label_reader, json!({"status":"variables", "variables":stopped_variables}));
+                            super::ldi::on_variables(&app_reader, &label_reader, pgid, &stopped_variables);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
+        let _ = request(&session, "disconnect", json!({"terminateDebuggee":true}));
+        session.alive.store(false, Ordering::Release);
+        super::ldi::on_adapter_end(&app_reader, &label_reader, pgid);
         let _ = child.kill();
         let _ = child.wait();
-        if let Ok(mut active) = app_reader.state::<DebugManager>().0.lock() { active.remove(&label_reader); }
-        emit(&app_reader, &label_reader, json!({"status":"terminated"}));
+        let mut replacement = false;
+        if let Ok(mut active) = app_reader.state::<DebugManager>().0.lock() {
+            replacement = active.get(&label_reader).is_some_and(|session| session.pgid != pgid);
+            if active.get(&label_reader).is_some_and(|session| session.pgid == pgid) { active.remove(&label_reader); }
+        }
+        if !terminated_emitted && !replacement { emit(&app_reader, &label_reader, json!({"status":"terminated"})); }
     });
     let app_stderr = app.clone();
     let stderr_label = label.clone();
@@ -765,6 +975,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
     let watchdog_pgid = pgid;
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(15));
+        if !watchdog_alive.load(Ordering::Acquire) { return; }
         if !initialized.load(Ordering::Acquire) {
             if let Some(manager) = app_watchdog.try_state::<DebugManager>() {
                 if let Ok(active) = manager.0.lock() {
@@ -780,6 +991,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
             return;
         }
         thread::sleep(Duration::from_secs(30));
+        if !watchdog_alive.load(Ordering::Acquire) { return; }
         if ready.load(Ordering::Acquire) { return; }
         if let Some(manager) = app_watchdog.try_state::<DebugManager>() {
             if let Ok(active) = manager.0.lock() {
@@ -798,15 +1010,67 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
 
 #[tauri::command]
 pub fn debug_control(window: WebviewWindow, state: tauri::State<'_, DebugManager>, builds: tauri::State<'_, DebugBuildManager>, action: String) -> Result<(), String> {
-    if action == "stop" && super::build_order::cancel(window.app_handle(), window.label()) { return Ok(()); }
-    control_debug(window.label(), &state, &builds, &action)
+    super::ldi::with_control(window.app_handle(), window.label(), &action, || {
+        if action == "stop" && super::build_order::cancel(window.app_handle(), window.label()) { return Ok(()); }
+        control_debug(window.label(), &state, &builds, &action)
+    })
 }
 
 pub fn control_debug_by_label(app: &AppHandle, label: &str, action: &str) -> Result<(), String> {
-    if action == "stop" && super::build_order::cancel(app, label) { return Ok(()); }
+    super::ldi::with_control(app, label, action, || {
+        if action == "stop" && super::build_order::cancel(app, label) { return Ok(()); }
+        let state = app.state::<DebugManager>();
+        let builds = app.state::<DebugBuildManager>();
+        control_debug(label, &state, &builds, action)
+    })
+}
+
+pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Result<(), String> {
     let state = app.state::<DebugManager>();
-    let builds = app.state::<DebugBuildManager>();
-    control_debug(label, &state, &builds, action)
+    let active = state.0.lock().map_err(|e| e.to_string())?;
+    let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
+    let thread_id = session.thread_id.load(Ordering::Acquire);
+    if thread_id <= 0 { return Err("Origin thread is unavailable".into()); }
+    if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return Err("Origin debugger control is busy".into());
+    }
+    if let Err(error) = request(session, "continue", json!({"threadId":thread_id})) {
+        session.transport_busy.store(false, Ordering::Release);
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn ldi_origin_thread_id(app: &AppHandle, label: &str, pgid: i32) -> Result<u32, String> {
+    let state = app.state::<DebugManager>();
+    let active = state.0.lock().map_err(|error| error.to_string())?;
+    let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
+    u32::try_from(session.thread_id.load(Ordering::Acquire)).ok().filter(|id| *id > 0)
+        .ok_or("Origin Linux thread ID is unavailable".into())
+}
+
+/// Finish only the verified generated-driver handoff. A remains held until
+/// B reports a successful exit and the driver records an actual native return.
+fn continue_ldi_partner_after_return(session: &Session) -> Result<(), String> {
+    if !session.alive.load(Ordering::Acquire) {
+        return Err("Native debugger ended before completion".into());
+    }
+    let thread_id = session.thread_id.load(Ordering::Acquire);
+    if thread_id <= 0 { return Err("Native debugger thread is unavailable".into()); }
+    if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return Err("Native debugger control is busy".into());
+    }
+    if let Err(error) = request(session, "continue", json!({"threadId":thread_id})) {
+        session.transport_busy.store(false, Ordering::Release);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Called while the LDI hold mutex is held, before A is released. This must
+/// not route through the label-based LDI control hook and cancel a later stop.
+pub(crate) fn stop_ldi_partner(app: &AppHandle, label: &str) -> Result<(), String> {
+    control_debug(label, &app.state::<DebugManager>(), &app.state::<DebugBuildManager>(), "stop")
 }
 
 fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, action: &str) -> Result<(), String> {
@@ -819,14 +1083,19 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
         }
     }
     let active = state.0.lock().map_err(|e| e.to_string())?;
-    let session = active.get(label).ok_or("No debug session is active")?;
+    let Some(session) = active.get(label) else {
+        return if action == "stop" { Ok(()) } else { Err("No debug session is active".into()) };
+    };
     let command = match action {
         "continue" => "continue", "pause" => "pause", "stepOver" => "next",
         "stepInto" => "stepIn", "stepOut" => "stepOut",
         "stop" => {
             let _ = request(session, "disconnect", json!({"terminateDebuggee":true}));
             let pgid = session.pgid;
-            thread::spawn(move || { thread::sleep(std::time::Duration::from_millis(800)); unsafe { libc::killpg(pgid, libc::SIGTERM); } });
+            let alive = session.alive.clone();
+            thread::spawn(move || { thread::sleep(std::time::Duration::from_millis(800));
+                if alive.load(Ordering::Acquire) { unsafe { libc::killpg(pgid, libc::SIGTERM); } }
+            });
             return Ok(());
         }
         _ => return Err("Unsupported debug control".into()),
@@ -843,10 +1112,28 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
 }
 
 pub fn cancel_window_debug(window: &tauri::Window) {
-    cancel_debug_by_label(window.app_handle(), window.label());
+    cancel_closing_window_debug_by_label(window.app_handle(), window.label());
 }
 
 pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
+    super::ldi::cancel(app, label);
+    cancel_debug_session_only(app, label);
+}
+
+/// Closing B detaches LDI; it is not Gold Stop and must not kill A.
+pub fn cancel_closing_window_debug_by_label(app: &AppHandle, label: &str) {
+    match super::ldi::partner_window_closing(app, label) {
+        Ok(true) => cancel_debug_session_only(app, label),
+        Ok(false) => cancel_debug_by_label(app, label),
+        Err(error) => {
+            emit(app, label, json!({"status":"error", "text":format!("Could not detach LDI partner: {error}")}));
+            // Fail closed rather than leave A invisibly held after B vanishes.
+            cancel_debug_by_label(app, label);
+        }
+    }
+}
+
+fn cancel_debug_session_only(app: &AppHandle, label: &str) {
     super::build_order::cancel(app, label);
     if let Some(builds) = app.try_state::<DebugBuildManager>() {
         if let Ok(active) = builds.0.lock() {
@@ -861,7 +1148,10 @@ pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
             if let Some(session) = active.remove(label) {
                 let _ = request(&session, "disconnect", json!({"terminateDebuggee":true}));
                 let pgid = session.pgid;
-                thread::spawn(move || { thread::sleep(std::time::Duration::from_millis(800)); unsafe { libc::killpg(pgid, libc::SIGTERM); } });
+                let alive = session.alive.clone();
+                thread::spawn(move || { thread::sleep(std::time::Duration::from_millis(800));
+                    if alive.load(Ordering::Acquire) { unsafe { libc::killpg(pgid, libc::SIGTERM); } }
+                });
             }
         }
     }
@@ -938,11 +1228,21 @@ mod tests {
     #[test]
     fn dap_breakpoints_ignore_legacy_window_scope_and_deduplicate_lines() {
         let lines = breakpoint_lines(&[
-            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "window-a".into() },
-            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into() },
-            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into() },
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "window-a".into(), condition: None },
+            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into(), condition: None },
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into(), condition: None },
         ]);
         assert_eq!(lines.get("/project/main.rs"), Some(&vec![8, 10]));
+    }
+
+    #[test]
+    fn dap_red_condition_applies_unless_gold_blue_owns_the_same_line() {
+        let points = [Breakpoint { file: "/project/main.cs".into(), line: 8, scope: "all".into(), condition: Some("i > 6".into()) }];
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, &[]), json!({"line":8,"condition":"i > 6"}));
+        let blue = super::super::ldi::ManagedBlueBreakpoint { file: "/project/main.cs".into(), line: 8, condition: Some("i < 10".into()) };
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, &[blue.clone()]), json!({"line":8,"condition":"i < 10"}));
+        let blue = super::super::ldi::ManagedBlueBreakpoint { condition: None, ..blue };
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, &[blue]), json!({"line":8}));
     }
 
     #[test]

@@ -700,6 +700,85 @@ mod tests {
     }
 
     #[test]
+    fn gui_lab_has_two_projects_and_resolves_build_and_install() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("workspaces/ldi-gui-lab");
+        let solution = super::super::solution::load_solution_named(
+            root.to_string_lossy().into_owned(),
+            "ldi-gui-lab.cln".into(),
+        )
+        .unwrap()
+        .unwrap()
+        .solution;
+        assert_eq!(solution.projects.len(), 2);
+        assert!(solution
+            .projects
+            .iter()
+            .any(|project| project.language.as_deref() == Some("csharp")
+                && project.kind == "application"));
+        assert!(
+            solution
+                .projects
+                .iter()
+                .any(|project| project.language.as_deref() == Some("cpp")
+                    && project.kind == "library")
+        );
+        let native = solution
+            .configs
+            .iter()
+            .find(|config| config.name == "Native · LDI")
+            .unwrap()
+            .slots
+            .as_ref()
+            .unwrap();
+        assert_eq!(native.build.as_deref(), Some("Native · Build"));
+        assert!(native.run.is_none() && native.debug.is_none());
+        assert_eq!(
+            describe(&solution, "GUI · Debug").unwrap(),
+            vec![
+                "Build GUI · Build → wait for success",
+                "Build Native · Build → wait for success",
+                "Install Native · Build → GUI · Build's resolved output",
+            ]
+        );
+        assert_eq!(plan(&solution, "GUI · Run").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn interop_playground_builds_and_installs_both_libraries_before_gui_launch() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("workspaces/ldi-interop-playground");
+        let solution = super::super::solution::load_solution_named(
+            root.to_string_lossy().into_owned(),
+            "ldi-interop-playground.cln".into(),
+        )
+        .unwrap()
+        .unwrap()
+        .solution;
+        assert_eq!(solution.projects.len(), 2);
+        assert_eq!(
+            describe(&solution, "GUI · Debug").unwrap(),
+            vec![
+                "Build GUI · Build → wait for success",
+                "Build Native · All Build → wait for success",
+                "Install Native · All Build → GUI · Build's resolved output",
+            ]
+        );
+        for (config, build) in [
+            ("Native · Scalar LDI", "Native · Scalar Build"),
+            ("Native · Packet LDI", "Native · Packet Build"),
+        ] {
+            let slot = solution.configs.iter().find(|item| item.name == config).unwrap().slots.as_ref().unwrap();
+            assert_eq!(slot.build.as_deref(), Some(build));
+            assert!(slot.run.is_none() && slot.debug.is_none());
+        }
+    }
+
+    #[test]
     fn expands_the_demo_in_the_exact_requested_order() {
         let (solution, request) = lab();
         assert_eq!(

@@ -30,3 +30,5 @@ workspaces/*
 !workspaces/rust-debug-smoke/
 workspaces/rust-debug-smoke/target/
 !workspaces/build-order-lab/
+!workspaces/ldi-gui-lab/
+!workspaces/ldi-interop-playground/

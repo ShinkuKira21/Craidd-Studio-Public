@@ -1,0 +1,6 @@
+/build/
+/Host/bin/
+/Host/obj/
+/captures/
+__pycache__/
+previous-workspace-artifacts/

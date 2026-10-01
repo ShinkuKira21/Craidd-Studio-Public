@@ -10,16 +10,33 @@ import type { Breakpoint } from "../../store/breakpointStore";
 import { useDebug } from "../../store/debugStore";
 import BreakpointMenu from "./BreakpointMenu";
 import { CRAIDD_DARK_THEME, defineCraiddDarkTheme } from "../../lib/editorThemes";
+import { removeLdiBlue, useLdi } from "../../store/ldiStore";
 
 function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: string | null, pausedLine: number | null) {
+  const blues = useLdi.getState().blues;
+  const linked = useLinkedWindows.getState();
+  const library = linked.windows.find((item) => item.windowLabel === linked.ownWindowLabel)?.ldiRole === "native-library"
+    && /\.(c|cpp|cc|cxx|h|hpp|hh|hxx)$/.test(file ?? "");
+  const managed = linked.windows.find((item) => item.ldiRole === "managed");
   const lines = [...new Set(points.filter((point) => point.file === file).map((point) => point.line))];
-  return [...lines.map((line) => ({
-    range: new monaco.Range(line, 1, line, 1),
-    options: {
-      isWholeLine: false,
-      glyphMarginClassName: "craidd-breakpoint",
-      glyphMarginHoverMessage: { value: "Breakpoint · line " + line },
-    },
+  return [...lines.map((line) => {
+    const condition = points.find((point) => point.file === file && point.line === line)?.condition;
+    const unmatchedLibrary = library && !blues.some((blue) => blue.nativePoints.some((point) => point.file === file && point.line === line));
+    const reminder = unmatchedLibrary
+      ? `LDI reminder: right-click the C# gutter in ${managed ? `CS${managed.windowId}` : "a linked managed window"} where this extern function is called (not defined), and choose Native Debugging Breakpoint. A red library marker alone does not launch a reproduction; use a .c/.cpp implementation, not a header prototype.`
+      : `Breakpoint · line ${line}`;
+    return {
+      range: new monaco.Range(line, 1, line, 1),
+      options: {
+        isWholeLine: false,
+        glyphMarginClassName: unmatchedLibrary ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
+        glyphMarginHoverMessage: { value: `${reminder}${condition ? `\nCondition: ${condition}` : ""}` },
+      },
+    };
+  }), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => ({
+    range: new monaco.Range(blue.line, 1, blue.line, 1),
+    options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${blue.warning ? " craidd-breakpoint-warning" : ""}`,
+      glyphMarginHoverMessage: { value: blue.warning ? `⚠ ${blue.warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}` } },
   })), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }
 
@@ -40,6 +57,7 @@ export default function CodeView() {
   const [breakpointMenu, setBreakpointMenu] = useState<{ x: number; y: number; line: number } | null>(null);
   const activeFileId = useSolution((s) => s.activeFileId);
   const points = useBreakpoints((s) => s.points);
+  const blues = useLdi((s) => s.blues);
   const remoteEditContext = useLinkedWindows((s) => s.remoteEditing
     ? s.windows.find((item) => item.windowLabel === s.viewedWindowLabel && item.windowLabel !== s.ownWindowLabel)
     : undefined);
@@ -110,7 +128,7 @@ export default function CodeView() {
     decorations.set(breakpointDecorations(monaco, currentPoints, file, currentPausedLine));
   }, []);
 
-  useEffect(() => { refreshBreakpoints(); }, [refreshBreakpoints, points, activeFileId, remoteEditContext?.windowLabel, pausedLine]);
+  useEffect(() => { refreshBreakpoints(); }, [refreshBreakpoints, points, blues, activeFileId, remoteEditContext?.windowLabel, pausedLine]);
 
   useEffect(() => {
     const onSaved = (event: Event) => {
@@ -158,7 +176,9 @@ export default function CodeView() {
             if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !event.event.leftButton) return;
             const file = useSolution.getState().activeFileId;
             const line = event.target.position?.lineNumber;
-            if (file && line) void useBreakpoints.getState().toggle(file, line)
+            if (file && line) void (useLdi.getState().blues.some((blue) => blue.file === file && blue.line === line
+              && blue.originLabel === useLinkedWindows.getState().ownWindowLabel)
+              ? removeLdiBlue(file, line) : useBreakpoints.getState().toggle(file, line))
               .catch((error) => alert(`Breakpoint failed: ${String(error)}`));
           });
           instance.onContextMenu((event) => {

@@ -13,12 +13,15 @@ pub struct Breakpoint {
     pub file: String,
     pub line: u32,
     pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
 }
 
 fn normalize_breakpoints(mut points: Vec<Breakpoint>) -> Vec<Breakpoint> {
     let mut seen = HashSet::new();
     points.retain_mut(|point| {
         point.scope = "all".into();
+        point.condition = point.condition.take().map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
         seen.insert((point.file.clone(), point.line))
     });
     points
@@ -45,7 +48,8 @@ pub fn load_breakpoints(solution_path: String) -> Result<Vec<Breakpoint>, String
 
 #[tauri::command]
 pub fn save_breakpoints(app: AppHandle, solution_path: String, breakpoints: Vec<Breakpoint>) -> Result<(), String> {
-    if breakpoints.len() > 2_000 || breakpoints.iter().any(|point| point.line == 0 || point.file.is_empty() || point.scope.len() > 120) {
+    if breakpoints.len() > 2_000 || breakpoints.iter().any(|point| point.line == 0 || point.file.is_empty() || point.scope.len() > 120
+        || point.condition.as_ref().is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control))) {
         return Err("Invalid breakpoint list".into());
     }
     let breakpoints = normalize_breakpoints(breakpoints);
@@ -74,13 +78,20 @@ mod tests {
     #[test]
     fn legacy_window_scopes_become_one_solution_breakpoint() {
         let points = normalize_breakpoints(vec![
-            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-a".into() },
-            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into() },
-            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into() },
+            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-a".into(), condition: Some(" i > 6 ".into()) },
+            Breakpoint { file: "/project/main.rs".into(), line: 8, scope: "window-b".into(), condition: None },
+            Breakpoint { file: "/project/main.rs".into(), line: 10, scope: "all".into(), condition: None },
         ]);
         assert_eq!(points.len(), 2);
         assert!(points.iter().all(|point| point.scope == "all"));
         assert_eq!(points[0].line, 8);
+        assert_eq!(points[0].condition.as_deref(), Some("i > 6"));
         assert_eq!(points[1].line, 10);
+    }
+
+    #[test]
+    fn old_breakpoint_json_has_no_condition() {
+        let point: Breakpoint = serde_json::from_str(r#"{"file":"/p/main.cs","line":4,"scope":"all"}"#).unwrap();
+        assert!(point.condition.is_none());
     }
 }

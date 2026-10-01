@@ -2,6 +2,7 @@ import { useDebug } from "../../store/debugStore";
 import { useBreakpoints } from "../../store/breakpointStore";
 import { useSolution } from "../../store/solutionStore";
 import { useLinkedWindows, dispatchLinkedWindowCommand } from "../../store/linkedWindowsStore";
+import LdiSessionCard from "./LdiSessionCard";
 
 export default function DebugSidebar() {
   const debug = useDebug();
@@ -28,6 +29,7 @@ export default function DebugSidebar() {
   return <div className="w-72 bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden shrink-0 text-xs">
     <div className="h-9 px-3 flex items-center border-b border-zinc-800 shrink-0 font-semibold text-zinc-300 uppercase tracking-wide">Debug</div>
     <div className="overflow-auto scroll-thin flex-1">
+      <LdiSessionCard />
       <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Session</div>
         <div className={remote?.status === "paused" || (!remote && debug.status === "paused") ? "text-amber-300" : "text-zinc-300"}>

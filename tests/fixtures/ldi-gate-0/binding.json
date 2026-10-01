@@ -1,0 +1,12 @@
+{
+  "id": "gate-add-i32",
+  "enabled": true,
+  "managedSource": "Host/Program.cs",
+  "managedMarker": "BLUE_STOP",
+  "locals": ["left", "right"],
+  "library": "gate_native",
+  "entryPoint": "gate_add",
+  "signature": "cdecl(i32,i32)->i32",
+  "nativeSource": "native/real.cpp",
+  "nativeMarker": "NATIVE_STOP"
+}

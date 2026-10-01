@@ -6,6 +6,16 @@
 is only reachable from a managed process, on Linux, without mixed-mode
 debugging.
 
+**Current design:** The proposal below records the original interposition
+approach. Use [the LDI design](design-ldi-debugging.md) and
+[Gate 0 plan](design-ldi-gate-0.md) for the revised scalar workflow: Gold Linked
+Debug activates an enabled blue **Native Debugging Breakpoint** at the managed
+call site paired with a compatible native red marker. A stays at that managed
+stop while B reproduces readable scalar arguments, then resumes only after B
+releases it. Blue belongs at the call, not the DllImport declaration. Native
+interposition is later scope; the current design also qualifies the Linux
+mixed-debugging claims made below.
+
 ---
 
 ## The problem

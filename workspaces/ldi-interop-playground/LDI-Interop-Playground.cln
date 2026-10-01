@@ -1,0 +1,120 @@
+[solution]
+name = "LDI Interop Playground"
+version = "1.0"
+
+projects = [
+  "Gui/Gui.craidd",
+  "Native/Native.craidd",
+  "Console/Console.craidd",
+]
+
+[[config]]
+name = "GUI · Local"
+kind = "run"
+target = "Gui/Gui.craidd"
+
+[config.slots]
+build = "Prepare GUI"
+run = "GUI · Run"
+debug = "GUI · Debug"
+
+[[config]]
+name = "Native · Scalar LDI"
+kind = "build"
+target = "Native/Native.craidd"
+
+[config.slots]
+build = "Native · Scalar Build"
+
+[[config]]
+name = "Native · Packet LDI"
+kind = "build"
+target = "Native/Native.craidd"
+
+[config.slots]
+build = "Native · Packet Build"
+
+[[config]]
+name = "Prepare GUI"
+kind = "build"
+target = "."
+method = "plan"
+
+[config.order]
+
+[[config.order.steps]]
+kind = "build"
+configuration = "GUI · Build"
+
+[[config.order.steps]]
+kind = "build"
+configuration = "Native · All Build"
+
+[[config.order.steps]]
+kind = "install"
+configuration = "Native · All Build"
+destination = "GUI · Build"
+
+[[config]]
+name = "GUI · Build"
+kind = "build"
+target = "Gui/Gui.craidd"
+method = "dotnet"
+default_profile = "Debug"
+
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "Native · All Build"
+kind = "build"
+target = "Native/Native.craidd"
+method = "cmake"
+default_profile = "Debug"
+
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug"]
+
+[[config]]
+name = "Native · Scalar Build"
+kind = "build"
+target = "Native/Native.craidd"
+method = "cmake"
+default_profile = "Debug"
+
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "demo_scalar"]
+
+[[config]]
+name = "Native · Packet Build"
+kind = "build"
+target = "Native/Native.craidd"
+method = "cmake"
+default_profile = "Debug"
+
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "demo_packet"]
+
+[[config]]
+name = "GUI · Run"
+kind = "run"
+target = "Gui/Gui.craidd"
+method = "dotnet"
+command = "dotnet run --project InteropPlayground.csproj --no-launch-profile"
+
+[config.order]
+before = "Prepare GUI"
+
+[[config]]
+name = "GUI · Debug"
+kind = "debug"
+target = "Gui/Gui.craidd"
+method = "dotnet"
+command = "dotnet run --project InteropPlayground.csproj --no-launch-profile"
+
+[config.order]
+before = "Prepare GUI"

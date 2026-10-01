@@ -231,6 +231,8 @@ select {
   background: #ef4444;
 }
 .craidd-paused-line { background: rgba(245, 158, 11, 0.18); }
+.craidd-breakpoint-blue { background: #3b82f6; }
+.craidd-breakpoint-warning { outline: 2px solid #fbbf24; outline-offset: 1px; }
 
 /* Soft amber pulse for hidden sessions that hit a breakpoint.
    Slow enough to read, gentle enough not to distract. */

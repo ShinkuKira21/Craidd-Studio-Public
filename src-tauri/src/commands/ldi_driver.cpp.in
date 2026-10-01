@@ -1,0 +1,36 @@
+// LDI reproduction: C++ stays C++; arguments are data, not generated expressions.
+#include <charconv>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <dlfcn.h>
+#include <fstream>
+#include <string_view>
+static_assert(sizeof(int) == sizeof(int32_t));
+
+static int32_t scalar(const char* text) {
+    std::string_view value(text);
+    int32_t number{};
+    auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) std::exit(64);
+    return number;
+}
+int main(int argc, char** argv) {
+    if (argc != 5) return 64;
+    int32_t left = scalar(argv[2]), right = scalar(argv[3]);
+    void* library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    if (!library) { std::fprintf(stderr, "%s\n", dlerror()); return 65; }
+    auto call = reinterpret_cast<int32_t(*)(int32_t, int32_t)>(dlsym(library, "@ENTRY_POINT@"));
+    if (!call) { std::fprintf(stderr, "%s\n", dlerror()); return 66; }
+    int32_t result = call(left, right);
+    // A library can itself exit(0); that is not a returned function call.
+    std::ofstream completed(argv[4]);
+    completed << result << '\n';
+    completed.close();
+    if (!completed) return 67;
+    std::printf("LDI reproduction returned %d. A will execute its original call after release.\n", result);
+    std::fflush(stdout);
+    // The mock covers one call, not DLL-unload/static-destructor behavior.
+    // The kernel reclaims this isolated process's resources.
+    std::_Exit(0);
+}

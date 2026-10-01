@@ -10,7 +10,11 @@ app.UseCors();
 // Readiness deliberately calls the native library. A listening API without
 // its installed library is NOT ready, so Linked Run/Debug must keep waiting.
 app.MapGet("/health", () => new { ready = true, value = NativeMath.Add(20, 22), source = "C++ → C# → Tauri" });
-app.MapGet("/sum/{left:int}/{right:int}", (int left, int right) => new { value = NativeMath.Add(left, right) });
+app.MapGet("/sum/{left:int}/{right:int}", (int left, int right) =>
+{
+    int result = NativeMath.Add(left, right);
+    return new { value = result };
+});
 app.Run();
 
 internal static class NativeMath

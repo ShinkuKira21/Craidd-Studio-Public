@@ -24,6 +24,13 @@ run = "Tauri · Run"
 debug = "Tauri · Debug"
 
 [[config]]
+name = "Native · LDI"
+kind = "build"
+target = "Native/Native.craidd"
+[config.slots]
+build = "Native · Build"
+
+[[config]]
 name = "Prepare application"
 kind = "build"
 target = "."

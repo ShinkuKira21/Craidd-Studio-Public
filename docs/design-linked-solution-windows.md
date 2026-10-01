@@ -171,6 +171,14 @@ participate in linked Build, Run, and Debug. A library window appears
 in the tray; it does not contribute a gold participant. See
 [linked solution window manager](design-linked-window-manager.md).
 
+**Proposed LDI extension:** A library context with an enabled compatible blue
+call site and native red marker can host an on-demand executable driver.
+Gold Linked Debug owns that driver alongside its managed origin, making the
+application-plus-driver pair eligible without changing the library's role.
+The driver waits for blue before launching. Unrelated library windows remain
+outside the runnable group. This is a planned extension to the membership
+rule above; see [LDI activation](design-ldi-debugging.md#gold-activation-and-breakpoint-roles).
+
 ---
 
 ## Gold and white
@@ -597,6 +605,14 @@ The library therefore:
 
 A future **Add Debug Driver…** wizard would generate that driver. It
 is not designed here; it is named so the fallback is on the record.
+
+The [LDI design](design-ldi-debugging.md) now specifies a proposed paired-driver
+workflow: Gold Linked Debug activates an enabled blue breakpoint at a managed
+call site and a compatible native red breakpoint in the library context. Blue
+holds the managed caller while its arguments are reproduced in the on-demand
+driver; red stops that separate native process. The library itself stays a
+library. A red marker without a paired blue caller receives a gentle LDI setup
+reminder rather than becoming an independently runnable project.
 
 ---
 

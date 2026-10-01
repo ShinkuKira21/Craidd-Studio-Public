@@ -1,0 +1,5 @@
+[project]
+name = "LDI Managed Host"
+language = "csharp"
+root = "."
+kind = "console"
