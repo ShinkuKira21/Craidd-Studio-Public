@@ -38,6 +38,7 @@ pub struct Blue {
     locals: [String; 2],
     warning: Option<String>,
     native_points: Vec<Breakpoint>,
+    pending_restart: bool,
 }
 
 #[derive(Clone)]
@@ -67,6 +68,7 @@ struct Binding {
     automatic_entry: bool,
     selection: LdiSelection,
     origin_cwd: String,
+    native_source: String,
 }
 
 fn binding_key(binding: &Binding) -> String {
@@ -524,13 +526,10 @@ pub fn set_ldi_blue(
         super::linked_windows::ldi_selections(&app, window.label(), &partner_label)?;
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
-    if state
+    let pending_restart = state
         .pairs
         .get(window.label())
-        .is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire))
-    {
-        return Err("Stop Gold Linked Debug before changing the blue binding".into());
-    }
+        .is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire));
     let path = Path::new(&file)
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -553,7 +552,7 @@ pub fn set_ldi_blue(
         return Err("A blue condition must be one line and at most 256 bytes".into());
     }
     let landing = resolve_native(&call, &partner);
-    let blue = Blue {
+    let mut blue = Blue {
         file: path.to_string_lossy().into_owned(),
         line,
         condition,
@@ -570,47 +569,44 @@ pub fn set_ldi_blue(
         locals: call.locals.clone(),
         warning: landing.err(),
         native_points: native_points(&call, &partner).unwrap_or_default(),
+        pending_restart,
     };
     let blues = state.blues.entry(origin.label).or_default();
     blues.retain(|existing| existing.file != blue.file || existing.line != blue.line);
     blues.push(blue.clone());
     drop(state);
+    blue.pending_restart |= super::linked_windows::ldi_debug_group_active(&app, &blue.origin_label);
     let _ = app.emit("craidd:ldi-blues", ());
     Ok(blue)
 }
 
 #[tauri::command]
-pub fn remove_ldi_blue(window: WebviewWindow, app: AppHandle, file: String, line: u32) -> Result<(), String> {
+pub fn remove_ldi_blue(window: WebviewWindow, app: AppHandle, file: String, line: u32) -> Result<bool, String> {
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
-    if state
+    let pending_restart = state
         .pairs
         .get(window.label())
-        .is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire))
-    {
-        return Err("Stop Gold Linked Debug before removing blue".into());
-    }
+        .is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire));
     if let Some(blues) = state.blues.get_mut(window.label()) {
         blues.retain(|blue| !same_source(Path::new(&blue.file), Path::new(&file)) || blue.line != line);
     }
     drop(state);
     let _ = app.emit("craidd:ldi-blues", ());
-    Ok(())
+    Ok(pending_restart || super::linked_windows::ldi_debug_group_active(&app, window.label()))
 }
 
 #[tauri::command]
-pub fn reconcile_ldi_blues_on_save(app: AppHandle, file: String) -> Result<(), String> {
+pub fn reconcile_ldi_blues_on_save(app: AppHandle, file: String) -> Result<bool, String> {
     let path = Path::new(&file).canonicalize().map_err(|error| error.to_string())?;
-    if path.extension().and_then(|part| part.to_str()) != Some("cs") { return Ok(()); }
+    if path.extension().and_then(|part| part.to_str()) != Some("cs") { return Ok(false); }
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
     let owners = state.blues.iter().filter(|(_, blues)|
         blues.iter().any(|blue| same_source(Path::new(&blue.file), &path)))
         .map(|(owner, _)| owner.clone()).collect::<Vec<_>>();
-    if owners.iter().any(|owner| state.pairs.get(owner).is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire))) {
-        return Err("Stop Gold Linked Debug before reconciling Blue breakpoints".into());
-    }
-    if owners.is_empty() { return Ok(()); }
+    let active = owners.iter().any(|owner| state.pairs.get(owner).is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire)));
+    if owners.is_empty() { return Ok(false); }
     let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
     let mut changed = false;
     for owner in owners {
@@ -620,7 +616,7 @@ pub fn reconcile_ldi_blues_on_save(app: AppHandle, file: String) -> Result<(), S
     }
     drop(state);
     if changed { let _ = app.emit("craidd:ldi-blues", ()); }
-    Ok(())
+    Ok(changed && active)
 }
 
 #[tauri::command]
@@ -629,11 +625,23 @@ pub fn get_ldi_blues(window: WebviewWindow, app: AppHandle) -> Vec<Blue> {
     let Ok(state) = manager.0.lock() else {
         return vec![];
     };
-    let points = state.blues.values().flatten().cloned().collect::<Vec<_>>();
+    let points = state.blues.values().flatten().cloned().map(|mut blue| {
+        blue.pending_restart = state.pairs.get(&blue.origin_label).is_some_and(|pair|
+            !pair.cancelled.load(Ordering::Acquire) && !pair.bindings.iter().any(|binding|
+                binding.blue.file == blue.file && binding.blue.line == blue.line
+                    && binding.blue.partner_label == blue.partner_label && binding.blue.condition == blue.condition
+                    && blue_matches_call(&blue, &binding.call)));
+        blue
+    }).collect::<Vec<_>>();
+    let active_origins = state.pairs.iter().filter(|(_, pair)| !pair.cancelled.load(Ordering::Acquire))
+        .map(|(origin, _)| origin.clone()).collect::<std::collections::HashSet<_>>();
     drop(state);
     points
         .into_iter()
         .filter_map(|mut blue| {
+            if !active_origins.contains(&blue.origin_label) {
+                blue.pending_restart = super::linked_windows::ldi_debug_group_active(&app, &blue.origin_label);
+            }
             let (a, b) = super::linked_windows::ldi_selections(
                 &app,
                 &blue.origin_label,
@@ -688,8 +696,7 @@ pub(crate) fn prepare_pairs(
     let blues = state
         .blues
         .get(origin_label)
-        .ok_or("Set a Native Debugging Breakpoint at the C# call site first")?
-        .clone();
+        .cloned().unwrap_or_default();
     let mut bindings = Vec::new();
     for blue in blues {
         if !partner_labels.contains(&blue.partner_label) {
@@ -705,9 +712,16 @@ pub(crate) fn prepare_pairs(
             return Err("The C# call site changed since blue was set; recreate its Native Debugging Breakpoint".into());
         }
         let (native, automatic_entry) = resolve_native(&call, &b)?;
-        bindings.push(Binding { blue, call, native, automatic_entry, selection: b, origin_cwd: a.spec.cwd.clone() });
+        let native_source = fs::read_to_string(&native.file).map_err(|error| error.to_string())?;
+        bindings.push(Binding { blue, call, native, automatic_entry, selection: b, origin_cwd: a.spec.cwd.clone(), native_source });
     }
-    if bindings.is_empty() { return Err("Set a Native Debugging Breakpoint at a C# call site first".into()); }
+    if bindings.is_empty() {
+        // All Blue markers may have been removed by a save. Gold still
+        // debugs the applications; library windows wait for the next setup.
+        return Ok(super::debug::DebugRequest { cwd: a.spec.cwd, solution_path: a.solution,
+            method: "dotnet".into(), profile: "Debug".into(), command_args: a.spec.args,
+            env: a.spec.env, order: a.spec.order, breakpoints: vec![], ldi_token: None });
+    }
     let typed_imports = bindings.iter().filter(|binding| binding.call.kind == CallKind::Utf8Bytes)
         .map(|binding| (binding.call.library.clone(), binding.call.method.clone(),
             binding.call.entry_point.clone(), binding.blue.partner_label.clone()))
@@ -959,17 +973,21 @@ pub(crate) fn on_frame(
         if let Some(mut binding) = matched {
             // Red breakpoints may be added while Gold Debug is already armed.
             // Choose B's landing for this call, not from the startup snapshot.
-            match resolve_native(&binding.call, &binding.selection) {
-                Ok((native, automatic_entry)) => {
-                    binding.native = native;
-                    binding.automatic_entry = automatic_entry;
-                }
-                Err(error) => {
-                    pair.held = true;
-                    pair.phase = "failed".into();
-                    pair.error = Some(format!("Could not select B's native landing: {error}. A remains held."));
-                    notify(app, pair);
-                    return false;
+            // Source saved mid-session belongs to the next build. Keep the
+            // landing and source ranges corresponding to the loaded library.
+            if fs::read_to_string(&binding.native.file).is_ok_and(|source| source == binding.native_source) {
+                match resolve_native(&binding.call, &binding.selection) {
+                    Ok((native, automatic_entry)) => {
+                        binding.native = native;
+                        binding.automatic_entry = automatic_entry;
+                    }
+                    Err(error) => {
+                        pair.held = true;
+                        pair.phase = "failed".into();
+                        pair.error = Some(format!("Could not select B's native landing: {error}. A remains held."));
+                        notify(app, pair);
+                        return false;
+                    }
                 }
             }
             let Some((library, interposer)) = pair.prepared.get(&binding_key(&binding)).cloned() else {
@@ -1004,9 +1022,8 @@ pub(crate) fn on_frame(
     }) {
         let source = frame["source"]["path"].as_str().map(Path::new);
         if source.is_some_and(|source| same_source(source, Path::new(&pair.binding.native.file)))
-            && frame["line"].as_u64().is_some_and(|line| fs::read_to_string(&pair.binding.native.file)
-                .is_ok_and(|source| native_contains(&source, line as u32,
-                    &pair.binding.call.entry_point, pair.binding.call.kind))) {
+            && frame["line"].as_u64().is_some_and(|line| native_contains(&pair.binding.native_source, line as u32,
+                    &pair.binding.call.entry_point, pair.binding.call.kind)) {
             pair.native_entered = true;
         }
         let driver = pair
@@ -2255,17 +2272,25 @@ mod tests {
                 partner_window_id: 2, entry_point: call.entry_point.clone(), library: call.library.clone(),
                 method: call.method.clone(), landing: "automatic-entry".into(),
                 mode: if call.kind == CallKind::Utf8Bytes { "typed-interposer" } else { "scalar" }.into(),
-                locals: call.locals.clone(), warning: None, native_points: vec![] };
+                locals: call.locals.clone(), warning: None, native_points: vec![], pending_restart: false };
             bindings.push(Binding { blue, call, native, automatic_entry: true,
                 selection: super::super::linked_windows::LdiSelection { label: partner.into(),
                     instance_id: partner.into(), window_id: 2, solution: "/solution.cln".into(),
                     spec: super::super::runner::RunSpec { label: library.into(), program: "cmake".into(),
                         args: vec![], env: Default::default(), cwd: "/native".into(), linked: None, order: None } },
-                origin_cwd: "/project".into() });
+                origin_cwd: "/project".into(), native_source: String::new() });
         }
         assert_eq!(binding_at(&bindings, Path::new(file), bindings[0].blue.line).unwrap().blue.partner_label, "scalar-window");
         assert_eq!(binding_at(&bindings, Path::new(file), bindings[1].blue.line).unwrap().blue.partner_label, "packet-window");
         assert!(binding_at(&bindings, Path::new(file), 999).is_none());
+        let active = bindings.clone();
+        let mut configured = bindings.iter().map(|binding| binding.blue.clone()).collect::<Vec<_>>();
+        reconcile_blue_file(&mut configured, Path::new(file), &format!("\n{managed}")).unwrap();
+        assert_eq!(configured[0].line, active[0].blue.line + 1);
+        assert!(binding_at(&active, Path::new(file), active[0].blue.line).is_some(),
+            "save-time reconciliation must not move the running session's bindings");
+        configured.clear();
+        assert_eq!(active.len(), 2, "removing configured Blue does not remove an active hold");
     }
     #[test]
     fn saved_csharp_moves_unique_blue_and_removes_deleted_call() {
@@ -2278,7 +2303,7 @@ mod tests {
             origin_instance: "A1".into(), partner_instance: "B1".into(), partner_window_id: 2,
             entry_point: call.entry_point.clone(), library: call.library.clone(), method: call.method.clone(),
             landing: "automatic-entry".into(), mode: "scalar".into(), locals: call.locals.clone(),
-            warning: None, native_points: vec![] };
+            warning: None, native_points: vec![], pending_restart: false };
         let mut blues = vec![blue.clone()];
         let shifted = format!("\n{original}");
         assert!(reconcile_blue_file(&mut blues, file, &shifted).unwrap());

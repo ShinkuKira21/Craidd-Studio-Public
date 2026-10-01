@@ -4,6 +4,7 @@ import { choicesForConfig, resolveSpec } from "./buildStore";
 import { useSolution } from "./solutionStore";
 import { useLinkedWindows } from "./linkedWindowsStore";
 import { usePreferences } from "./preferencesStore";
+import { showSessionNotice } from "./sessionFeedbackStore";
 
 export interface LdiBlue {
   file: string; line: number; originLabel: string; partnerLabel: string;
@@ -12,6 +13,7 @@ export interface LdiBlue {
   mode: "scalar" | "typed-interposer"; locals: [string, string];
   condition: string | null;
   warning: string | null; nativePoints: Breakpoint[];
+  pendingRestart: boolean;
 }
 export interface LdiCallSite {
   line: number;
@@ -46,7 +48,7 @@ export interface LdiSession {
   values: [number, number] | null; token: string; held: boolean;
   phase: string; error: string | null;
 }
-export const useLdi = create<{ blues: LdiBlue[]; session: LdiSession | null }>(() => ({ blues: [], session: null }));
+export const useLdi = create<{ blues: LdiBlue[]; session: LdiSession | null; nativeSourceVersion: number }>(() => ({ blues: [], session: null, nativeSourceVersion: 0 }));
 
 export async function refreshLdiBlues() {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -55,8 +57,9 @@ export async function refreshLdiBlues() {
 }
 export async function setLdiBlue(file: string, line: number, partnerLabel: string, condition?: string) {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_ldi_blue", { file, line, partnerLabel, condition: condition ?? null });
+  const blue = await invoke<LdiBlue>("set_ldi_blue", { file, line, partnerLabel, condition: condition ?? null });
   await refreshLdiBlues();
+  if (blue.pendingRestart || useLinkedWindows.getState().activeAction === "debug") notifyLdiRestart();
 }
 export async function listLdiCallSites(file: string, partnerLabels: string[]): Promise<LdiCallSite[]> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -107,8 +110,27 @@ export async function setupLdiBlue(file: string, line: number, configName: strin
 }
 export async function removeLdiBlue(file: string, line: number) {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("remove_ldi_blue", { file, line });
+  const restart = await invoke<boolean>("remove_ldi_blue", { file, line });
   await refreshLdiBlues();
+  if (restart) notifyLdiRestart();
+}
+function notifyLdiRestart() {
+  const linked = useLinkedWindows.getState();
+  if (linked.activeAction !== "debug" || linked.activeActionId === null) return;
+  const id = linked.activeActionId;
+  showSessionNotice({ key: `ldi-next-launch:${id}`,
+    message: "Blue breakpoint changes are saved for the next launch. Restart Gold Debug to apply them.",
+    actionLabel: "Gold Restart Debug",
+    action: async () => {
+      const current = useLinkedWindows.getState();
+      if (current.activeActionId !== id || current.activeAction !== "debug") throw new Error("The debug session changed. Use the Gold Debug button to start the current setup.");
+      const { restartSessions } = await import("../lib/sessionRestart");
+      await restartSessions({ scope: "gold", actionId: id,
+        targets: current.members.map((item) => ({ windowLabel: item.windowLabel, instanceId: item.instanceId,
+          configName: item.selectedConfigName, profileName: item.selectedProfileName, action: "debug" })),
+        affected: [], reason: "Apply the configured Blue breakpoints." });
+    },
+  });
 }
 export async function reconcileLdiBluesOnSave(file: string) {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -138,6 +160,13 @@ export async function listenToLdi(): Promise<() => void> {
   const cleanups = await Promise.all([
     getCurrentWebviewWindow().listen<LdiSession>("craidd:ldi-state", ({ payload }) => useLdi.setState({ session: payload })),
     listen("craidd:ldi-blues", refresh), listen("craidd:breakpoints-changed", refresh),
+    listen<string>("craidd:native-source-saved", ({ payload }) => {
+      const root = useSolution.getState().rootPath?.replace(/\/+$/, "");
+      if (root && payload.startsWith(root + "/")) {
+        useLdi.setState((state) => ({ nativeSourceVersion: state.nativeSourceVersion + 1 }));
+        refresh();
+      }
+    }),
     getCurrentWebviewWindow().listen("craidd:linked-state", refresh),
   ]);
   refresh();

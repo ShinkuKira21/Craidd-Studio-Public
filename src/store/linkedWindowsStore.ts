@@ -23,6 +23,7 @@ export interface LinkedSnapshot {
   debugAdapterAvailable: boolean;
   busy: boolean;
   activeAction: Action | null;
+  activeActionId: number | null;
   activeCount: number;
   problems: (BuildProblem & { windowLabel: string; projectName: string })[];
 }
@@ -41,6 +42,7 @@ export interface LinkedMember {
   selectedProfileName: string | null;
   canDebug: boolean;
   debugging: boolean;
+  activeAction: Action | null;
   activeFile: { path: string; name: string; language: string; content: string; dirty: boolean; truncated: boolean } | null;
   tabs: { path: string; name: string; dirty: boolean }[];
   output: string;
@@ -63,7 +65,7 @@ interface LinkedView {
 
 const empty: LinkedSnapshot = {
   sequence: 0, linked: false, members: [], windows: [], canBuild: false,
-  canRun: false, canDebug: false, debugAdapterAvailable: false, busy: false, activeAction: null, activeCount: 0,
+  canRun: false, canDebug: false, debugAdapterAvailable: false, busy: false, activeAction: null, activeActionId: null, activeCount: 0,
   problems: [],
 };
 
@@ -160,6 +162,8 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     canRun: Boolean(build.mainChoices.run),
     canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""),
     debugging: ["building", "running", "paused"].includes(debug.status),
+    activeAction: ["building", "running", "paused"].includes(debug.status) ? "debug"
+      : ["starting", "running"].includes(build.status) ? build.action : null,
     status: ["building", "running", "paused"].includes(debug.status) ? debug.status : build.status,
     selectedConfigName: build.selectedConfigName,
     selectedProfileName: build.selectedProfileName,
@@ -311,6 +315,12 @@ async function prepareOwnWindow(decision: "save" | "discard"): Promise<void> {
     } else {
       const result = await useSolution.getState().saveFile(tab.fileId);
       if (result !== "saved") throw new Error(`${result === "conflict" ? "Disk conflict" : "Could not save"}: ${tab.name}`);
+    }
+  }
+  if (decision === "save") {
+    await useSolution.getState().refreshDiskStates();
+    for (const tab of useSolution.getState().tabs.filter((item) => !item.dirty && item.diskState === "newer")) {
+      await useSolution.getState().reloadTabFromDisk(tab.fileId);
     }
   }
 }

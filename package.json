@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "test:linked-startup": "node --test tests/linkedStartup.test.mjs tests/windowAttention.test.mjs tests/duplicateWindowPolicy.test.mjs",
     "test:build-output": "node --test tests/buildDiagnostics.test.mjs tests/outputPresentation.test.mjs",
+    "test:save-restart": "node --test tests/saveRestartPolicy.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

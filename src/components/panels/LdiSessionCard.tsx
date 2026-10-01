@@ -14,6 +14,7 @@ export default function LdiSessionCard() {
         {blue.mode === "typed-interposer" && <div className="text-zinc-400">Typed UTF-8 + byte-buffer proxy</div>}
         {!blue.warning && <div className="text-zinc-400">B stops at {blue.landing === "automatic-entry" ? "native entry (automatic)" : "matching red"}.</div>}
         {blue.condition && <div className="text-zinc-400">When {blue.condition}</div>}
+        {blue.pendingRestart && <div className="text-amber-300">Pending Gold Restart Debug</div>}
         <div className="text-zinc-400">Gold Linked Debug activates this pair.</div>
         {blue.warning && <div className="text-amber-300 mt-1">⚠ {blue.warning}</div>}
       </div>)}

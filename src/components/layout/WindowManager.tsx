@@ -24,7 +24,7 @@ import { windowAttention } from "../../lib/windowAttention";
  */
 
 function shortName(item: LinkedMember) {
-  return `${item.projectName}: CS${item.windowId}`;
+  return `${item.selectedConfigName ?? item.projectName}: CS${item.windowId}`;
 }
 
 function stateLabel(item: LinkedMember): string {
@@ -364,7 +364,7 @@ export default function WindowManager() {
             : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800")
         }
       >
-        <span className="truncate max-w-36">
+        <span className="truncate max-w-56" title={current ? shortName(current) : "This window"}>
           Viewing: {current ? shortName(current) : "This window"}
         </span>
         <span className="text-zinc-500">{windows.length} windows · {hidden} hidden</span>

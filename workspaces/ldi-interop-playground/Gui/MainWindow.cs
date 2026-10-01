@@ -138,7 +138,7 @@ internal sealed class MainWindow : Window
            its original call and remain available for the next blue hit.
            TEST 11 — Gold Stop stops both linked debuggers. Red without blue
            must never launch B's LDI reproduction. */
-           
+        
         int result = NativeScalar.Add(left, right); // BLUE_ADD
         addResult.Text = $"{left} + {right} = {result} (calculated by C++)";
         status.Text = "Add returned to C#. The GUI label changed after A executed its own native call.";

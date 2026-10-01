@@ -47,10 +47,11 @@ struct Session {
     blue: Mutex<Vec<super::ldi::ManagedBlueBreakpoint>>,
     private_breakpoints: Vec<Breakpoint>,
     alive: Arc<AtomicBool>,
+    reaped: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
-pub struct DebugManager(Mutex<HashMap<String, Arc<Session>>>);
+pub struct DebugManager(Mutex<HashMap<String, Arc<Session>>>, Mutex<HashMap<String, Vec<Arc<AtomicBool>>>>);
 
 struct BuildJob {
     pgid: i32,
@@ -99,6 +100,16 @@ pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
 pub fn has_debug_session(app: &AppHandle, label: &str) -> bool {
     app.try_state::<DebugManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
         || app.try_state::<DebugBuildManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
+}
+
+/// Disconnect removes the control slot before the reader has reaped the
+/// adapter and released its Tauri frontend lease. Restart waits for both.
+pub fn debug_processes_stopped(app: &AppHandle, label: &str) -> bool {
+    let Some(manager) = app.try_state::<DebugManager>() else { return true; };
+    let Ok(mut drains) = manager.1.lock() else { return false; };
+    let Some(active) = drains.get_mut(label) else { return true; };
+    active.retain(|reaped| !reaped.load(Ordering::Acquire));
+    active.is_empty()
 }
 
 pub fn update_solution_breakpoints(app: &AppHandle, solution_path: &str, points: &[Breakpoint]) {
@@ -687,6 +698,7 @@ pub(crate) fn launch_prepared(
             breakpoints.iter().filter(|point| point.scope == "ldi-auto-entry").cloned().collect()
         } else { vec![] },
         alive: Arc::new(AtomicBool::new(true)),
+        reaped: Arc::new(AtomicBool::new(false)),
     });
     let stdout = child.stdout.take().ok_or("Debugger output unavailable")?;
     let stderr = child.stderr.take().ok_or("Debugger errors unavailable")?;
@@ -697,6 +709,11 @@ pub(crate) fn launch_prepared(
         let _ = child.wait();
         if let Ok(mut sessions) = app.state::<DebugManager>().0.lock() { sessions.remove(&label); }
         return Err(error);
+    }
+    if let Ok(mut drains) = app.state::<DebugManager>().1.lock() {
+        let active = drains.entry(label.clone()).or_default();
+        active.retain(|reaped| !reaped.load(Ordering::Acquire));
+        active.push(session.reaped.clone());
     }
     let app_reader = app.clone();
     let label_reader = label.clone();
@@ -952,6 +969,8 @@ pub(crate) fn launch_prepared(
             if active.get(&label_reader).is_some_and(|session| session.pgid == pgid) { active.remove(&label_reader); }
         }
         if !terminated_emitted && !replacement { emit(&app_reader, &label_reader, json!({"status":"terminated"})); }
+        drop(_dev_lease);
+        session.reaped.store(true, Ordering::Release);
     });
     let app_stderr = app.clone();
     let stderr_label = label.clone();

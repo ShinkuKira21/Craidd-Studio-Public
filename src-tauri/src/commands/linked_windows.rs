@@ -51,6 +51,8 @@ pub struct LinkedWindowUpdate {
     pub can_debug: bool,
     #[serde(default)]
     pub debugging: bool,
+    #[serde(default)]
+    pub active_action: Option<String>,
     pub status: String,
     pub selected_config_name: Option<String>,
     pub selected_profile_name: Option<String>,
@@ -95,6 +97,7 @@ pub(crate) struct Participant {
     can_run: bool,
     can_debug: bool,
     debugging: bool,
+    active_action: Option<String>,
     status: String,
     visible: bool,
     restoring: bool,
@@ -169,6 +172,7 @@ struct Registry {
     view_targets: HashMap<String, String>,
     actions: HashMap<String, GroupAction>,
     next_id: u64,
+    restarting: HashSet<String>,
     sequence: u64,
 }
 
@@ -191,6 +195,7 @@ pub struct LinkedMember {
     pub selected_profile_name: Option<String>,
     pub can_debug: bool,
     pub debugging: bool,
+    pub active_action: Option<String>,
     pub active_file: Option<LinkedFile>,
     pub tabs: Vec<LinkedTab>,
     pub output: String,
@@ -215,6 +220,7 @@ pub struct LinkedSnapshot {
     pub debug_adapter_available: bool,
     pub busy: bool,
     pub active_action: Option<String>,
+    pub active_action_id: Option<u64>,
     pub active_count: usize,
     pub problems: Vec<LinkedProblem>,
 }
@@ -251,6 +257,7 @@ pub struct LinkedLaunchPlanPhase {
 #[serde(rename_all = "camelCase")]
 pub struct RestoredRuntime {
     status: String,
+    action: Option<String>,
     output: String,
     active_id: Option<u64>,
     debugging: bool,
@@ -262,14 +269,14 @@ pub struct RestoredRuntime {
 
 #[tauri::command]
 pub fn get_linked_runtime(window: WebviewWindow, app: AppHandle, state: tauri::State<'_, LinkedWindowRegistry>) -> Option<RestoredRuntime> {
-    let (status, output, file, line, frames, variables) = {
+    let (status, action, output, file, line, frames, variables) = {
         let registry = state.0.lock().ok()?;
         let item = registry.windows.get(window.label())?;
-        (item.status.clone(), item.output.clone(), item.active_file.as_ref().map(|file| file.path.clone()),
+        (item.status.clone(), item.active_action.clone(), item.output.clone(), item.active_file.as_ref().map(|file| file.path.clone()),
             item.paused_line, item.debug_frames.clone(), item.debug_variables.clone())
     };
     Some(RestoredRuntime {
-        status, output, file, line, frames, variables,
+        status, action, output, file, line, frames, variables,
         active_id: super::runner::active_run_id(&app, window.label())
             .or_else(|| super::build::active_build_id(&app, window.label())),
         debugging: super::debug::has_debug_session(&app, window.label()),
@@ -412,10 +419,18 @@ pub(crate) fn ldi_selections(app: &AppHandle, origin: &str, partner: &str) -> Re
     Ok((selection(origin, a, "debug"), selection(partner, b, "build")))
 }
 
+pub(crate) fn ldi_debug_group_active(app: &AppHandle, origin: &str) -> bool {
+    let state = app.state::<LinkedWindowRegistry>();
+    let Ok(registry) = state.0.lock() else { return false; };
+    registry.windows.get(origin).is_some_and(|item| registry.actions.get(&item.solution_path)
+        .is_some_and(|group| group.action == "debug" && !group.cancelled && group.members.iter().any(|label| label == origin))
+        && ldi_pair(&registry, &item.solution_path).is_some_and(|(label, _)| label == origin))
+}
+
 fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     let Some(window) = registry.windows.get(label) else {
         return LinkedSnapshot { sequence: registry.sequence, linked: false, members: vec![], windows: vec![],
-            can_build: false, can_run: false, can_debug: false, debug_adapter_available: false, busy: false, active_action: None, active_count: 0,
+            can_build: false, can_run: false, can_debug: false, debug_adapter_available: false, busy: false, active_action: None, active_action_id: None, active_count: 0,
             problems: vec![] };
     };
     let pair = ldi_pair(registry, &window.solution_path);
@@ -436,7 +451,7 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
     } else { linked && all.clone().all(|participant| participant.specs.get("debug")
         .is_some_and(|spec| super::debug::adapter_available_for_method(&spec.program)))
     };
-    let busy = action.is_some() || (linked && all.clone().any(|participant| is_busy(&participant.status)));
+    let busy = registry.restarting.contains(&window.solution_path) || action.is_some() || (linked && all.clone().any(|participant| is_busy(&participant.status)));
     // Once an action starts, its count describes the launched windows even if
     // another window opens or changes its project while the action is active.
     let displayed_members = action.map_or(members.as_slice(), |action| action.members.as_slice());
@@ -459,6 +474,7 @@ fn snapshot(registry: &Registry, label: &str) -> LinkedSnapshot {
         debug_adapter_available,
         busy,
         active_action: action.map(|action| action.action.clone()),
+        active_action_id: action.map(|action| action.id),
         active_count: action.map_or(0, |action| action.unfinished.len()),
         problems: if linked || action.is_some() { displayed_members.iter().filter_map(|member| registry.windows.get(member).map(|participant| (member, participant)))
             .flat_map(|(member, participant)| participant.problems.iter().map(|problem| LinkedProblem {
@@ -482,6 +498,7 @@ fn member(label: &str, item: &Participant, include_context: bool) -> LinkedMembe
         selected_profile_name: item.selected_profile_name.clone(),
         can_debug: item.can_debug,
         debugging: item.debugging,
+        active_action: item.active_action.clone(),
         active_file: item.active_file.as_ref().map(|file| LinkedFile {
             path: file.path.clone(), name: file.name.clone(), language: file.language.clone(),
             content: if include_context { file.content.clone() } else { String::new() },
@@ -556,9 +573,17 @@ pub fn stop_solution_sessions(window: WebviewWindow, app: AppHandle, state: taur
 }
 
 fn reconcile(registry: &mut Registry) {
+    let finished = registry.actions.values().filter(|action| action.pending.is_empty() && action.unfinished.is_empty())
+        .flat_map(|action| action.members.iter().cloned()).collect::<Vec<_>>();
     registry.actions.retain(|_, action| {
         !action.pending.is_empty() || !action.unfinished.is_empty()
     });
+    for label in finished {
+        if let Some(item) = registry.windows.get_mut(&label).filter(|item| item.status == "waiting") {
+            item.status = "idle".into();
+            item.active_action = None;
+        }
+    }
 }
 
 fn finish_group_member(registry: &mut Registry, label: &str) {
@@ -622,7 +647,7 @@ pub fn update_linked_window(
             solution_path, window_id, instance_id: update.instance_id.filter(|id| !id.is_empty()).unwrap_or_else(|| window.label().into()),
             project_path: update.project_path, project_name: update.project_name,
             project_kind: update.project_kind, can_build: update.can_build, can_run: update.can_run,
-            can_debug: update.can_debug, debugging: update.debugging,
+            can_debug: update.can_debug, debugging: update.debugging, active_action: update.active_action,
             status: staged_status.unwrap_or(update.status), visible: window.is_visible().unwrap_or(true), restoring,
             selected_config_name: update.selected_config_name,
             selected_profile_name: update.selected_profile_name,
@@ -650,6 +675,9 @@ pub fn update_linked_window(
             specs: update.specs,
             last_hidden_emit: Instant::now(),
         });
+        if registry.windows.get(window.label()).is_some_and(|item| !is_busy(&item.status)) {
+            finish_group_member(&mut registry, window.label());
+        }
     } else {
         if !registry.parked_entries.contains_key(window.label()) {
             registry.windows.remove(window.label());
@@ -684,6 +712,7 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
     let Some(item) = registry.windows.get_mut(label) else { return; };
     item.status = status.into();
     item.debugging = matches!(status, "building" | "running" | "paused");
+    if item.debugging { item.active_action = Some("debug".into()); }
     item.paused_line = if status == "paused" { line } else { None };
     if status == "paused" {
         if let Some(reason) = reason { item.pause_reason = Some(reason.to_owned()); }
@@ -1001,6 +1030,9 @@ pub fn update_parked_window_configuration(
 
 async fn launch_parked(app: AppHandle, label: String, participant: Participant, action: String) -> Result<(), String> {
     let spec = participant.specs.get(&action).ok_or(format!("The hidden window has no {action} configuration"))?.clone();
+    if let Ok(mut registry) = app.state::<LinkedWindowRegistry>().0.lock() {
+        if let Some(item) = registry.windows.get_mut(&label) { item.active_action = Some(action.clone()); }
+    }
     if action == "debug" {
         let method = super::debug::normalize_debug_method(&spec.program)
             .ok_or_else(|| format!("The hidden window's debug command is not supported: {}", spec.program))?;
@@ -1545,7 +1577,10 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
                 tauri::async_runtime::spawn(async move {
                     let preparation = tauri::async_runtime::spawn_blocking({
                         let app = app_task.clone(); let label = label.clone();
-                        move || { super::ldi::prepare_origin(&app, &label, &mut request)?; Ok::<_, String>(request) }
+                        move || {
+                            if request.ldi_token.is_some() { super::ldi::prepare_origin(&app, &label, &mut request)?; }
+                            Ok::<_, String>(request)
+                        }
                     }).await.map_err(|error| error.to_string()).and_then(|result| result);
                     let result = match preparation {
                         Ok(request) => super::debug::start_debug_for_label(app_task.clone(), label.clone(), request).await,
@@ -1699,7 +1734,11 @@ pub fn start_linked_action(
                 action: "debug".into(), members, pending: runnable.clone(),
                 unfinished: runnable, skipped: HashSet::new(), id, cancelled: false,
             });
-            for partner in &partners { registry.windows.get_mut(partner).unwrap().status = "waiting".into(); }
+            for partner in &partners {
+                let item = registry.windows.get_mut(partner).unwrap();
+                item.status = "waiting".into();
+                item.active_action = Some("debug".into());
+            }
             registry.sequence += 1;
             broadcast(&app, &registry);
             drop(registry);
@@ -1757,6 +1796,7 @@ pub fn start_linked_action(
     for label in &members {
         if let Some(participant) = registry.windows.get_mut(label) {
             participant.status = "waiting".into();
+            participant.active_action = Some(action.clone());
             participant.failure_message = None;
         }
     }
@@ -1867,6 +1907,11 @@ pub fn stop_linked_action(
         group.pending.clear();
         group.unfinished.retain(|label| busy.contains(label));
     }
+    for (label, _) in &targets {
+        if let Some(item) = registry.windows.get_mut(label).filter(|item| item.status == "waiting") {
+            item.status = "cancelled".into();
+        }
+    }
     reconcile(&mut registry);
     registry.sequence += 1;
     broadcast(&app, &registry);
@@ -1887,6 +1932,156 @@ pub fn stop_linked_action(
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartTarget {
+    window_label: String,
+    instance_id: String,
+    config_name: Option<String>,
+    profile_name: Option<String>,
+    action: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartRequest {
+    scope: String,
+    action_id: Option<u64>,
+    targets: Vec<RestartTarget>,
+}
+
+fn validate_restart(registry: &Registry, source: &str, request: &RestartRequest, stopped: bool) -> Result<String, String> {
+    if !matches!(request.scope.as_str(), "gold" | "white") || request.targets.is_empty() || request.targets.len() > 24 {
+        return Err("Invalid restart scope".into());
+    }
+    let solution = &registry.windows.get(source).ok_or("This IDE window is no longer open")?.solution_path;
+    let labels = request.targets.iter().map(|target| target.window_label.clone()).collect::<HashSet<_>>();
+    if labels.len() != request.targets.len() { return Err("Duplicate restart target".into()); }
+    for target in &request.targets {
+        let item = registry.windows.get(&target.window_label).ok_or("A restart window closed; review the restart again")?;
+        if item.solution_path != *solution || item.instance_id != target.instance_id
+            || item.selected_config_name != target.config_name || item.selected_profile_name != target.profile_name {
+            return Err("A window or configuration changed; review the restart again".into());
+        }
+        if !matches!(target.action.as_str(), "run" | "debug") || item.restoring || item.dirty_count > 0 {
+            return Err("Save the affected windows and wait for them to finish opening before restarting".into());
+        }
+        if !stopped && request.scope == "white" && (!is_busy(&item.status)
+            || item.active_action.as_deref().is_some_and(|action| action != target.action)) {
+            return Err("That process is no longer running the action shown in the save dialog".into());
+        }
+        if stopped && is_busy(&item.status) { return Err("Another process started in a restart window; restart was not launched".into()); }
+    }
+    let group = registry.actions.get(solution);
+    if group.is_some_and(|group| Some(group.id) != request.action_id) {
+        return Err("The linked session changed; review the restart again".into());
+    }
+    if request.scope == "gold" {
+        let action = &request.targets[0].action;
+        if request.targets.iter().any(|target| target.action != *action) {
+            return Err("Gold restart needs one Run or Debug action".into());
+        }
+        if !stopped && group.is_none_or(|group| group.cancelled || Some(group.id) != request.action_id
+            || group.action != *action || group.members.iter().cloned().collect::<HashSet<_>>() != labels) {
+            return Err("The linked session changed; review the restart again".into());
+        }
+        let members = if action == "debug" {
+            ldi_pair(registry, solution).map(|(a, b)| ldi_members(registry, solution, &a, &b))
+                .unwrap_or_else(|| group_members(registry, solution))
+        } else { group_members(registry, solution) };
+        if members.into_iter().collect::<HashSet<_>>() != labels {
+            return Err("Linked windows changed; review the restart again".into());
+        }
+    } else {
+        if group.is_some_and(|group| group.action == "debug") && ldi_pair(registry, solution)
+            .is_some_and(|(origin, partners)| labels.contains(&origin) || partners.iter().any(|partner| labels.contains(partner))) {
+            return Err("An LDI pair needs Gold Restart Debug".into());
+        }
+        if request.targets.iter().any(|target| !registry.windows[&target.window_label].specs.contains_key(&target.action)) {
+            return Err("A restart configuration is missing".into());
+        }
+    }
+    Ok(solution.clone())
+}
+
+async fn restart_sessions_inner(window: WebviewWindow, app: AppHandle, request: RestartRequest) -> Result<(), String> {
+    let state = app.state::<LinkedWindowRegistry>();
+    if request.scope == "gold" {
+        stop_linked_action(window.clone(), app.clone(), app.state())?;
+    } else {
+        for target in &request.targets {
+            let in_group = state.0.lock().map_err(|error| error.to_string())?.actions.values()
+                .any(|group| group.members.contains(&target.window_label) && !group.skipped.contains(&target.window_label));
+            if in_group { stop_linked_member(window.clone(), app.clone(), app.state(), target.window_label.clone())?; }
+            else { dispatch_linked_window_command(window.clone(), app.clone(), app.state(), target.window_label.clone(), "stop".into(), None)?; }
+        }
+    }
+    // Wait for cancellation, preparation jobs, and process exits. A fixed
+    // delay can race the old API's listening socket or its debug adapter.
+    let wait_app = app.clone();
+    let labels = request.targets.iter().map(|target| target.window_label.clone()).collect::<Vec<_>>();
+    tauri::async_runtime::spawn_blocking(move || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let idle = {
+                let state = wait_app.state::<LinkedWindowRegistry>();
+                let registry = state.0.lock().map_err(|error| error.to_string())?;
+                labels.iter().all(|label| registry.windows.get(label).is_some_and(|item| !is_busy(&item.status)))
+            };
+            if idle && labels.iter().all(|label| !super::debug::has_debug_session(&wait_app, label)
+                && super::debug::debug_processes_stopped(&wait_app, label)
+                && super::runner::active_run_id(&wait_app, label).is_none()
+                && super::build::active_build_id(&wait_app, label).is_none()
+                && !super::build_order::has_active_order(&wait_app, label)) { return Ok(()); }
+            if Instant::now() >= deadline { return Err("The old processes did not finish stopping. The file is saved; restart was not launched.".to_string()); }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }).await.map_err(|error| error.to_string())??;
+    {
+        let mut registry = state.0.lock().map_err(|error| error.to_string())?;
+        validate_restart(&registry, window.label(), &request, true)?;
+        if request.scope == "white" {
+            for target in &request.targets {
+                for group in registry.actions.values_mut().filter(|group| Some(group.id) == request.action_id
+                    && group.members.contains(&target.window_label)) {
+                    group.skipped.remove(&target.window_label);
+                    group.unfinished.insert(target.window_label.clone());
+                }
+            }
+        }
+    }
+    if request.scope == "gold" {
+        start_linked_action(window, app.clone(), app.state(), request.targets[0].action.clone())
+    } else {
+        for target in request.targets {
+            dispatch_linked_window_command(window.clone(), app.clone(), app.state(), target.window_label,
+                format!("start_{}", target.action), None)?;
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn restart_linked_sessions(window: WebviewWindow, app: AppHandle, request: RestartRequest) -> Result<(), String> {
+    let solution = {
+        let state = app.state::<LinkedWindowRegistry>();
+        let mut registry = state.0.lock().map_err(|error| error.to_string())?;
+        let solution = validate_restart(&registry, window.label(), &request, false)?;
+        if !registry.restarting.insert(solution.clone()) { return Err("A restart is already in progress".into()); }
+        registry.sequence += 1;
+        broadcast(&app, &registry);
+        solution
+    };
+    let result = restart_sessions_inner(window, app.clone(), request).await;
+    let state = app.state::<LinkedWindowRegistry>();
+    if let Ok(mut registry) = state.0.lock() {
+        registry.restarting.remove(&solution);
+        registry.sequence += 1;
+        broadcast(&app, &registry);
+    }
+    result
 }
 
 pub fn remove_linked_window(window: &tauri::Window) {
@@ -1976,12 +2171,102 @@ mod tests {
         Participant { solution_path: solution.into(), window_id: 1, project_path: Some(project.into()),
             instance_id: project.into(),
             project_name: Some(project.into()), project_kind: Some(kind.into()),
-            can_build: true, can_run: true, can_debug: true, debugging: false, status: "idle".into(), visible: true,
+            can_build: true, can_run: true, can_debug: true, debugging: false, active_action: None, status: "idle".into(), visible: true,
             selected_config_name: None, selected_profile_name: None,
             active_file: None, tabs: vec![], output: String::new(), dirty_count: 0, debug_frames: vec![], debug_variables: vec![],
             paused_line: None, pause_reason: None, failure_message: None, revision: 1, renderer_id: "test-renderer".into(), retired_renderer_ids: HashSet::new(),
             problems: vec![], specs: HashMap::new(), restoring: false,
             last_hidden_emit: Instant::now() }
+    }
+
+    fn restart_fixture() -> (Registry, RestartRequest) {
+        let mut registry = Registry::default();
+        let mut targets = vec![];
+        for (label, project) in [("A", "api"), ("C", "client")] {
+            let mut item = participant("/one.cln", project, "application");
+            item.selected_config_name = Some(project.into());
+            item.status = "running".into();
+            item.active_action = Some("run".into());
+            item.specs.insert("run".into(), RunSpec { label: project.into(), program: "cargo".into(),
+                args: vec![], env: BTreeMap::new(), cwd: "/tmp".into(), linked: None, order: None });
+            targets.push(RestartTarget { window_label: label.into(), instance_id: item.instance_id.clone(),
+                config_name: item.selected_config_name.clone(), profile_name: None, action: "run".into() });
+            registry.windows.insert(label.into(), item);
+        }
+        registry.actions.insert("/one.cln".into(), GroupAction { action: "run".into(),
+            members: vec!["A".into(), "C".into()], pending: HashSet::new(),
+            unfinished: HashSet::from(["A".into(), "C".into()]), skipped: HashSet::new(), id: 17, cancelled: false });
+        (registry, RestartRequest { scope: "gold".into(), action_id: Some(17), targets })
+    }
+
+    #[test]
+    fn restart_rejects_stale_sessions_changed_configs_and_unsaved_windows_before_stopping() {
+        let (mut registry, request) = restart_fixture();
+        assert!(validate_restart(&registry, "C", &request, false).is_ok(), "any linked window can initiate restart");
+        registry.windows.get_mut("A").unwrap().dirty_count = 1;
+        assert!(validate_restart(&registry, "C", &request, false).is_err());
+        registry.windows.get_mut("A").unwrap().dirty_count = 0;
+        registry.windows.get_mut("A").unwrap().selected_config_name = Some("another config".into());
+        assert!(validate_restart(&registry, "C", &request, false).is_err());
+        registry.windows.get_mut("A").unwrap().selected_config_name = Some("api".into());
+        registry.actions.get_mut("/one.cln").unwrap().id = 18;
+        assert!(validate_restart(&registry, "C", &request, false).is_err());
+        assert!(validate_restart(&registry, "C", &request, true).is_err(), "do not restart over a replacement session");
+    }
+
+    #[test]
+    fn gold_restart_requires_exact_membership_but_white_server_restart_is_local() {
+        let (mut registry, mut request) = restart_fixture();
+        registry.windows.insert("D".into(), participant("/one.cln", "second-client", "application"));
+        assert!(validate_restart(&registry, "A", &request, false).is_err(), "new windows require reviewing Gold scope");
+        registry.windows.remove("D");
+        request.scope = "white".into();
+        request.targets.retain(|target| target.window_label == "A");
+        assert!(validate_restart(&registry, "C", &request, false).is_ok());
+        registry.windows.get_mut("A").unwrap().instance_id = "replacement".into();
+        assert!(validate_restart(&registry, "C", &request, false).is_err());
+    }
+
+    #[test]
+    fn a_completed_gold_stop_can_restart_but_a_new_launch_blocks_it() {
+        let (mut registry, request) = restart_fixture();
+        registry.actions.remove("/one.cln");
+        for item in registry.windows.values_mut() { item.status = "terminated".into(); }
+        assert!(validate_restart(&registry, "A", &request, true).is_ok());
+        registry.windows.get_mut("C").unwrap().status = "starting".into();
+        assert!(validate_restart(&registry, "A", &request, true).is_err());
+    }
+
+    #[test]
+    fn ending_the_host_session_releases_on_demand_library_waiting_state() {
+        let (mut registry, _) = restart_fixture();
+        let mut native = participant("/one.cln", "native", "library");
+        native.status = "waiting".into();
+        native.active_action = Some("debug".into());
+        registry.windows.insert("B".into(), native);
+        let group = registry.actions.get_mut("/one.cln").unwrap();
+        group.members.push("B".into());
+        group.unfinished.clear();
+        reconcile(&mut registry);
+        assert!(registry.actions.is_empty());
+        assert_eq!(registry.windows["B"].status, "idle");
+        assert!(registry.windows["B"].active_action.is_none());
+    }
+
+    #[test]
+    fn an_ldi_host_or_partner_cannot_be_white_restarted() {
+        let (mut registry, mut request) = restart_fixture();
+        registry.windows.get_mut("A").unwrap().specs.get_mut("run").unwrap().program = "dotnet".into();
+        let debug = registry.windows["A"].specs["run"].clone();
+        registry.windows.get_mut("A").unwrap().specs.insert("debug".into(), debug);
+        let mut native = participant("/one.cln", "native", "library");
+        native.specs.insert("build".into(), RunSpec { label: "native".into(), program: "cmake".into(),
+            args: vec![], env: BTreeMap::new(), cwd: "/tmp".into(), linked: None, order: None });
+        registry.windows.insert("B".into(), native);
+        registry.actions.get_mut("/one.cln").unwrap().action = "debug".into();
+        request.scope = "white".into();
+        request.targets.retain(|target| target.window_label == "A");
+        assert!(validate_restart(&registry, "C", &request, false).unwrap_err().contains("Gold Restart"));
     }
 
     #[test]

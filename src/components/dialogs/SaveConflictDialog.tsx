@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useSolution } from "../../store/solutionStore";
 import DiffDialog from "./DiffDialog";
+import { requestFileSave } from "../../lib/fileActions";
 
 export default function SaveConflictDialog({
   fileId,
@@ -10,7 +11,6 @@ export default function SaveConflictDialog({
   onClose: () => void;
 }) {
   const tabs = useSolution((s) => s.tabs);
-  const saveFile = useSolution((s) => s.saveFile);
   const reloadTabFromDisk = useSolution((s) => s.reloadTabFromDisk);
   const [showDiff, setShowDiff] = useState(false);
   const tab = tabs.find((t) => t.fileId === fileId);
@@ -21,8 +21,8 @@ export default function SaveConflictDialog({
   }
 
   const handleOverwrite = async () => {
-    await saveFile(fileId, true);
-    onClose();
+    try { await requestFileSave(fileId, true); onClose(); }
+    catch (error) { alert(`Save failed: ${String(error)}`); }
   };
 
   const handleLoadLatest = async () => {

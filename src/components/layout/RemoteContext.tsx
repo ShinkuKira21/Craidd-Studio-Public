@@ -12,6 +12,7 @@ const OVERSCAN = 16;
 // A remote window is a source preview. Reusing a second Monaco instance here
 // made context switches recreate WebKit editor surfaces on every selection.
 export function RemoteEditorPane({ context }: { context: LinkedMember }) {
+  const configName = context.selectedConfigName ?? context.projectName;
   const file = context.activeFile;
   const fileIsDirty = Boolean(file?.dirty || context.tabs.some((tab) => tab.path === file?.path && tab.dirty));
   const points = useBreakpoints((state) => state.points);
@@ -88,7 +89,7 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
 
   return <div className="flex-1 flex flex-col min-h-0 editor-surface bg-editor-bg">
     <div className="h-7 shrink-0 flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 text-[11px]">
-      <span className="text-blue-300 truncate">Viewing {context.projectName}</span>
+      <span className="text-blue-300 truncate" title={context.projectName}>Viewing {configName}</span>
       <span className="text-zinc-500 shrink-0" title="Breakpoints are shared by every debug session in this solution">Shared breakpoints</span>
       {file ? <button type="button" onClick={() => void editHere(file.path).catch((error) => alert(`Could not open file: ${String(error)}`))}
         disabled={fileIsDirty}
@@ -155,7 +156,7 @@ export function RemoteOutputPanel({ context }: { context: LinkedMember }) {
     [allProblems, context.windowLabel]);
   return <div className="h-full flex flex-col bg-zinc-950 border-t border-zinc-800 text-xs">
     <div className="h-8 shrink-0 flex items-center gap-3 px-3 border-b border-zinc-800 bg-zinc-900 text-zinc-400">
-      <span>Output · {context.projectName}</span><span>{context.status}</span>
+      <span title={context.projectName}>Output · {context.selectedConfigName ?? context.projectName}</span><span>{context.status}</span>
       {problems.length > 0 && <span className="text-red-400">{problems.length} problems</span>}
     </div>
     <pre className="flex-1 overflow-auto p-3 whitespace-pre-wrap font-mono text-zinc-300">{context.output || "No output yet."}</pre>

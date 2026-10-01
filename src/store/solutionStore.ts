@@ -12,6 +12,18 @@ import type {
 import { languageFromFilename, monacoLanguageForFilename, projectExtensions, projectWellKnownFiles, languageMeta } from "../lib/languages";
 import { seedMainChoices, syncMainChoices } from "./buildStore";
 
+async function publishSavedSource(fileId: string): Promise<void> {
+  window.dispatchEvent(new CustomEvent("craidd:file-saved", { detail: fileId }));
+  if (fileId.endsWith(".cs")) {
+    const { reconcileLdiBluesOnSave } = await import("./ldiStore");
+    await reconcileLdiBluesOnSave(fileId).catch((error) => logErr("Blue reconciliation failed:", error));
+  }
+  if (/\.(c|cpp|cc|cxx|h|hpp|hh|hxx|cmake)$/.test(fileId) || fileId.endsWith("/CMakeLists.txt")) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("craidd:native-source-saved", fileId).catch((error) => logErr("Native preview refresh failed:", error));
+  }
+}
+
 export interface AncestorInfo {
   clnPath: string;
   clnName: string;
@@ -1613,7 +1625,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
             : t
         ),
       }));
-      window.dispatchEvent(new CustomEvent("craidd:file-saved", { detail: fileId }));
+      await publishSavedSource(fileId);
       return "saved";
     } catch (err) {
       logErr("saveFile failed:", err);
@@ -1647,6 +1659,7 @@ export const useSolution = create<SolutionState>((set, get) => ({
         ),
         activeFileId: s.activeFileId === oldFileId ? newPath : s.activeFileId,
       }));
+      await publishSavedSource(newPath);
       await get().refreshDiscovery();
       const latest = get();
       if (latest.solution && latest.rootPath) {

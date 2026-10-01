@@ -1,4 +1,5 @@
 import { useSolution } from "../../store/solutionStore";
+import { requestFileSave } from "../../lib/fileActions";
 
 export default function SaveConfirmDialog({
   fileId,
@@ -8,7 +9,6 @@ export default function SaveConfirmDialog({
   onClose: () => void;
 }) {
   const tabs = useSolution((s) => s.tabs);
-  const saveFile = useSolution((s) => s.saveFile);
   const discardTab = useSolution((s) => s.discardTab);
   const tab = tabs.find((t) => t.fileId === fileId);
 
@@ -20,16 +20,8 @@ export default function SaveConfirmDialog({
   const deleted = tab.diskState === "deleted";
 
   const handleSave = async () => {
-    const result = await saveFile(fileId);
-    if (result === "saved") {
-      discardTab(fileId);
-      onClose();
-    } else if (result === "conflict") {
-      // Fall through to a conflict prompt in a future phase.
-      alert("This file has changed on disk. Save anyway from the next phase.");
-    } else {
-      alert("Could not save file. See console for details.");
-    }
+    try { await requestFileSave(fileId, deleted, () => discardTab(fileId)); onClose(); }
+    catch (error) { alert(`Save failed: ${String(error)}`); }
   };
 
   const handleDiscard = () => {

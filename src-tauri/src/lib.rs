@@ -25,6 +25,7 @@ use commands::window::{WindowRequests, get_startup_state, is_chromeos_guest, rec
 use commands::runner::{RunnerManager, start_config, stop_config, cancel_window_run};
 use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, set_linked_window_visible, update_parked_window_configuration, close_linked_window, get_application_windows, exit_application, stop_solution_sessions, view_linked_window, focus_linked_window, dispatch_linked_window_command, start_linked_action, acknowledge_linked_action, stop_linked_action, stop_linked_member, reveal_linked_problem, remove_linked_window, prepare_native_close, note_window_shown, get_linked_runtime, mark_linked_window_ready, abort_parked_restore, clear_native_close_guard, reset_linked_action, preview_linked_action, probe_linked_readiness};
 use commands::breakpoints::{load_breakpoints, save_breakpoints};
+use commands::linked_windows::restart_linked_sessions;
 use commands::debug::{DebugBuildManager, DebugManager, start_debug, debug_control, cancel_window_debug};
 
 #[tauri::command]
@@ -153,6 +154,7 @@ pub fn run() {
             acknowledge_linked_action,
             stop_linked_action,
             stop_linked_member,
+            restart_linked_sessions,
             reveal_linked_problem,
             clear_native_close_guard,
             reset_linked_action,

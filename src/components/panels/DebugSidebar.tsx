@@ -38,7 +38,7 @@ export default function DebugSidebar() {
       <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Session</div>
         <div className={remote?.status === "paused" || (!remote && debug.status === "paused") ? "text-amber-300" : "text-zinc-300"}>
-          {remote ? `${remote.projectName} · ${remote.debugging ? remote.status : "not debugging"}` : debug.status}
+          {remote ? `${remote.selectedConfigName ?? remote.projectName} · ${remote.debugging ? remote.status : "not debugging"}` : debug.status}
         </div>
         {pausedLine && <div className="mt-1 text-zinc-400 truncate" title={remote?.activeFile?.path ?? debug.file ?? ""}>
           {(remote?.activeFile?.name ?? debug.file?.split("/").pop()) || "Source"}:{pausedLine}
@@ -50,7 +50,7 @@ export default function DebugSidebar() {
       {windows.length > 1 && <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Linked debug sessions</div>
         {windows.map((item) => <div key={item.windowLabel} className="flex gap-2 py-0.5 text-zinc-400">
-          <span className="min-w-0 flex-1 truncate" title={item.projectName}>{item.projectName} · CS{item.windowId}</span>
+          <span className="min-w-0 flex-1 truncate" title={item.projectName}>{item.selectedConfigName ?? item.projectName} · CS{item.windowId}</span>
           <span className={item.debugging && item.status === "paused" ? "text-amber-300" : "text-zinc-500"}>
             {item.debugging ? item.status : "not debugging"}
           </span>
