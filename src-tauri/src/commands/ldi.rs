@@ -1956,18 +1956,21 @@ pub fn abandon_ldi_reproduction(
     window: WebviewWindow,
     app: AppHandle,
     token: String,
+    partner_label: Option<String>,
 ) -> Result<(), String> {
+    let requested_partner = partner_label.as_deref().unwrap_or(window.label());
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
     let pair = state
         .pairs
         .values_mut()
         .find(|pair| {
-            pair.binding.blue.partner_label == window.label()
+            pair.binding.blue.partner_label == requested_partner
+                && (pair.binding.blue.partner_label == window.label() || pair.binding.blue.origin_label == window.label())
                 && pair.token.to_string() == token
                 && pair.held
         })
-        .ok_or("Only the current B window can release this hold")?;
+        .ok_or("Only the current B window or its linked C# origin can release this hold")?;
     if pair.phase == "building-native" {
         return Err("Wait for the driver build to finish, or use Gold Stop".into());
     }

@@ -243,3 +243,17 @@ select {
 .animate-pulse-soft {
   animation: craidd-pulse-soft 2.2s ease-in-out infinite;
 }
+
+@keyframes craidd-attention-warning-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.12); }
+  50% { box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.28); }
+}
+.craidd-attention-warning { animation: craidd-attention-warning-glow 2s ease-in-out infinite; }
+@keyframes craidd-attention-error-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.18); }
+  50% { box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.34); }
+}
+.craidd-attention-error { animation: craidd-attention-error-glow 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .craidd-attention-warning, .craidd-attention-error { animation: none; }
+}

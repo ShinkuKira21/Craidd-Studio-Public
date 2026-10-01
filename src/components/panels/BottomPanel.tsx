@@ -30,7 +30,7 @@ export default function BottomPanel() {
   const linked = useLinkedWindows();
   const remote = linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
     && item.windowLabel !== linked.ownWindowLabel);
-  const shownProblems = linked.linked ? linked.problems
+  const shownProblems = linked.linked ? linked.problems.filter((problem) => !remote || problem.windowLabel === remote.windowLabel)
     : problems.map((problem) => ({ ...problem, windowLabel: "", projectName: "" }));
   const revealFile = useSolution((state) => state.revealFile);
   const errors = shownProblems.filter((problem) => problem.severity === "error").length;
@@ -41,6 +41,10 @@ export default function BottomPanel() {
   const outputSource = remote?.windowLabel ?? "own";
   const activeId = useBuild((state) => state.activeId);
   const changeFollow = (enabled: boolean) => { followRef.current = enabled; setFollowing(enabled); };
+
+  useEffect(() => {
+    if (remote && errors > 0) setTab("problems");
+  }, [remote?.windowLabel, errors]);
 
   useEffect(() => {
     const current = new Set<string>(JSON.parse(errorKeys));

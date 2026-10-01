@@ -91,6 +91,19 @@ pub fn get_startup_state() -> Result<StartupState, String> {
     Ok(previous)
 }
 
+fn chromeos_guest_markers(sommelier: Option<&str>, gtk_ime: Option<&str>, shared_mount: bool) -> bool {
+    sommelier.is_some_and(|value| !value.is_empty())
+        || gtk_ime.is_some_and(|value| value.eq_ignore_ascii_case("cros"))
+        || shared_mount
+}
+
+#[tauri::command]
+pub fn is_chromeos_guest() -> bool {
+    let sommelier = std::env::var("SOMMELIER_VERSION").ok();
+    let gtk_ime = std::env::var("GTK_IM_MODULE").ok();
+    chromeos_guest_markers(sommelier.as_deref(), gtk_ime.as_deref(), Path::new("/mnt/chromeos").is_dir())
+}
+
 fn rotate_session(path: &Path) -> Result<StartupState, String> {
     let mut previous = read_state(path)?;
     // Older recent.toml files accumulated windows across multiple runs,
@@ -223,6 +236,14 @@ pub fn apply_window_geometry(window: WebviewWindow, entry: WorkspaceEntry) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chromeos_notice_requires_a_guest_marker() {
+        assert!(!chromeos_guest_markers(None, Some("ibus"), false));
+        assert!(chromeos_guest_markers(Some("0.20"), None, false));
+        assert!(chromeos_guest_markers(None, Some("cros"), false));
+        assert!(chromeos_guest_markers(None, None, true));
+    }
 
     #[test]
     fn recent_state_round_trips() {

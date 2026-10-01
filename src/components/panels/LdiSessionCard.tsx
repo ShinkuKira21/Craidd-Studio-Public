@@ -5,6 +5,7 @@ export default function LdiSessionCard() {
   const session = useLdi((state) => state.session);
   const blues = useLdi((state) => state.blues);
   const own = useLinkedWindows((state) => state.ownWindowLabel);
+  const viewed = useLinkedWindows((state) => state.viewedWindowLabel);
   if (!session || session.phase === "stopped") {
     return blues.length ? <section className="p-3 border-b border-zinc-800 text-blue-300">
       <div className="font-semibold mb-1">Native debugging · LDI</div>
@@ -18,7 +19,7 @@ export default function LdiSessionCard() {
       </div>)}
     </section> : null;
   }
-  const partner = own === session.partnerLabel;
+  const partner = own === session.partnerLabel || viewed === session.partnerLabel;
   return <section className="p-3 border-b border-blue-900 bg-blue-950/20">
     <div className="text-blue-300 font-semibold mb-2">Native debugging · LDI</div>
     <div className={session.held ? "text-amber-300" : "text-zinc-300"}>
@@ -50,7 +51,7 @@ export default function LdiSessionCard() {
       className="mt-2 px-2 py-1 border border-zinc-600 rounded text-zinc-300 hover:bg-zinc-800"
       onClick={() => {
         if (window.confirm("Abandon this reproduction and let A execute its original call? B's values and edits are not copied to A.")) {
-          void abandonLdi(session.token).catch((error) => alert(String(error)));
+          void abandonLdi(session.token, session.partnerLabel).catch((error) => alert(String(error)));
         }
       }}>Abandon B and continue A</button>}
     <div className="text-[10px] text-zinc-500 mt-2">Separate reproduction; A executes its own call after release. Holding a server can cause connection timeouts.</div>

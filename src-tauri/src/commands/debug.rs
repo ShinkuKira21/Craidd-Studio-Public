@@ -83,10 +83,11 @@ pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
     if let Some(status) = value["status"].as_str() {
         if matches!(status, "building" | "running" | "paused" | "terminated" | "error") {
             note_debug_state(app, label, status, value["file"].as_str(),
-                value["line"].as_u64().and_then(|line| u32::try_from(line).ok()), value["reason"].as_str());
+                value["line"].as_u64().and_then(|line| u32::try_from(line).ok()),
+                value["reason"].as_str().or_else(|| if status == "error" { value["text"].as_str() } else { None }));
         }
     }
-    if value["status"] == "output" {
+    if value["status"] == "output" || value["status"] == "error" {
         if let Some(text) = value["text"].as_str() { note_debug_output(app, label, text); }
     }
     if value["frames"].is_array() || value["variables"].is_array() {

@@ -46,8 +46,6 @@ pub struct LinkedWindowUpdate {
     pub project_path: Option<String>,
     pub project_name: Option<String>,
     pub project_kind: Option<String>,
-    #[serde(default)]
-    pub native_library: bool,
     pub can_build: bool,
     pub can_run: bool,
     pub can_debug: bool,
@@ -93,7 +91,6 @@ pub(crate) struct Participant {
     project_path: Option<String>,
     project_name: Option<String>,
     project_kind: Option<String>,
-    native_library: bool,
     can_build: bool,
     can_run: bool,
     can_debug: bool,
@@ -184,6 +181,7 @@ pub struct LinkedMember {
     pub window_label: String,
     pub window_id: u32,
     pub instance_id: String,
+    pub solution_path: String,
     pub ldi_role: Option<String>,
     pub project_name: String,
     pub status: String,
@@ -316,7 +314,7 @@ fn ldi_role(item: &Participant) -> Option<&'static str> {
     if is_application(item.project_kind.as_deref()) && item.specs.get("debug")
         .is_some_and(|spec| super::debug::normalize_debug_method(&spec.program) == Some("dotnet")) {
         Some("managed")
-    } else if (item.project_kind.as_deref() == Some("library") || item.native_library) && item.specs.get("build")
+    } else if item.project_kind.as_deref() == Some("library") && item.specs.get("build")
         .is_some_and(|spec| super::debug::normalize_debug_method(&spec.program) == Some("cmake")) {
         Some("native-library")
     } else { None }
@@ -389,7 +387,7 @@ pub(crate) fn ldi_selections(app: &AppHandle, origin: &str, partner: &str) -> Re
         return Err("LDI needs one selected C# Debug Power slot and a selected CMake Library Build Power slot".into());
     }
     let b = &registry.windows[partner];
-    if [a, b].iter().any(|item| !item.visible || item.restoring) { return Err("Show both LDI windows before pairing".into()); }
+    if [a, b].iter().any(|item| item.restoring) { return Err("Wait for both LDI windows to finish opening before pairing".into()); }
     let selection = |label: &str, item: &Participant, action: &str| LdiSelection {
         label: label.into(), instance_id: item.instance_id.clone(), window_id: item.window_id,
         solution: item.solution_path.clone(),
@@ -460,6 +458,7 @@ fn member(label: &str, item: &Participant, include_context: bool) -> LinkedMembe
         window_label: label.into(),
         window_id: item.window_id,
         instance_id: item.instance_id.clone(),
+        solution_path: item.solution_path.clone(),
         ldi_role: ldi_role(item).map(String::from),
         project_name: item.project_name.clone().unwrap_or_else(|| label.into()),
         status: item.status.clone(), visible: item.visible, restoring: item.restoring,
@@ -481,6 +480,63 @@ fn member(label: &str, item: &Participant, include_context: bool) -> LinkedMembe
         pause_reason: item.pause_reason.clone(),
         failure_message: item.failure_message.clone(),
     }
+}
+
+fn application_members(registry: &Registry) -> Vec<LinkedMember> {
+    let mut windows = registry.windows.iter().map(|(label, item)| member(label, item, false)).collect::<Vec<_>>();
+    windows.sort_by(|a, b| a.solution_path.cmp(&b.solution_path).then(a.window_id.cmp(&b.window_id)));
+    windows
+}
+
+#[tauri::command]
+pub fn get_application_windows(window: WebviewWindow, state: tauri::State<'_, LinkedWindowRegistry>) -> Result<Vec<LinkedMember>, String> {
+    let registry = state.0.lock().map_err(|error| error.to_string())?;
+    if !registry.windows.contains_key(window.label()) { return Err("This IDE window is no longer registered".into()); }
+    Ok(application_members(&registry))
+}
+
+#[tauri::command]
+pub fn exit_application(window: WebviewWindow, app: AppHandle, state: tauri::State<'_, LinkedWindowRegistry>) -> Result<(), String> {
+    let labels = {
+        let registry = state.0.lock().map_err(|error| error.to_string())?;
+        if !registry.windows.contains_key(window.label()) { return Err("This IDE window is no longer registered".into()); }
+        if registry.windows.values().any(|item| item.dirty_count > 0 || item.restoring) {
+            return Err("Save every open IDE window and wait for windows to finish opening before exiting".into());
+        }
+        registry.windows.keys().cloned().collect::<Vec<_>>()
+    };
+    for label in labels {
+        super::build_order::cancel(&app, &label);
+        super::build::cancel_build_by_label(&app, &label);
+        super::runner::cancel_run_by_label(&app, &label);
+        super::debug::cancel_debug_by_label(&app, &label);
+    }
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_solution_sessions(window: WebviewWindow, app: AppHandle, state: tauri::State<'_, LinkedWindowRegistry>) -> Result<(), String> {
+    let labels = {
+        let mut registry = state.0.lock().map_err(|error| error.to_string())?;
+        let solution = registry.windows.get(window.label()).ok_or("This IDE window is no longer registered")?.solution_path.clone();
+        if registry.windows.values().any(|item| item.solution_path == solution && (item.dirty_count > 0 || item.restoring)) {
+            return Err("Save every window in this solution and wait for opening windows before exiting".into());
+        }
+        let labels = registry.windows.iter().filter(|(_, item)| item.solution_path == solution)
+            .map(|(label, _)| label.clone()).collect::<Vec<_>>();
+        registry.actions.remove(&solution);
+        registry.sequence += 1;
+        broadcast(&app, &registry);
+        labels
+    };
+    for label in labels {
+        super::build_order::cancel(&app, &label);
+        super::build::cancel_build_by_label(&app, &label);
+        super::runner::cancel_run_by_label(&app, &label);
+        super::debug::cancel_debug_by_label(&app, &label);
+    }
+    Ok(())
 }
 
 fn reconcile(registry: &mut Registry) {
@@ -549,7 +605,6 @@ pub fn update_linked_window(
             solution_path, window_id, instance_id: update.instance_id.filter(|id| !id.is_empty()).unwrap_or_else(|| window.label().into()),
             project_path: update.project_path, project_name: update.project_name,
             project_kind: update.project_kind, can_build: update.can_build, can_run: update.can_run,
-            native_library: update.native_library,
             can_debug: update.can_debug, debugging: update.debugging,
             status: staged_status.unwrap_or(update.status), visible: window.is_visible().unwrap_or(true), restoring,
             selected_config_name: update.selected_config_name,
@@ -618,13 +673,15 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
     } else {
         item.pause_reason = None;
     }
-    if status == "error" { item.failure_message = Some("Debug session failed".into()); }
+    if status == "error" { item.failure_message = Some(reason.unwrap_or("Debug session failed").to_owned()); }
     else if matches!(status, "building" | "running" | "paused") { item.failure_message = None; }
+    let hidden_source = if status == "paused" && !item.visible { paused_source.clone() } else { None };
     if let Some(source) = paused_source {
         if !item.active_file.as_ref().is_some_and(|active| active.path == source.path && active.dirty) {
             item.active_file = Some(source);
         }
     }
+    if let Some(source) = hidden_source { parked_select_file(&mut registry, label, source); }
     if matches!(status, "terminated" | "error") { finish_group_member(&mut registry, label); }
     else if matches!(status, "building" | "running" | "paused") {
         for group in registry.actions.values_mut().filter(|group| !group.cancelled && !group.skipped.contains(label)
@@ -1052,8 +1109,10 @@ pub fn focus_linked_window(
     if source.solution_path != target.solution_path { return Err("Window belongs to another solution".into()); }
     if !target.visible || target.restoring { return Err("That IDE window is hidden; show it first".into()); }
     drop(registry);
-    app.get_webview_window(&target_label).ok_or("Window is no longer open".to_string())?
-        .set_focus().map_err(|e| e.to_string())
+    let target = app.get_webview_window(&target_label).ok_or("Window is no longer open".to_string())?;
+    target.show().map_err(|e| e.to_string())?;
+    target.unminimize().map_err(|e| e.to_string())?;
+    target.set_focus().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1138,7 +1197,9 @@ pub fn reveal_linked_problem(
 ) -> Result<(), String> {
     let registry = state.0.lock().map_err(|e| e.to_string())?;
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
-    let members = group_members(&registry, &participant.solution_path);
+    let members = ldi_pair(&registry, &participant.solution_path)
+        .map(|(origin, partners)| ldi_members(&registry, &participant.solution_path, &origin, &partners))
+        .unwrap_or_else(|| group_members(&registry, &participant.solution_path));
     if !members.iter().any(|member| member == window.label()) || !members.iter().any(|member| member == &owner_label) {
         return Err("Problem belongs to a window outside this linked group".into());
     }
@@ -1883,7 +1944,7 @@ mod tests {
     fn participant(solution: &str, project: &str, kind: &str) -> Participant {
         Participant { solution_path: solution.into(), window_id: 1, project_path: Some(project.into()),
             instance_id: project.into(),
-            project_name: Some(project.into()), project_kind: Some(kind.into()), native_library: false,
+            project_name: Some(project.into()), project_kind: Some(kind.into()),
             can_build: true, can_run: true, can_debug: true, debugging: false, status: "idle".into(), visible: true,
             selected_config_name: None, selected_profile_name: None,
             active_file: None, tabs: vec![], output: String::new(), dirty_count: 0, debug_frames: vec![], debug_variables: vec![],
@@ -1921,6 +1982,11 @@ mod tests {
         registry.windows.insert("A".into(), origin);
         registry.windows.insert("B".into(), native);
         assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), vec!["B".into()])));
+        registry.windows.get_mut("B").unwrap().visible = false;
+        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), vec!["B".into()])),
+            "a parked native viewport remains a selected LDI partner");
+        assert_eq!(snapshot(&registry, "A").members.len(), 2);
+        registry.windows.get_mut("B").unwrap().visible = true;
         assert!(group_members(&registry, "/one.cln").is_empty(), "Run's application-only grouping remains unchanged");
         registry.windows.get_mut("B").unwrap().project_kind = Some("application".into());
         assert!(ldi_pair(&registry, "/one.cln").is_none());
@@ -1966,6 +2032,19 @@ mod tests {
         other_managed.specs.insert("debug".into(), spec("dotnet"));
         registry.windows.insert("E".into(), other_managed);
         assert!(ldi_pair(&registry, "/one.cln").is_none(), "Never guess between managed origins");
+    }
+
+    #[test]
+    fn application_exit_includes_hidden_windows_from_other_solutions() {
+        let mut registry = Registry::default();
+        let mut hidden = participant("/second.cln", "native", "library");
+        hidden.visible = false;
+        registry.windows.insert("B".into(), hidden);
+        registry.windows.insert("A".into(), participant("/first.cln", "gui", "application"));
+        let targets = application_members(&registry);
+        assert_eq!(targets.iter().map(|item| item.window_label.as_str()).collect::<Vec<_>>(), vec!["A", "B"]);
+        assert_eq!(targets[1].solution_path, "/second.cln");
+        assert!(!targets[1].visible);
     }
 
     #[test]

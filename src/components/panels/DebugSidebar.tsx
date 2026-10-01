@@ -26,9 +26,9 @@ export default function DebugSidebar() {
   const removeBreakpoint = async (file: string, line: number) => {
     await useBreakpoints.getState().remove(file, line);
   };
-  return <div className="w-72 bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden shrink-0 text-xs">
+  return <div className="h-full min-h-0 w-full bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden text-xs">
     <div className="h-9 px-3 flex items-center border-b border-zinc-800 shrink-0 font-semibold text-zinc-300 uppercase tracking-wide">Debug</div>
-    <div className="overflow-auto scroll-thin flex-1">
+    <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden scroll-thin overscroll-contain" tabIndex={0} aria-label="Debugger details">
       <LdiSessionCard />
       <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Session</div>
@@ -40,6 +40,7 @@ export default function DebugSidebar() {
         </div>}
         {(remote?.pauseReason ?? (!remote ? debug.reason : null)) &&
           <div className="mt-1 text-zinc-500">{remote?.pauseReason ?? debug.reason}</div>}
+        {remote?.failureMessage && <div role="alert" className="mt-2 text-red-300 break-words">{remote.failureMessage}</div>}
       </section>
       {windows.length > 1 && <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Linked debug sessions</div>

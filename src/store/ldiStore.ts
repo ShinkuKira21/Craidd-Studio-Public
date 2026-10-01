@@ -32,9 +32,9 @@ export async function removeLdiBlue(file: string, line: number) {
   await invoke("remove_ldi_blue", { file, line });
   await refreshLdiBlues();
 }
-export async function abandonLdi(token: string) {
+export async function abandonLdi(token: string, partnerLabel?: string) {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("abandon_ldi_reproduction", { token });
+  await invoke("abandon_ldi_reproduction", { token, partnerLabel });
 }
 export async function listenToLdi(): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event");

@@ -31,6 +31,7 @@ export interface LinkedMember {
   windowLabel: string;
   windowId: number;
   instanceId: string;
+  solutionPath: string;
   ldiRole: "managed" | "native-library" | null;
   projectName: string;
   status: string;
@@ -78,7 +79,7 @@ export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
       // adopted. If focusing fails, the user sees nothing happen when
       // they clicked the row; surface the failure instead of swallowing it.
       try {
-        await invoke("focus_linked_window", { targetLabel: label });
+        await focusLinkedWindow(label);
       } catch (cause) {
         const message = String(cause);
         console.error("[craidd] Could not focus linked window:", cause);
@@ -155,9 +156,6 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     projectPath: project?.path ?? null,
     projectName: project?.name ?? null,
     projectKind: project?.kind ?? null,
-    nativeLibrary: project?.language === "cpp" && Boolean(project.manifests?.some((manifest) =>
-      manifest.kind === "cmake" && Array.isArray(manifest.values.libraries) && manifest.values.libraries.length > 0
-      && Array.isArray(manifest.values.executables) && manifest.values.executables.length === 0)),
     canBuild: Boolean(build.mainChoices.build),
     canRun: Boolean(build.mainChoices.run),
     canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""),
@@ -323,7 +321,14 @@ export async function prepareLinkedWindow(targetLabel: string, decision: "save" 
   if (!ownWindowLabel || !solutionPath || !windows.some((item) => item.windowLabel === targetLabel)) {
     throw new Error("That IDE window is no longer linked to this solution");
   }
+  return prepareApplicationWindow(targetLabel, solutionPath, decision);
+}
+
+export async function prepareApplicationWindow(targetLabel: string, solutionPath: string, decision: "save" | "discard" | "inspect"): Promise<number> {
+  const ownWindowLabel = useLinkedWindows.getState().ownWindowLabel;
+  if (!ownWindowLabel) throw new Error("This IDE window is no longer registered");
   if (targetLabel === ownWindowLabel) {
+    if (useSolution.getState().clnPath !== solutionPath) throw new Error("The solution changed before this window could be prepared");
     if (decision !== "inspect") await prepareOwnWindow(decision);
     await publishLinkedWindow(useSolution.getState().solution, solutionPath);
     return useSolution.getState().tabs.filter((tab) => tab.dirty).length;
@@ -364,9 +369,32 @@ export async function setLinkedWindowVisible(targetLabel: string, visible: boole
   }
 }
 
-export async function focusLinkedWindow(targetLabel: string): Promise<void> {
+export async function focusLinkedWindow(targetLabel: string): Promise<boolean> {
   const { invoke } = await import("@tauri-apps/api/core");
+  // The Rust command shows, unminimizes and requests focus. On Linux the
+  // compositor may decline activation even when Tauri reports success;
+  // report that as a soft fallback instead of retrying or claiming failure.
   await invoke("focus_linked_window", { targetLabel });
+  try {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const target = await WebviewWindow.getByLabel(targetLabel);
+    if (!target) return false;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 450));
+    return await target.isFocused();
+  } catch {
+    // The activation request was accepted, but focus verification is not
+    // available. Do not show a misleading "focus denied" notice.
+    return true;
+  }
+}
+
+let chromeOsGuestCheck: Promise<boolean> | null = null;
+
+export function isChromeOsGuest(): Promise<boolean> {
+  chromeOsGuestCheck ??= import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke<boolean>("is_chromeos_guest"))
+    .catch(() => false);
+  return chromeOsGuestCheck;
 }
 
 export function waitForLinkedWindowReady(targetLabel: string): Promise<void> {

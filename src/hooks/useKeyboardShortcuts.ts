@@ -13,6 +13,15 @@ export function useKeyboardShortcuts(
     const onKey = async (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
 
+      if (mod && e.key.toLowerCase() === "q") {
+        const scope = e.altKey && !e.shiftKey ? "ide" : e.shiftKey && !e.altKey ? "solution" : !e.altKey && !e.shiftKey ? "window" : null;
+        if (scope) {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent("craidd:exit-scope", { detail: scope }));
+          return;
+        }
+      }
+
       if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
         try { await startViewedAction("build"); } catch (error) { alert(`Build failed: ${String(error)}`); }
