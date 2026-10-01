@@ -18,6 +18,11 @@ export default function DebugSidebar() {
       useLinkedWindows.getState().setRemoteEditing(true);
     }
   };
+  const revealFrame = async (file: string, line: number) => {
+    if (!remote) { await reveal(file, line, 1); return; }
+    await dispatchLinkedWindowCommand(remote.windowLabel, "reveal_file", JSON.stringify({ file, line }));
+    useLinkedWindows.getState().setRemoteEditing(false);
+  };
   const pausedLine = remote ? remote.pausedLine : debug.line;
   const frames = remote?.debugFrames ?? debug.frames;
   const variables = remote?.debugVariables ?? debug.variables;
@@ -53,7 +58,7 @@ export default function DebugSidebar() {
       </section>}
       {frames.length > 0 && <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Call stack</div>
-        {frames.map((frame) => <button key={frame.id} type="button" onClick={() => frame.source?.path && void revealBreakpoint(frame.source.path, frame.line)
+        {frames.map((frame) => <button key={frame.id} type="button" onClick={() => frame.source?.path && void revealFrame(frame.source.path, frame.line)
           .catch((error) => alert(`Could not open frame: ${String(error)}`))}
           className="block w-full text-left px-1 py-1 rounded hover:bg-zinc-800 truncate" title={frame.source?.path}>
           <span className="text-zinc-200">{frame.name}</span><span className="ml-1 text-zinc-500">{frame.source?.name}:{frame.line}</span>

@@ -9,6 +9,8 @@
    scalar.h, a generated driver, or the managed process. */
 extern "C" int demo_add(int left, int right) {
     int result = left + right;
+
+    int x = 2;
     return result; // RED_ADD — TEST 2: add red here; B should skip the automatic entry stop.
 }
 

@@ -69,6 +69,10 @@ function bootstrap() {
       if (entry) {
         try { await openEntry(entry); return { state, workspace: true, error: null }; }
         catch (error) {
+          if (entry.startHidden) {
+            try { await invoke("abort_initial_hidden_window"); }
+            catch (abortError) { console.error("[craidd] Could not close failed hidden duplicate:", abortError); }
+          }
           if (entry.restoredFromHidden) {
             try { await invoke("abort_parked_restore", { error: String(error) }); }
             catch (abortError) { console.error("[craidd] Could not park failed restore:", abortError); }

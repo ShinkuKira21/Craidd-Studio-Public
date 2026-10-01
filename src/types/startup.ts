@@ -14,6 +14,7 @@ export interface WorkspaceEntry {
   restoredTabs?: string[];
   restoredActiveFile?: string;
   restoredFromHidden?: boolean;
+  startHidden?: boolean;
 }
 
 export interface StartupState {

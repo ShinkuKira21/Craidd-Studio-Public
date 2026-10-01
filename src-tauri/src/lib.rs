@@ -28,7 +28,8 @@ use commands::breakpoints::{load_breakpoints, save_breakpoints};
 use commands::debug::{DebugBuildManager, DebugManager, start_debug, debug_control, cancel_window_debug};
 
 #[tauri::command]
-fn show_main_window(w: tauri::WebviewWindow) -> Result<(), String> {
+fn show_main_window(w: tauri::WebviewWindow, requests: tauri::State<'_, WindowRequests>) -> Result<(), String> {
+    if requests.1.lock().map_err(|e| e.to_string())?.contains(w.label()) { return Ok(()); }
     if w.is_visible().map_err(|e| e.to_string())? { return Ok(()); }
     w.show().map_err(|e| e.to_string())?;
     note_window_shown(&w.app_handle(), w.label());
@@ -83,8 +84,11 @@ pub fn run() {
             delete_path,
             rename_path,
             show_main_window,
+            commands::window::abort_initial_hidden_window,
             commands::ldi::set_ldi_blue,
+            commands::ldi::list_ldi_call_sites,
             commands::ldi::remove_ldi_blue,
+            commands::ldi::reconcile_ldi_blues_on_save,
             commands::ldi::get_ldi_blues,
             commands::ldi::abandon_ldi_reproduction,
             get_linked_runtime,

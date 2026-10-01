@@ -413,6 +413,21 @@ export function waitForLinkedWindowReady(targetLabel: string): Promise<void> {
   });
 }
 
+/** Wait for a newly created participant to finish opening or parking. */
+export function waitForLinkedWindowSession(targetLabel: string): Promise<LinkedMember> {
+  const find = () => useLinkedWindows.getState().windows.find((item) =>
+    item.windowLabel === targetLabel && !item.restoring);
+  const current = find();
+  if (current) return Promise.resolve(current);
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => { unsubscribe(); reject(new Error("The duplicated IDE window did not finish opening")); }, 30_000);
+    const unsubscribe = useLinkedWindows.subscribe(() => {
+      const member = find();
+      if (member) { window.clearTimeout(timer); unsubscribe(); resolve(member); }
+    });
+  });
+}
+
 export async function dispatchLinkedWindowCommand(targetLabel: string, kind: string, value?: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   const target = useLinkedWindows.getState().windows.find((item) => item.windowLabel === targetLabel);

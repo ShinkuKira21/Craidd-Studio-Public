@@ -378,6 +378,22 @@ pub(crate) struct LdiSelection {
     pub spec: RunSpec,
 }
 
+pub(crate) fn ldi_origin_selection(app: &AppHandle, origin: &str) -> Result<LdiSelection, String> {
+    let state = app.state::<LinkedWindowRegistry>();
+    let registry = state.0.lock().map_err(|error| error.to_string())?;
+    let item = registry.windows.get(origin).ok_or("Managed window is no longer open")?;
+    if ldi_role(item) != Some("managed") {
+        return Err("Select a C# Debug Power configuration to preview native calls".into());
+    }
+    if registry.windows.values().filter(|candidate|
+        candidate.solution_path == item.solution_path && ldi_role(candidate) == Some("managed")).count() != 1 {
+        return Err("LDI needs one selected C# Debug window in this solution".into());
+    }
+    let spec = item.specs.get("debug").ok_or("C# Debug configuration is unavailable")?;
+    Ok(LdiSelection { label: origin.into(), instance_id: item.instance_id.clone(),
+        window_id: item.window_id, solution: item.solution_path.clone(), spec: spec.clone() })
+}
+
 pub(crate) fn ldi_selections(app: &AppHandle, origin: &str, partner: &str) -> Result<(LdiSelection, LdiSelection), String> {
     let state = app.state::<LinkedWindowRegistry>();
     let registry = state.0.lock().map_err(|error| error.to_string())?;
@@ -590,7 +606,8 @@ pub fn update_linked_window(
             (update.status == "paused").then(|| item.pause_reason.clone())).flatten();
         let failure_message = registry.windows.get(window.label()).and_then(|item|
             (update.status == "failed").then(|| item.failure_message.clone())).flatten();
-        let restoring = registry.windows.get(window.label()).is_some_and(|item| item.restoring);
+        let initial_hidden = app.state::<WindowRequests>().1.lock().map_err(|error| error.to_string())?.contains(window.label());
+        let restoring = registry.windows.get(window.label()).is_some_and(|item| item.restoring) || initial_hidden;
         let retired_renderer_ids = registry.windows.get(window.label())
             .map(|item| item.retired_renderer_ids.clone()).unwrap_or_default();
         let window_id = if let Some(previous) = registry.windows.get(window.label())
@@ -787,7 +804,7 @@ fn parked_entry(window: &WebviewWindow, item: &Participant) -> WorkspaceEntry {
         selection_name: item.project_name.clone(),
         restored_tabs: item.tabs.iter().map(|tab| tab.path.clone()).collect(),
         restored_active_file: item.active_file.as_ref().map(|file| file.path.clone()),
-        restored_from_hidden: true,
+        restored_from_hidden: true, start_hidden: false,
     }
 }
 
@@ -830,11 +847,25 @@ pub fn note_window_shown(app: &AppHandle, label: &str) {
 
 #[tauri::command]
 pub fn mark_linked_window_ready(window: WebviewWindow, app: AppHandle, state: tauri::State<'_, LinkedWindowRegistry>) -> Result<(), String> {
-    if !window.is_visible().map_err(|e| e.to_string())? {
+    let initial_hidden = app.state::<WindowRequests>().1.lock().map_err(|e| e.to_string())?.contains(window.label());
+    if !initial_hidden && !window.is_visible().map_err(|e| e.to_string())? {
         return Err("The restored window is not visible yet".into());
     }
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(item) = registry.windows.get_mut(window.label()) {
+        if initial_hidden {
+            let entry = parked_entry(&window, item);
+            item.visible = false;
+            item.restoring = false;
+            item.retired_renderer_ids.insert(item.renderer_id.clone());
+            registry.parked_entries.insert(window.label().into(), entry);
+            registry.sequence += 1;
+            broadcast(&app, &registry);
+            drop(registry);
+            window.destroy().map_err(|e| e.to_string())?;
+            app.state::<WindowRequests>().1.lock().map_err(|e| e.to_string())?.remove(window.label());
+            return Ok(());
+        }
         if item.restoring {
             item.restoring = false;
             registry.parked_entries.remove(window.label());

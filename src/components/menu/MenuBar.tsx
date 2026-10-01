@@ -5,7 +5,9 @@ import { saveActiveFile, saveActiveFileAs } from "../../lib/fileActions";
 import { choicesForConfig, useBuild } from "../../store/buildStore";
 import { startViewedAction, stopViewedAction } from "../../lib/viewedActions";
 import { useDebug } from "../../store/debugStore";
-import { useLinkedWindows } from "../../store/linkedWindowsStore";
+import { useLinkedWindows, waitForLinkedWindowSession } from "../../store/linkedWindowsStore";
+import type { LinkedMember } from "../../store/linkedWindowsStore";
+import { shouldShowDuplicate } from "../../lib/duplicateWindowPolicy";
 
 interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; submenu?: MenuItem[]; }
 interface MenuSeparator { separator: true; }
@@ -48,11 +50,21 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     if (!clnPath) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("open_workspace_window", { entry: {
+      const { duplicateWindowMode, duplicateWindowLimit } = usePreferences.getState();
+      const visibleCount = duplicateWindowMode === "limit"
+        ? (await invoke<LinkedMember[]>("get_application_windows")).filter((item) => item.visible).length
+        : 0;
+      const show = shouldShowDuplicate(duplicateWindowMode, visibleCount, duplicateWindowLimit);
+      const label = await invoke<string>("open_workspace_window", { entry: {
         path: clnPath, kind: "solution", name: clnPath.split("/").filter(Boolean).pop() ?? clnPath,
         windowLabel: "", selectedConfigName: viewed?.selectedConfigName ?? selectedConfigName,
         selectedProfileName: viewed?.selectedProfileName ?? selectedProfileName,
+        startHidden: !show,
       } });
+      if (!show) {
+        await waitForLinkedWindowSession(label);
+        await useLinkedWindows.getState().selectWindow(label);
+      }
     } catch (error) { alert(`Could not duplicate window: ${String(error)}`); }
   };
   const exitScope = (scope: "window" | "solution" | "ide") =>
