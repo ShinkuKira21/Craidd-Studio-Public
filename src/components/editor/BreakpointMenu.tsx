@@ -41,15 +41,15 @@ export default function BreakpointMenu({ file, line, x, y, onClose }: {
         {red.condition ? "Edit red condition…" : "Set red condition…"}</button>}
       {file.endsWith(".cs") && (blue ? <button role="menuitem"
         className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
-        onClick={() => { void removeLdiBlue().catch((error) => alert(`Native breakpoint: ${String(error)}`)); onClose(); }}>
+        onClick={() => { void removeLdiBlue(file, line).catch((error) => alert(`Native breakpoint: ${String(error)}`)); onClose(); }}>
         Remove Native Debugging Breakpoint</button>
-        : partners.length === 1 && managedCount === 1 ? partners.map((partner) => <button key={partner.windowLabel} role="menuitem" disabled={own?.ldiRole !== "managed"}
+        : partners.length > 0 && managedCount === 1 ? partners.map((partner) => <button key={partner.windowLabel} role="menuitem" disabled={own?.ldiRole !== "managed"}
           title="Gold Linked Debug only. Set blue on an executable DllImport call site."
           className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900 disabled:opacity-40"
           onClick={() => { void setLdiBlue(file, line, partner.windowLabel).catch((error) => alert(`Native breakpoint: ${String(error)}`)); onClose(); }}>
-          Native Debugging Breakpoint → CS{partner.windowId}</button>)
+          Native Debugging Breakpoint → CS{partner.windowId}{partner.selectedConfigName ? ` · ${partner.selectedConfigName}` : ""}</button>)
         : <button role="menuitem" disabled className="block w-full px-3 py-1.5 text-left text-blue-300 opacity-40">
-          {managedCount > 1 ? "Native Debugging Breakpoint (multiple C# hosts are ambiguous)" : partners.length ? "Native Debugging Breakpoint (multiple libraries are ambiguous)" : "Native Debugging Breakpoint (select a library partner)"}</button>)}
+          {managedCount > 1 ? "Native Debugging Breakpoint (multiple C# hosts are ambiguous)" : "Native Debugging Breakpoint (select a library partner)"}</button>)}
       {blue && <button role="menuitem" className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
         onClick={() => { setCondition(blue.condition ?? ""); setEditingCondition("blue"); }}>
         {blue.condition ? "Edit blue condition…" : "Set blue condition…"}</button>}

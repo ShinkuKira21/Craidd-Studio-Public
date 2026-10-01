@@ -19,9 +19,10 @@ The goal is a light mockup environment. Unreadable arguments are unsupported
 at that stop. Pointers/buffers and any proxy they might require are later work.
 
 **Activation contract:** The IDE enables this path only for Gold Linked Debug
-with a valid enabled blue call-site marker and an applicable enabled native red
-marker. The no-window harness supplies the corresponding `linked-debug` launch
-owner and marker binding directly. It must test those prerequisites without
+with a valid enabled blue call-site marker and a verified native export. Gate 0
+originally used an explicit red marker; the current IDE also supplies a private
+entry stop when no matching red exists. The no-window harness supplies the
+corresponding `linked-debug` launch owner and marker binding directly. It must test those prerequisites without
 implementing a toolbar. White Debug, Run/Build, and incomplete pairs never enter
 the LDI hold state.
 
@@ -62,8 +63,8 @@ The test passes only if:
 5. The valid release leads to one A Continue and one original native invocation.
 6. Unreadable values, stale releases, B failure, and attempted A Continue cannot
    silently bypass the hold.
-7. Only a valid blue/red pair owned by a linked-debug launch can enter that
-   sequence; a red library marker or DllImport declaration alone cannot.
+7. Only a valid blue/native-export pair owned by a linked-debug launch can
+   enter that sequence; a red library marker or DllImport declaration alone cannot.
 
 Observed tools: Linux x86_64, .NET SDK 10.0.401, netcoredbg 3.1.2-1, CMake 3.25.1,
 GCC 12.2, and `/usr/bin/lldb-dap-19` available. These version/presence checks

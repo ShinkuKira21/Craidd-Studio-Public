@@ -747,6 +747,38 @@ mod tests {
     }
 
     #[test]
+    fn interop_playground_builds_and_installs_both_libraries_before_gui_launch() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("workspaces/ldi-interop-playground");
+        let solution = super::super::solution::load_solution_named(
+            root.to_string_lossy().into_owned(),
+            "ldi-interop-playground.cln".into(),
+        )
+        .unwrap()
+        .unwrap()
+        .solution;
+        assert_eq!(solution.projects.len(), 2);
+        assert_eq!(
+            describe(&solution, "GUI · Debug").unwrap(),
+            vec![
+                "Build GUI · Build → wait for success",
+                "Build Native · All Build → wait for success",
+                "Install Native · All Build → GUI · Build's resolved output",
+            ]
+        );
+        for (config, build) in [
+            ("Native · Scalar LDI", "Native · Scalar Build"),
+            ("Native · Packet LDI", "Native · Packet Build"),
+        ] {
+            let slot = solution.configs.iter().find(|item| item.name == config).unwrap().slots.as_ref().unwrap();
+            assert_eq!(slot.build.as_deref(), Some(build));
+            assert!(slot.run.is_none() && slot.debug.is_none());
+        }
+    }
+
+    #[test]
     fn expands_the_demo_in_the_exact_requested_order() {
         let (solution, request) = lab();
         assert_eq!(

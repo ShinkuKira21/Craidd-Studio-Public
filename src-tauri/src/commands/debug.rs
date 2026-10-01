@@ -44,7 +44,8 @@ struct Session {
     breakpoint_files: Mutex<HashSet<String>>,
     breakpoints_ready: AtomicBool,
     solution_path: String,
-    blue: Mutex<Option<super::ldi::ManagedBlueBreakpoint>>,
+    blue: Mutex<Vec<super::ldi::ManagedBlueBreakpoint>>,
+    private_breakpoints: Vec<Breakpoint>,
     alive: Arc<AtomicBool>,
 }
 
@@ -469,10 +470,10 @@ fn breakpoint_lines(points: &[Breakpoint]) -> BTreeMap<String, Vec<u32>> {
     by_file
 }
 
-fn dap_line_breakpoint(file: &str, line: u32, points: &[Breakpoint], blue: Option<&super::ldi::ManagedBlueBreakpoint>) -> Value {
+fn dap_line_breakpoint(file: &str, line: u32, points: &[Breakpoint], blues: &[super::ldi::ManagedBlueBreakpoint]) -> Value {
     // One DAP location cannot represent independently conditioned red and blue
     // stops. Blue owns that location during Gold; red owns it in White Debug.
-    let condition = if let Some(blue) = blue.filter(|blue| blue.file == file && blue.line == line) {
+    let condition = if let Some(blue) = blues.iter().find(|blue| blue.file == file && blue.line == line) {
         blue.condition.as_deref()
     } else {
         points.iter().find(|point| point.file == file && point.line == line).and_then(|point| point.condition.as_deref())
@@ -482,16 +483,21 @@ fn dap_line_breakpoint(file: &str, line: u32, points: &[Breakpoint], blue: Optio
 }
 
 fn send_breakpoints_locked(session: &Session, points: &[Breakpoint], files: &mut HashSet<String>) -> Result<(), String> {
-    let mut by_file = breakpoint_lines(points);
-    let blue = session.blue.lock().map_err(|error| error.to_string())?.clone();
-    if let Some(blue) = &blue {
+    // Private LDI entry stops survive edits to ordinary red breakpoints but
+    // are never persisted. At the same line, the private unconditional entry
+    // wins over a newly-added conditional red marker.
+    let mut effective = session.private_breakpoints.clone();
+    effective.extend_from_slice(points);
+    let mut by_file = breakpoint_lines(&effective);
+    let blues = session.blue.lock().map_err(|error| error.to_string())?.clone();
+    for blue in &blues {
         let lines = by_file.entry(blue.file.clone()).or_default();
         if !lines.contains(&blue.line) { lines.push(blue.line); lines.sort_unstable(); }
     }
     for previous in files.iter() { by_file.entry(previous.clone()).or_default(); }
     for (file, lines) in &by_file {
         request(session, "setBreakpoints", json!({"source":{"path":file},
-            "breakpoints":lines.iter().map(|line| dap_line_breakpoint(file, *line, points, blue.as_ref())).collect::<Vec<_>>() }))?;
+            "breakpoints":lines.iter().map(|line| dap_line_breakpoint(file, *line, &effective, &blues)).collect::<Vec<_>>() }))?;
     }
     *files = by_file.into_keys().collect();
     Ok(())
@@ -513,10 +519,11 @@ fn initialize_breakpoints(session: &Session, fallback: &[Breakpoint]) -> Result<
 
 /// Detach a closing LDI partner without terminating the managed debugger.
 /// An explicit red marker at the same location remains a normal breakpoint.
-pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str) -> Result<(), String> {
+pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str, locations: &[(String, u32)]) -> Result<(), String> {
     let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
         .get(label).cloned().ok_or("Managed debugger is no longer active")?;
-    session.blue.lock().map_err(|error| error.to_string())?.take();
+    session.blue.lock().map_err(|error| error.to_string())?.retain(|blue| !locations.iter().any(|(file, line)|
+        file == &blue.file && *line == blue.line));
     if session.breakpoints_ready.load(Ordering::Acquire) {
         let points = super::breakpoints::load_breakpoints(session.solution_path.clone())?;
         send_breakpoints(&session, &points)?;
@@ -646,12 +653,15 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
 /// Both normal debugging and the LDI library driver use the same DAP lifecycle.
 pub(crate) fn launch_prepared(
     app: AppHandle, label: String, language: &'static str, cwd: PathBuf,
-    solution_path: String, executable: PathBuf, args: Vec<String>, env: BTreeMap<String, String>,
+    solution_path: String, executable: PathBuf, args: Vec<String>, mut env: BTreeMap<String, String>,
     breakpoints: Vec<Breakpoint>, dev_lease: Option<super::tauri_dev::DevLease>,
     ldi_token: Option<u64>,
 ) -> Result<(), String> {
     super::ldi::check_launch(&app, &label, ldi_token)?;
-    if ldi_token.is_some() && language == "csharp" { super::ldi::validate_origin_program(&app, &label, &executable)?; }
+    if ldi_token.is_some() && language == "csharp" {
+        super::ldi::validate_origin_program(&app, &label, &executable)?;
+        super::ldi::configure_origin_launch_env(&app, &label, &executable, &mut env)?;
+    }
     let adapter = adapter_path(language)?;
     let adapter_name = adapter.file_name().and_then(|name| name.to_str()).unwrap_or("debug adapter").to_string();
     if app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
@@ -671,7 +681,10 @@ pub(crate) fn launch_prepared(
         breakpoint_files: Mutex::new(HashSet::new()),
         breakpoints_ready: AtomicBool::new(false),
         solution_path,
-        blue: Mutex::new(if ldi_token.is_some() { super::ldi::active_blue(&app, &label) } else { None }),
+        blue: Mutex::new(if ldi_token.is_some() { super::ldi::active_blues(&app, &label) } else { vec![] }),
+        private_breakpoints: if ldi_token.is_some() && language == "cpp" {
+            breakpoints.iter().filter(|point| point.scope == "ldi-auto-entry").cloned().collect()
+        } else { vec![] },
         alive: Arc::new(AtomicBool::new(true)),
     });
     let stdout = child.stdout.take().ok_or("Debugger output unavailable")?;
@@ -1028,6 +1041,14 @@ pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Re
     Ok(())
 }
 
+pub(crate) fn ldi_origin_thread_id(app: &AppHandle, label: &str, pgid: i32) -> Result<u32, String> {
+    let state = app.state::<DebugManager>();
+    let active = state.0.lock().map_err(|error| error.to_string())?;
+    let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
+    u32::try_from(session.thread_id.load(Ordering::Acquire)).ok().filter(|id| *id > 0)
+        .ok_or("Origin Linux thread ID is unavailable".into())
+}
+
 /// Finish only the verified generated-driver handoff. A remains held until
 /// B reports a successful exit and the driver records an actual native return.
 fn continue_ldi_partner_after_return(session: &Session) -> Result<(), String> {
@@ -1217,11 +1238,11 @@ mod tests {
     #[test]
     fn dap_red_condition_applies_unless_gold_blue_owns_the_same_line() {
         let points = [Breakpoint { file: "/project/main.cs".into(), line: 8, scope: "all".into(), condition: Some("i > 6".into()) }];
-        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, None), json!({"line":8,"condition":"i > 6"}));
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, &[]), json!({"line":8,"condition":"i > 6"}));
         let blue = super::super::ldi::ManagedBlueBreakpoint { file: "/project/main.cs".into(), line: 8, condition: Some("i < 10".into()) };
-        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, Some(&blue)), json!({"line":8,"condition":"i < 10"}));
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, &[blue.clone()]), json!({"line":8,"condition":"i < 10"}));
         let blue = super::super::ldi::ManagedBlueBreakpoint { condition: None, ..blue };
-        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, Some(&blue)), json!({"line":8}));
+        assert_eq!(dap_line_breakpoint("/project/main.cs", 8, &points, &[blue]), json!({"line":8}));
     }
 
     #[test]

@@ -36,7 +36,7 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
   }), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => ({
     range: new monaco.Range(blue.line, 1, blue.line, 1),
     options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${blue.warning ? " craidd-breakpoint-warning" : ""}`,
-      glyphMarginHoverMessage: { value: blue.warning ? `⚠ ${blue.warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\n\nGold Linked Debug only. A remains held until B finishes.` } },
+      glyphMarginHoverMessage: { value: blue.warning ? `⚠ ${blue.warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}` } },
   })), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }
 
@@ -178,7 +178,7 @@ export default function CodeView() {
             const line = event.target.position?.lineNumber;
             if (file && line) void (useLdi.getState().blues.some((blue) => blue.file === file && blue.line === line
               && blue.originLabel === useLinkedWindows.getState().ownWindowLabel)
-              ? removeLdiBlue() : useBreakpoints.getState().toggle(file, line))
+              ? removeLdiBlue(file, line) : useBreakpoints.getState().toggle(file, line))
               .catch((error) => alert(`Breakpoint failed: ${String(error)}`));
           });
           instance.onContextMenu((event) => {

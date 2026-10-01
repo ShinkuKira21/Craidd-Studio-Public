@@ -1,0 +1,8 @@
+[project]
+name = "C++ Unmanaged Libraries"
+language = "cpp"
+root = "."
+kind = "library"
+
+[membership]
+main_exclude = ["main.cpp"]

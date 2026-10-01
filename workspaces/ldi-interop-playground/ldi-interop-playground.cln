@@ -1,0 +1,115 @@
+[[config]]
+kind = "run"
+name = "GUI · Local"
+target = "Gui/Gui.craidd"
+
+[config.slots]
+build = "Prepare GUI"
+debug = "GUI · Debug"
+run = "GUI · Run"
+
+[[config]]
+kind = "build"
+name = "Native · Scalar LDI"
+target = "Native/Native.craidd"
+
+[config.slots]
+build = "Native · Scalar Build"
+
+[[config]]
+kind = "build"
+name = "Native · Packet LDI"
+target = "Native/Native.craidd"
+
+[config.slots]
+build = "Native · Packet Build"
+
+[[config]]
+kind = "build"
+method = "plan"
+name = "Prepare GUI"
+target = "."
+
+[[config.order.steps]]
+configuration = "GUI · Build"
+kind = "build"
+
+[[config.order.steps]]
+configuration = "Native · All Build"
+kind = "build"
+
+[[config.order.steps]]
+configuration = "Native · All Build"
+destination = "GUI · Build"
+kind = "install"
+
+[[config]]
+default_profile = "Debug"
+kind = "build"
+method = "dotnet"
+name = "GUI · Build"
+target = "Gui/Gui.craidd"
+
+[[config.profile]]
+args = ["--configuration", "Debug", "--nologo"]
+name = "Debug"
+
+[[config]]
+default_profile = "Debug"
+kind = "build"
+method = "cmake"
+name = "Native · All Build"
+target = "Native/Native.craidd"
+
+[[config.profile]]
+args = ["--config", "Debug"]
+name = "Debug"
+
+[[config]]
+default_profile = "Debug"
+kind = "build"
+method = "cmake"
+name = "Native · Scalar Build"
+target = "Native/Native.craidd"
+
+[[config.profile]]
+args = ["--config", "Debug", "--target", "demo_scalar"]
+name = "Debug"
+
+[[config]]
+default_profile = "Debug"
+kind = "build"
+method = "cmake"
+name = "Native · Packet Build"
+target = "Native/Native.craidd"
+
+[[config.profile]]
+args = ["--config", "Debug", "--target", "demo_packet"]
+name = "Debug"
+
+[[config]]
+command = "dotnet run --project InteropPlayground.csproj --no-launch-profile"
+kind = "run"
+method = "dotnet"
+name = "GUI · Run"
+target = "Gui/Gui.craidd"
+
+[config.order]
+before = "Prepare GUI"
+
+[[config]]
+command = "dotnet run --project InteropPlayground.csproj --no-launch-profile"
+kind = "debug"
+method = "dotnet"
+name = "GUI · Debug"
+target = "Gui/Gui.craidd"
+
+[config.order]
+before = "Prepare GUI"
+
+[solution]
+default_config = "GUI · Local"
+default_project = "Gui/Gui.craidd"
+name = "LDI Interop Playground"
+projects = ["Gui/Gui.craidd", "Native/Native.craidd"]
+version = "1.0"

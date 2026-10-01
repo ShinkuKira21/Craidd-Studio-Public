@@ -53,3 +53,69 @@ default_profile = "Debug"
 [[config.profile]]
 name = "Debug"
 args = ["--config", "Debug", "--target", "gate_native"]
+
+[[config]]
+name = "LDI · Host Buffer"
+kind = "run"
+target = "Host/Host.craidd"
+[config.slots]
+build = "Host · Build"
+run = "Host Buffer · Run"
+debug = "Host Buffer · Debug"
+
+[[config]]
+name = "Host Buffer · Run"
+kind = "run"
+target = "Host/Host.craidd"
+method = "dotnet"
+command = "dotnet run --project Host.csproj -- interposer"
+
+[[config]]
+name = "Host Buffer · Debug"
+kind = "debug"
+target = "Host/Host.craidd"
+method = "dotnet"
+command = "dotnet run --project Host.csproj -- interposer"
+default_profile = "Debug"
+
+[[config]]
+name = "LDI · Host Buffer Repeat"
+kind = "run"
+target = "Host/Host.craidd"
+[config.slots]
+build = "Host · Build"
+run = "Host Buffer Repeat · Run"
+debug = "Host Buffer Repeat · Debug"
+
+[[config]]
+name = "Host Buffer Repeat · Run"
+kind = "run"
+target = "Host/Host.craidd"
+method = "dotnet"
+command = "dotnet run --project Host.csproj -- interposer-repeat"
+
+[[config]]
+name = "Host Buffer Repeat · Debug"
+kind = "debug"
+target = "Host/Host.craidd"
+method = "dotnet"
+command = "dotnet run --project Host.csproj -- interposer-repeat"
+default_profile = "Debug"
+
+[[config]]
+name = "LDI · Native Buffer"
+kind = "build"
+target = "native/Native.craidd"
+[config.slots]
+build = "Native Buffer · Build"
+
+[[config]]
+name = "Native Buffer · Build"
+kind = "build"
+target = "native/Native.craidd"
+method = "cmake"
+cwd = "."
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "gate_measure_native"]

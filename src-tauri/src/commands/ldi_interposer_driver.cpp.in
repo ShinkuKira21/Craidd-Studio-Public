@@ -1,0 +1,48 @@
+// One-call reproduction from verified bytes. B owns its own string and buffer.
+#include <cstdint>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <dlfcn.h>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
+
+static uint32_t u32(const std::vector<uint8_t>& bytes, size_t at) {
+    uint32_t value = 0;
+    for (int shift = 0; shift < 32; shift += 8) value |= static_cast<uint32_t>(bytes[at++]) << shift;
+    return value;
+}
+static uint64_t u64(const std::vector<uint8_t>& bytes, size_t at) {
+    uint64_t value = 0;
+    for (int shift = 0; shift < 64; shift += 8) value |= static_cast<uint64_t>(bytes[at++]) << shift;
+    return value;
+}
+int main(int argc, char** argv) {
+    if (argc != 5) return 64;
+    std::ifstream source(argv[2], std::ios::binary);
+    std::vector<uint8_t> record(std::istreambuf_iterator<char>{source}, {});
+    if (record.size() < 36 || record[0] != 'L' || record[1] != 'D' || record[2] != 'I' || record[3] != '1'
+        || u32(record, 4) != 0x3155424c || u32(record, 32) != 0) return 65;
+    char* end = nullptr;
+    errno = 0;
+    const uint64_t expected = std::strtoull(argv[4], &end, 10);
+    if (errno || expected == 0 || !end || *end || u64(record, 8) != expected) return 65;
+    const size_t label_size = u32(record, 24), byte_count = u32(record, 28);
+    if (label_size > 4096 || byte_count > 4096 || record.size() != 36 + label_size + byte_count) return 65;
+    std::string label(record.begin() + 36, record.begin() + 36 + label_size);
+    std::vector<uint8_t> bytes(record.begin() + 36 + label_size, record.end());
+    void* library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    if (!library) { std::fprintf(stderr, "%s\n", dlerror()); return 66; }
+    auto call = reinterpret_cast<int32_t (*)(const char*, const uint8_t*, size_t)>(dlsym(library, "@ENTRY_POINT@"));
+    if (!call) return 67;
+    int32_t result = call(label.c_str(), bytes.data(), bytes.size());
+    std::ofstream completed(argv[3]);
+    completed << result << '\n';
+    completed.close();
+    if (!completed) return 68;
+    std::printf("LDI reproduction returned %d. A remains at its native boundary until release.\n", result);
+    std::fflush(stdout);
+    std::_Exit(0);
+}

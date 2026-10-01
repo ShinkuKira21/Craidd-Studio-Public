@@ -10,19 +10,23 @@ This develops [the LDI philosophy](philosophy-ldi-debugging.md) and
 [the mixed-debugging philosophy](philosophy-mixed-debugging.md).
 The goal is a **light mockup environment, not a general-purpose debugging bridge**.
 
-**Authoritative interaction:** one held mode. A stops at a blue managed
-breakpoint; Craidd reads supported arguments from that stopped C# frame; B
-reproduces the native call; B releases the hold; A continues. This replaces the
-earlier capture-and-continue and proxy-held-call proposals throughout this
-document. There is no intermediate resume to obtain scalar arguments.
+**Authoritative interaction:** blue selects the live call; B reproduces it;
+only B's completion or an explicit cancellation releases A's original call.
+The implemented scalar path keeps A at the managed blue stop and reads its
+frame. An experimental interposer path for values unavailable there stages A
+at blue, then moves its hold to the *pre-call native boundary*. It is not
+capture-and-continue: A's real native function has not entered while B runs.
+See [section 15](#15-experimental-interposer-extension-and-failure-rule).
 
-The standalone [Gate 0 plan](design-ldi-gate-0.md) tests this exact sequence.
-A proxy is a possible later investigation for inputs unavailable in the managed
-frame, not a scalar-v1 prerequisite or an alternative launch mode.
+The standalone [Gate 0 plan](design-ldi-gate-0.md) tests the scalar sequence.
+The typed interposer is wired into Gold LDI for one verified UTF-8 string +
+byte-array signature and has a separate no-IDE mechanism probe. Its interactive
+renderer flow still needs manual acceptance. It is not a scalar-v1 prerequisite.
 
 **Activation:** In the IDE, LDI activates only within **Gold Linked Debug** for
 an enabled, resolved pair: a blue **Native Debugging Breakpoint** at A's call
-site and at least one applicable red breakpoint in B's native library. The
+site, plus a uniquely resolved C++ export in B's selected library. A matching
+red breakpoint is optional: without one, B gets a private entry stop. The
 standalone Gate 0 harness exercises the same eligibility checks without a
 toolbar. Saved markers alone do not start or hold anything.
 
@@ -30,7 +34,8 @@ toolbar. Saved markers alone do not start or hold anything.
 
 Build LDI as **held-frame native reproduction**. A blue native-boundary
 breakpoint is a real managed source breakpoint with a partner-owned resume
-lock. Window B supplies an ordinary native driver, red breakpoints, variables,
+lock. Window B supplies an ordinary native driver, an automatic entry stop or
+optional red breakpoints, variables,
 stack, and native stepping. The user can keep the stopped managed context and
 the native mockup side by side.
 
@@ -75,9 +80,10 @@ Using [Build Order Lab](../workspaces/build-order-lab/README.md):
    site and choose **Native Debugging Breakpoint** to set a blue marker.
    Bind it to the import, native declaration/artifact, and a generated or
    existing native driver. Show unsupported argument expressions during setup.
-2. Put a red breakpoint in `Native/math.cpp` in B. A linked B viewport may
-   wait without a driver process until A hits blue.
-3. Press **Gold Linked Debug**. Validate the enabled blue/red pair and prepare
+2. Optionally put a red breakpoint inside the matching export in
+   `Native/math.cpp` to land deeper than the function entry. A linked B
+   viewport may wait without a driver process until A hits blue.
+3. Press **Gold Linked Debug**. Validate blue and the selected native export; prepare
    its on-demand driver. When blue hits, A stops through netcoredbg, just like
    an ordinary source breakpoint.
    The coordinator locks A's resume commands before starting any reproduction.
@@ -103,15 +109,16 @@ or after the invocation, refuse that stop as a usable reproduction boundary.
 
 ### Gold activation and breakpoint roles
 
-Blue chooses **when and which native entry to reproduce**; red chooses **where
-to stop inside that reproduction**. Both must be enabled and associated with
-the selected origin/partner instances for this LDI pair to activate. They may
+Blue chooses **when and which native entry to reproduce**. Without a matching
+red marker, B pauses automatically at that export's executable entry; red
+chooses a more precise landing inside the reproduction. Blue and the verified
+export must be associated with the selected origin/partner instances. They may
 be viewed through any linked viewport; physical window visibility is not an
 activation requirement. A library red breakpoint by itself starts no driver.
 
 | Launch context | LDI behavior |
 | --- | --- |
-| Gold Linked Debug, valid enabled blue/red pair | Pair active; B waits for A's blue stop |
+| Gold Linked Debug, valid blue and resolved export | Pair active; B waits for A's blue stop; entry stop is automatic if no matching red exists |
 | Gold Linked Debug, incomplete or disabled pair | Pair inactive; preview/markers show the missing prerequisite |
 | White Debug | Blue LDI intent inactive; ordinary debug breakpoints retain their usual behavior |
 | White/Gold Run or Build | No LDI hold, extraction, or driver launch |
@@ -126,7 +133,7 @@ at a blue location without acquiring an LDI hold outside its Gold run.
 
 Gold is the IDE's deliberate activation action. The frame reader and hold
 coordinator do not depend on a toolbar: the standalone harness supplies a
-`linked-debug` launch owner and the same valid blue/red binding as test inputs.
+`linked-debug` launch owner and the same valid blue/native-export binding as test inputs.
 
 The native library retains its library role. The prepared driver is the
 executable participant owned by the Gold run and presented in B's library
@@ -170,18 +177,20 @@ blue. Application projects receive their usual breakpoint feedback.
 
 ### Blue-breakpoint reminder and Power configuration eligibility
 
-Give A's blue marker the same gentle setup feedback. If its selected partner
-has no compatible enabled native red marker, show a reminder badge:
+Give A's blue marker the same gentle setup feedback. Missing red is **not**
+an error. If its selected partner has no uniquely identifiable executable
+definition of the imported export, show a reminder badge:
 
 ```text
-Window CS2 · Native needs a red breakpoint in a .c/.cpp file
-inside the implementation of order_add (or a selected helper)
-for LDI Debugging to run.
+Window CS2 · Cannot identify one .c/.cpp implementation of order_add
+in the selected native project. Resolve the ambiguity or put red inside
+the intended export.
 ```
 
 Offer **Show native implementation in CS2**. A prototype in a header is not a
-stoppable implementation location. Clear this missing-red reminder once the
-pair has an applicable enabled red marker; display verification separately.
+stoppable implementation location. A unique supported implementation clears
+the reminder and displays **Native entry (automatic)**; a matching red displays
+**Matching red**. Adapter verification remains separate.
 
 The initial eligible combination is a window whose selected Power configuration
 resolves to a C#/.NET application debug action, plus another window whose Power
@@ -193,8 +202,8 @@ The generated driver uses that library's selected build/profile output.
 
 **Later discovery banner (documented, deferred):** When two linked Power
 configurations qualify, offer a dismissible banner: **These linked projects
-support LDI Debug Pairing. Add a blue native call-site breakpoint and a red
-library breakpoint to debug them together. Learn more.** Its link explains
+support LDI Debug Pairing. Add a blue native call-site breakpoint to begin;
+optionally add red in the library to choose where to stop. Learn more.** Its link explains
 Gold activation and the held-origin workflow. Add this banner after the first
 real debugging slice works; qualification never places markers or launches
 LDI automatically.
@@ -216,13 +225,13 @@ not clear the reminder. A declaration without an enabled blue call-site marker
 does not clear it either.
 
 A red marker in an internal helper may be reached through a selected exported
-entry. Let the developer associate that helper with the chosen entry when
-the relationship is not evident; v1 does not need a general call-graph engine.
-An unresolved/ambiguous enclosing function prompts selection instead of a
-guessed match.
+entry, but the current automatic pairing only accepts a red marker inside the
+verified export body. Helper association is later scope; v1 does not need a
+general call-graph engine. An unresolved/ambiguous enclosing function prompts
+selection instead of a guessed match.
 
-**Paired** means the LDI entry and intended red marker are configured. It does
-not guarantee that these input values execute the branch containing that red
+**Paired** means the blue call site and selected native export are resolved.
+It does not guarantee that these input values execute the branch containing a red
 marker. Keep setup status separate from adapter verification and actual hit
 status. If B completes without hitting any applicable red marker, show that
 result without claiming that the breakpoint was reached; normal partner
@@ -259,7 +268,7 @@ is not required for LDI.
 ## 3. Execution and ownership
 
 There is one hold, created by the original managed breakpoint of an active
-blue/red pair owned by the current Gold Linked Debug run. A regular source
+blue/native-export pair owned by the current Gold Linked Debug run. A regular source
 stop, a dormant blue marker, or a native red marker alone cannot create it.
 
 ```text
@@ -267,7 +276,7 @@ A / netcoredbg                       Coordinator                  B / LLDB
 blue source breakpoint hit ------> acquire resume lock
 A remains at that stop             read frame/scalars
                                    create input record --------> run driver
-inspect C# locals                                                red stop
+inspect C# locals                                                red or automatic entry stop
 A Continue/Step rejected                                          native stepping
                                    <---------------------------- partner done
                                    validate release identity
@@ -318,12 +327,14 @@ Respect the adapter's reported stop scope. Blue holds the originating thread
 through an ordinary managed breakpoint; netcoredbg may stop other threads too.
 Do not claim that the whole process or every native worker is frozen unless
 the debugger actually reports and supports that behavior. Another thread can
-still alter shared state where the stop is thread-scoped. This does not justify
-resuming the originating thread to capture different inputs.
+still alter shared state where the stop is thread-scoped. The scalar reader
+does not resume the originating thread to discover inputs. Only an explicitly
+selected interposer path may advance from blue to a verified pre-call native
+hold, with the release lock transferred before advancing.
 
 **Server warning:** holding a server request can cause client, proxy, health-check,
 or connection timeouts; the stop may also retain application locks. Display
-that warning and let the user decide when to hold. Do not switch capture modes,
+that warning and let the user decide when to hold. Do not switch capture paths,
 auto-continue A, or weaken the hold to accommodate server timing.
 
 ## 4. The scalar reader is the first proof gate
@@ -349,10 +360,10 @@ Example: `Native.Add(ComputeLeft(), queue.Dequeue())` is not supported merely
 because its final parameters are integers. Until evaluated, those argument
 values are not in the paused frame. This is an explicit small-case limitation.
 
-For later pointers/buffers, a proxy or another reader may need investigation.
-That work must explain how it fits the held-stop contract; the previous
-native-interposition sequence cannot silently return as a scalar fallback.
-It is outside Gate 0.
+For pointers/buffers, the experimental typed interposer in section 15 captures
+actual marshalled bytes and holds *before* the real native entry. It is outside
+Gate 0 and must never silently replace the scalar reader for an unsupported
+signature.
 
 ## 5. Hold state and causality
 
@@ -374,9 +385,11 @@ Bound argument values cannot be edited behind an active B: either reject such
 edits while held or invalidate/restart the reproduction under a new identity.
 Reusing an old frame/variable reference after A resumes is forbidden.
 
-One active origin, one binding, one B, and one retained input record suffice.
-No queue or automatic replacement. A new blue stop after release creates a new
-generation; releases from the previous B no longer apply.
+One active reproduction and one retained input record suffice. A managed
+window may arm several blue call sites for different selected C++ library
+windows; the source location of the current blue stop selects exactly one
+binding and B. No queue or automatic replacement. A new blue stop after
+release creates a new generation; releases from the previous B no longer apply.
 
 ## 6. Input record and limits
 
@@ -430,10 +443,12 @@ processes; they do not establish a product policy of continuing held programs.
 Generate plain C++ that reads validated input data, loads the verified real
 library, and calls its typed export. Compile once per signature/recipe; changing
 argument values does not require regenerating source or rebuilding the driver.
-Apply the pair's enabled red breakpoints in B and track their verification.
-The IDE requires a selected red marker for LDI activation; it does not silently
-replace a missing one with an automatic target-entry stop. Source paths and
-symbols must let the debugger resolve that marker when its module loads.
+Apply the pair's enabled red breakpoints in B. If none matches the export,
+install a private, non-persistent source breakpoint at its verified definition
+entry. The selected CMake target must compile that source and produce the
+matching library artifact. If the automatic entry is never observed, B must
+not release A as a successful reproduction. A header declaration is not an
+entry stop; ambiguous definitions fail before B starts.
 
 The source should remain small and editable. Saving a permanent test driver
 can be added later; scalar v1 needs only a transient generated project and
@@ -490,8 +505,9 @@ unusable, then continue A exactly once. A may then hit another red or blue
 breakpoint. An unexpected B crash remains held until the user chooses White
 Stop B (abandon and continue) or Gold Stop; a crash must not make that choice
 for them. White Stop A and Gold Stop must never execute a held original call.
-Closing B uses the same cancellation barrier, then removes only the injected
-blue marker before A continues; ordinary C# red markers stay active. If A's
+Closing B uses the same cancellation barrier, then removes only B's injected
+blue markers before A continues; other native partners and ordinary C# red
+markers stay active. If A's
 debugger has already vanished or refuses that detach/continue, stop the pair
 with an explicit error rather than leave A at an invisible hold.
 
@@ -582,12 +598,14 @@ is the small user-facing C# GUI / C++ library example. Its projects do not need
 test instrumentation, capture files or Python; those belong to the test fixture,
 not the IDE's LDI runtime or the developer workflow.
 `build-order-lab` remains the broader Tauri → API → C++ build/readiness example.
-The current two-window LDI coordinator cannot include Tauri as a third participant.
-With those three selected projects, ordinary runnable-window grouping counts
-Tauri and the API but excludes the library, so Gold can misleadingly show two.
-This is an outstanding linked-session composition/UX bug, not a supported
-three-window LDI configuration. Fixing it is deferred until the small GUI pair
-works in the actual two-window IDE flow.
+The linked coordinator now includes a selected CMake library as an on-demand
+Gold participant alongside the C# host and runnable Tauri clients. A C# host
+can arm multiple blues targeting different CMake library windows; the
+`ldi-interop-playground` workspace exercises scalar and packet libraries in a
+three-window layout. This routing has automated unit checks and separate real
+native probes, but the full three-window IDE handoff still needs manual testing.
+The current managed-call provider is C# only, with at most one typed interposer
+per managed process; Rust needs its own ABI-aware call-site capture provider.
 The GUI demo's real button handler has now also been exercised under netcoredbg
 and the production driver under LLDB: readable stopped locals, native stepping
 while A stays held, and A reaching its label-update line with its own result.
@@ -640,22 +658,25 @@ If live extraction does not help, retain driver generation and stop expanding LD
 
 ### Later scope only if justified
 
-Pointers/buffers, proxy-based capture, custom initialization, nested reproductions,
-persistent capture history, and concurrent replay each need independent design
-and evidence. None can weaken the held-blue contract as an implicit fallback.
+The typed interposer now has separate mechanism evidence for a UTF-8 string and
+a bounded byte buffer. IDE integration, custom initialization, nested
+reproductions, persistent capture history, and concurrent replay each need
+independent design and evidence. None can silently weaken the blue-selected
+hold contract.
 
 ## 13. Decisions
 
 Keep: a real blue source stop, readable primitive arguments, one partner,
 immutable input data, artifact checks, private capture storage, native stepping,
 partner-controlled release, and Gold Linked Debug activation of an enabled
-blue/red pair. The user controls when to place/enable blue at a call site;
+blue/native-export pair. The user controls when to place/enable blue at a call site;
 the IDE does not select a less disruptive mode on their behalf.
 
 Reject for v1: hidden execution to discover values, universal ABI capture,
 proxy installation, callback reconstruction, queues, automatic lease release,
-and result injection into A. The first failure gate is unreadable or unmappable
-arguments at the stopped source location.
+and result injection into A. The scalar path's first failure gate is unreadable
+or unmappable arguments at the stopped source location. The experimental
+interposer has its own signature-and-capture gate below.
 
 ## 14. Stress-test of the three claims
 
@@ -719,14 +740,14 @@ is no need to make the developer install a proxy, build a publication protocol,
 or author a fixture schema before debugging two available integer locals.
 
 Smallest useful version: one verified signed-i32 signature, one blue call-site
-stop paired with a native red marker under Gold Linked Debug, one immutable
+stop paired with a unique native export under Gold Linked Debug, one immutable
 input record, one native driver, and one partner release.
 Support unavailable values by declining them, not by running A.
 
 | Machinery | Decision |
 | --- | --- |
-| Proxy, shared-memory arm, native pre-call hold | Remove from scalar v1 |
-| Capture-and-continue or hidden boundary resume | Remove; one held mode |
+| Proxy, shared-memory arm, native pre-call hold | Remove from scalar v1; investigate as explicit interposer extension |
+| Capture-and-continue or hidden boundary resume | Reject; interposer may advance only to an acknowledged pre-call hold |
 | Queue, N-call history, nested origins | Defer; one held origin/partner |
 | Persistent blue-marker migration | Defer; session-local binding |
 | Fixture DSL, generic provider registry, ABI language | Defer |
@@ -746,3 +767,74 @@ The proposed [timeline experiment](design-ldi-gate-0.md#7-usefulness-experiment)
 is a plausible scalar case, not a demonstrated win. If scalar extraction
 does not save work in actual use, investigate explicitly bounded buffers next;
 do not restore a general-purpose bridge around a weak scalar use case.
+
+## 15. Experimental interposer extension and failure rule
+
+The interposer is for the small case the blue managed frame cannot describe:
+for example, a marshalled UTF-8 string and a `byte*` with an explicit length.
+It is a *typed proxy for a known export*, not a generic pointer serializer.
+Blue remains the user's timing and conditional-selection control. If its
+condition is false, no LDI reproduction is armed. For an integer `i`, the
+example condition `i > 6 && i < 10` selects 7, 8, and 9 (three calls).
+If a red C# breakpoint occupies the same line, Gold Debug's single DAP
+breakpoint at that location uses the blue condition; White Debug's red remains
+unconditional. The IDE must disclose that overlap when the condition is set.
+
+The first interposer-backed IDE slice implements this sequence for its one
+verified signature; each broader signature/provider must pass the same gates:
+
+1. Validate the blue/native-export binding, exact managed/native signature, provider,
+   length-source relationship and ABI; choose the explicit interposer path.
+   For a managed array and native `(pointer, length)` pair, require the length
+   to come from that array. Check the actual runtime byte counts at the native
+   gate. Reject an unknown or unverified signature *before arming or spawning B*.
+2. At the conditional blue stop, acquire the normal A resume lock and arm one
+   specific call/thread/session identity. Transfer the hold to the proxy's
+   pre-call gate: ask the managed debugger to continue from that thread's
+   blue stop, acknowledge that the
+   expected export reached the gate, and capture the *actual marshalled bytes*.
+   A's original native function must not have entered.
+3. Validate a complete, immutable record with signature/version, lengths and
+   capture identity. Only then launch B with B-owned allocations. A matching
+   red breakpoint stops inside the real C++ export; otherwise B stops at its
+   private automatic entry breakpoint.
+4. On B's verified return, release that exact gate once. A then makes its
+   original call, and focus returns to A. White Stop B explicitly cancels B
+   and releases A to make that original call; White Stop A and Gold Stop cancel
+   the gate and both must prevent a late release. Server-timeout warnings apply.
+
+The input contract has exactly three classifications:
+
+| Classification | Required behavior |
+| --- | --- |
+| Faithfully reproducible | Proven ABI layout and encoding; capture all required value bytes and lengths; allocate independent B storage; record assumptions about external state. |
+| Detectably non-reproducible | Explain the unsupported type, missing length, exceeded bound, ambiguous layout, or unavailable data **before B starts**. Keep A held for an explicit developer choice; never substitute guessed values. |
+| Silently wrong | Forbidden. A successful B launch on truncated, stale, misidentified or address-only data is a correctness bug. |
+
+“Faithful” here means the arguments B receives are reconstructed from the
+actual call's values, **not** that B has A's native heap, globals, TLS, file
+descriptors, locks, callbacks, timing, or side effects. If such a dependency is
+known and it cannot be recreated, the IDE must say so; for unknown
+opaque pointers/handles it must reject the signature rather than copy an
+address. A user-supplied C++ type declaration alone cannot reconstruct the
+object at an address in another process. Even a bounded pointer can become
+invalid during capture; a capture fault must not produce a B launch. The IDE
+cannot promise to detect every semantic dependency of arbitrary C++ code, so
+the UI must label the reproduction's scope and never claim whole-process
+equivalence. Another A thread may mutate a buffer after capture and before
+A's real call; the mockup is a snapshot, not a concurrency replay.
+
+The current [no-IDE interposer probe](../tests/fixtures/ldi-gate-0/README.md#experimental-typed-interposer)
+demonstrates actual .NET marshalling through a typed library-name proxy,
+bounded string/buffer capture, an A pre-call hold, B's real native breakpoint,
+and explicit release; it also rejects an oversized input before B and re-arms
+three conditional blue hits. The IDE now builds the same typed proxy and a
+.NET startup hook in private cache storage, arms the selected Linux thread at
+blue, validates capture identity, then releases the native gate after B. The
+startup hook rejects a second DllImport for that library in the entry assembly
+before Main, because this proxy does not forward unknown exports. The IDE
+path has not yet had a manual two-window acceptance pass. It does not support
+parallel held origins, arbitrary signatures, or Rust/Python/JNI providers;
+those languages need separate loader and marshalling proofs. Unsupported
+captured values produce a typed error while A remains at the gate, rather
+than terminating the developer's process or silently spawning B.

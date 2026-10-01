@@ -322,20 +322,24 @@ fn ldi_role(item: &Participant) -> Option<&'static str> {
     } else { None }
 }
 
-/// One unambiguous managed/native pair may coexist with other runnable windows.
-/// Never guess when several managed hosts or libraries are selected.
-fn ldi_pair(registry: &Registry, solution: &str) -> Option<(String, String)> {
+/// One managed origin may own several independently selected native libraries.
+/// Multiple managed origins remain ambiguous until origin selection is explicit.
+fn ldi_pair(registry: &Registry, solution: &str) -> Option<(String, Vec<String>)> {
     let selected = registry.windows.iter().filter(|(_, item)| item.solution_path == solution && item.project_path.is_some());
     let managed = selected.clone().filter(|(_, item)| ldi_role(item) == Some("managed")).map(|(label, _)| label).collect::<Vec<_>>();
     let native = selected.filter(|(_, item)| ldi_role(item) == Some("native-library")).map(|(label, _)| label).collect::<Vec<_>>();
-    if managed.len() != 1 || native.len() != 1 { return None; }
-    Some((managed[0].clone(), native[0].clone()))
+    if managed.len() != 1 || native.is_empty() { return None; }
+    let mut native = native.into_iter().cloned().collect::<Vec<_>>();
+    native.sort();
+    Some((managed[0].clone(), native))
 }
 
-fn ldi_members(registry: &Registry, solution: &str, origin: &str, partner: &str) -> Vec<String> {
+fn ldi_members(registry: &Registry, solution: &str, origin: &str, partners: &[String]) -> Vec<String> {
     let mut members = group_members(registry, solution);
     if !members.iter().any(|label| label == origin) { members.push(origin.into()); }
-    if !members.iter().any(|label| label == partner) { members.push(partner.into()); }
+    for partner in partners {
+        if !members.iter().any(|label| label == partner) { members.push(partner.clone()); }
+    }
     members.sort();
     members
 }
@@ -380,8 +384,9 @@ pub(crate) fn ldi_selections(app: &AppHandle, origin: &str, partner: &str) -> Re
     let state = app.state::<LinkedWindowRegistry>();
     let registry = state.0.lock().map_err(|error| error.to_string())?;
     let a = registry.windows.get(origin).ok_or("Managed window is no longer open")?;
-    if ldi_pair(&registry, &a.solution_path) != Some((origin.into(), partner.into())) {
-        return Err("LDI needs one selected C# Debug Power slot and one selected CMake Library Build Power slot; multiple eligible pairs are ambiguous".into());
+    if !ldi_pair(&registry, &a.solution_path).is_some_and(|(managed, natives)|
+        managed == origin && natives.iter().any(|native| native == partner)) {
+        return Err("LDI needs one selected C# Debug Power slot and a selected CMake Library Build Power slot".into());
     }
     let b = &registry.windows[partner];
     if [a, b].iter().any(|item| !item.visible || item.restoring) { return Err("Show both LDI windows before pairing".into()); }
@@ -1257,7 +1262,7 @@ pub fn preview_linked_action(
     let registry = state.0.lock().map_err(|error| error.to_string())?;
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
     if action == "debug" {
-        if let Some((origin, partner)) = ldi_pair(&registry, &participant.solution_path) {
+        if let Some((origin, partners)) = ldi_pair(&registry, &participant.solution_path) {
             let phases = ldi_runnable_phases(&registry, &participant.solution_path, &origin)?;
             return phases.into_iter().enumerate().map(|(index, phase)| {
                 let mut members = Vec::new();
@@ -1272,13 +1277,15 @@ pub fn preview_linked_action(
                         after: spec.linked.as_ref().map(|linked| linked.after.clone()).unwrap_or_default(),
                     });
                     if launch.label == origin {
-                        let native = &registry.windows[&partner];
-                        members.push(LinkedLaunchPlanMember {
-                            project_name: native.project_name.clone().unwrap_or(partner.clone()), window_id: native.window_id,
-                            command: "LDI: prepare library now; native debugger starts only after blue".into(),
-                            ready_url: None, timeout_ms: 120000,
-                            preparation: vec!["A stays held until B finishes. Server requests may time out while held.".into()], after: vec![],
-                        });
+                        for partner in &partners {
+                            let native = &registry.windows[partner];
+                            members.push(LinkedLaunchPlanMember {
+                                project_name: native.project_name.clone().unwrap_or(partner.clone()), window_id: native.window_id,
+                                command: "LDI: prepare library now; native debugger starts only after its blue call".into(),
+                                ready_url: None, timeout_ms: 120000,
+                                preparation: vec!["A stays held until this reproduction finishes. Server requests may time out while held.".into()], after: vec![],
+                            });
+                        }
                     }
                 }
                 Ok(LinkedLaunchPlanPhase { priority: (index + 1) as u8, members })
@@ -1415,7 +1422,7 @@ fn mark_phase_starting(app: &AppHandle, solution_path: &str, action_id: u64, lab
 }
 
 async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, action_id: u64,
-    phases: Vec<Vec<PlannedLaunch>>, mut ldi_origin: Option<(String, String, super::debug::DebugRequest)>) {
+    phases: Vec<Vec<PlannedLaunch>>, mut ldi_origin: Option<(String, Vec<String>, super::debug::DebugRequest)>) {
     let mut launched = HashSet::new();
     let mut ready_owners = Vec::<String>::new();
     for phase in phases {
@@ -1441,7 +1448,7 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
             if linked_member_skipped(&app, &solution_path, action_id, &launch.label) { continue; }
             launched.insert(launch.label.clone());
             if ldi_origin.as_ref().is_some_and(|(label, _, _)| label == &launch.label) {
-                let (label, partner, mut request) = ldi_origin.take().unwrap();
+                let (label, partners, mut request) = ldi_origin.take().unwrap();
                 let app_task = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let preparation = tauri::async_runtime::spawn_blocking({
@@ -1454,7 +1461,9 @@ async fn run_linked_plan(app: AppHandle, solution_path: String, action: String, 
                     };
                     if let Err(ref error) = result {
                         super::ldi::cancel(&app_task, &label);
-                        super::debug::emit(&app_task, &partner, serde_json::json!({"status":"error", "text":error}));
+                        for partner in &partners {
+                            super::debug::emit(&app_task, partner, serde_json::json!({"status":"error", "text":error}));
+                        }
                         super::debug::emit(&app_task, &label, serde_json::json!({"status":"error", "text":error}));
                         note_debug_state(&app_task, &label, "error", None, None, Some(error));
                     }
@@ -1575,9 +1584,9 @@ pub fn start_linked_action(
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
     let solution_path = participant.solution_path.clone();
     if action == "debug" {
-        if let Some((origin, partner)) = ldi_pair(&registry, &solution_path) {
+        if let Some((origin, partners)) = ldi_pair(&registry, &solution_path) {
             let phases = ldi_runnable_phases(&registry, &solution_path, &origin)?;
-            let members = ldi_members(&registry, &solution_path, &origin, &partner);
+            let members = ldi_members(&registry, &solution_path, &origin, &partners);
             if registry.actions.contains_key(&solution_path) || members.iter().any(|label| is_busy(&registry.windows[label].status)) {
                 return Err("A linked LDI window is already busy".into());
             }
@@ -1585,7 +1594,7 @@ pub fn start_linked_action(
                 return Err("Save every linked IDE window before Gold Linked Debug".into());
             }
             drop(registry);
-            let request = super::ldi::prepare_pair(&app, &origin, &partner)?;
+            let request = super::ldi::prepare_pairs(&app, &origin, &partners)?;
             let mut registry = state.0.lock().map_err(|e| e.to_string())?;
             if registry.actions.contains_key(&solution_path) {
                 super::ldi::cancel(&app, &origin);
@@ -1598,12 +1607,12 @@ pub fn start_linked_action(
                 action: "debug".into(), members, pending: runnable.clone(),
                 unfinished: runnable, skipped: HashSet::new(), id, cancelled: false,
             });
-            registry.windows.get_mut(&partner).unwrap().status = "waiting".into();
+            for partner in &partners { registry.windows.get_mut(partner).unwrap().status = "waiting".into(); }
             registry.sequence += 1;
             broadcast(&app, &registry);
             drop(registry);
             tauri::async_runtime::spawn(run_linked_plan(app.clone(),
-                solution_path, "debug".into(), id, phases, Some((origin, partner, request))));
+                solution_path, "debug".into(), id, phases, Some((origin, partners, request))));
             return Ok(());
         }
     }
@@ -1705,7 +1714,7 @@ pub fn stop_linked_member(
     let target = registry.windows.get(&target_label).ok_or("Linked window is no longer open")?;
     if target.solution_path != solution_path { return Err("Window belongs to another solution".into()); }
     let is_ldi_partner = ldi_pair(&registry, &solution_path)
-        .is_some_and(|(_, partner)| partner == target_label);
+        .is_some_and(|(_, partners)| partners.contains(&target_label));
     if is_ldi_partner {
         let group = registry.actions.get(&solution_path).ok_or("No linked action is active")?;
         if group.action != "debug" || !group.members.iter().any(|member| member == &target_label) {
@@ -1911,7 +1920,7 @@ mod tests {
         native.specs.insert("build".into(), spec("cmake"));
         registry.windows.insert("A".into(), origin);
         registry.windows.insert("B".into(), native);
-        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), "B".into())));
+        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), vec!["B".into()])));
         assert!(group_members(&registry, "/one.cln").is_empty(), "Run's application-only grouping remains unchanged");
         registry.windows.get_mut("B").unwrap().project_kind = Some("application".into());
         assert!(ldi_pair(&registry, "/one.cln").is_none());
@@ -1926,8 +1935,14 @@ mod tests {
         });
         client.specs.insert("debug".into(), client_debug);
         registry.windows.insert("C".into(), client);
-        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), "B".into())));
-        assert_eq!(ldi_members(&registry, "/one.cln", "A", "B"), vec!["A", "B", "C"]);
+        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), vec!["B".into()])));
+        assert_eq!(ldi_members(&registry, "/one.cln", "A", &["B".into()]), vec!["A", "B", "C"]);
+        let mut packet = registry.windows["B"].clone();
+        packet.project_name = Some("packet".into());
+        registry.windows.insert("P".into(), packet);
+        assert_eq!(ldi_pair(&registry, "/one.cln"), Some(("A".into(), vec!["B".into(), "P".into()])));
+        assert_eq!(ldi_members(&registry, "/one.cln", "A", &["B".into(), "P".into()]), vec!["A", "B", "C", "P"]);
+        registry.windows.remove("P");
         let phases = ldi_runnable_phases(&registry, "/one.cln", "A").unwrap();
         assert_eq!(phases.iter().map(|phase| phase.iter().map(|launch| launch.label.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(),
             vec![vec!["A"], vec!["C"]], "Tauri waits for the managed API; B is on-demand");
@@ -2110,9 +2125,15 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut request_line = String::new();
-            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request_line).unwrap();
+            reader.read_line(&mut request_line).unwrap();
             assert_eq!(request_line.trim_end(), "GET /api/health HTTP/1.1");
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header == "\r\n" { break; }
+            }
             stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n").unwrap();
         });
         let url = format!("http://127.0.0.1:{}/api/health", address.port());

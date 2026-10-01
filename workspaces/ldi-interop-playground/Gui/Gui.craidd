@@ -1,0 +1,5 @@
+[project]
+name = "C# Interop Playground"
+language = "csharp"
+root = "."
+kind = "application"

@@ -1,0 +1,134 @@
+// Generated only for a statically verified cdecl export:
+// int32_t @ENTRY_POINT@(const char*, const uint8_t*, size_t).
+// The unarmed proxy forwards unchanged; an armed matching Linux thread
+// publishes complete marshalled inputs, then waits before the original call.
+#include <cerrno>
+#include <charconv>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <fstream>
+#include <string>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <vector>
+
+namespace {
+constexpr uint32_t signature = 0x3155424c; // "LBU1": UTF-8 + bounded bytes v1
+constexpr size_t limit = 4096;
+struct Arm { uint64_t token; uint32_t tid; std::string capture; std::string release; };
+
+[[noreturn]] void fail(const char* message) { std::fprintf(stderr, "LDI proxy: %s\n", message); std::_Exit(70); }
+
+void* real_library() {
+    static void* handle = [] {
+        const char* path = std::getenv("LDI_REAL_LIBRARY");
+        if (!path || path[0] != '/') fail("real library path is missing");
+        void* found = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        if (!found) fail(dlerror());
+        return found;
+    }();
+    return handle;
+}
+
+template <typename Function> Function real_symbol() {
+    void* address = dlsym(real_library(), "@ENTRY_POINT@");
+    if (!address) fail("selected real export is missing");
+    return reinterpret_cast<Function>(address);
+}
+
+template <typename Number> Number number(const std::string& text) {
+    Number value{};
+    auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) fail("invalid arm identity");
+    return value;
+}
+
+bool matching_arm(Arm& arm) {
+    const char* path = std::getenv("LDI_ARM_FILE");
+    if (!path || path[0] != '/') fail("arm-file path is missing");
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT) return false;
+        fail("arm file could not be opened");
+    }
+    close(fd);
+    std::ifstream file(path);
+    if (!file) fail("arm file changed while being opened");
+    std::string token, tid;
+    if (!std::getline(file, token) || !std::getline(file, tid)
+        || !std::getline(file, arm.capture) || !std::getline(file, arm.release)
+        || arm.capture.empty() || arm.capture[0] != '/'
+        || arm.release.empty() || arm.release[0] != '/') fail("invalid arm file");
+    arm.token = number<uint64_t>(token);
+    arm.tid = number<uint32_t>(tid);
+    if (arm.tid != static_cast<uint32_t>(syscall(SYS_gettid))) return false;
+    if (unlink(path) != 0) fail("could not consume selected arm");
+    return true;
+}
+
+void append_u32(std::vector<uint8_t>& out, uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<uint8_t>(value >> shift));
+}
+void append_u64(std::vector<uint8_t>& out, uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8) out.push_back(static_cast<uint8_t>(value >> shift));
+}
+void write_all(int fd, const uint8_t* data, size_t count) {
+    while (count) {
+        ssize_t written = write(fd, data, count);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) fail("capture write failed");
+        data += written;
+        count -= static_cast<size_t>(written);
+    }
+}
+
+void publish(const Arm& arm, const char* label, const uint8_t* bytes, size_t count) {
+    const size_t label_size = label ? strnlen(label, limit + 1) : 0;
+    uint32_t problem = !label ? 1 : label_size > limit ? 2 : count > limit ? 3 : count && !bytes ? 4 : 0;
+    std::vector<uint8_t> record{'L', 'D', 'I', static_cast<uint8_t>(problem ? 'E' : '1')};
+    append_u32(record, signature);
+    append_u64(record, arm.token);
+    append_u32(record, static_cast<uint32_t>(getpid()));
+    append_u32(record, arm.tid);
+    append_u32(record, problem ? 0 : static_cast<uint32_t>(label_size));
+    append_u32(record, problem ? 0 : static_cast<uint32_t>(count));
+    append_u32(record, problem);
+    if (!problem) {
+        record.insert(record.end(), label, label + label_size);
+        if (count) record.insert(record.end(), bytes, bytes + count);
+    }
+    std::string temporary = arm.capture + ".tmp.XXXXXX";
+    int fd = mkstemp(temporary.data());
+    if (fd < 0) fail("capture file could not be created");
+    write_all(fd, record.data(), record.size());
+    if (close(fd) != 0) fail("capture file could not be closed");
+    if (link(temporary.c_str(), arm.capture.c_str()) != 0) fail("capture could not be published once");
+    unlink(temporary.c_str());
+}
+
+void wait_for_release(const Arm& arm) {
+    int fd = open(arm.release.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) fail("release gate could not be opened");
+    char decision = 0;
+    ssize_t count;
+    do { count = read(fd, &decision, 1); } while (count < 0 && errno == EINTR);
+    close(fd);
+    if (count != 1 || decision != 'R') fail("release was not authorized");
+}
+}
+
+extern "C" int32_t @ENTRY_POINT@(const char* label, const uint8_t* bytes, size_t count) {
+    const int before = errno;
+    auto call = real_symbol<int32_t (*)(const char*, const uint8_t*, size_t)>();
+    Arm arm{};
+    if (matching_arm(arm)) {
+        publish(arm, label, bytes, count);
+        wait_for_release(arm);
+    }
+    errno = before;
+    return call(label, bytes, count);
+}

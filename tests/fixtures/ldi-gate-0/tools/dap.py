@@ -112,7 +112,8 @@ class Dap:
         verified = []
         for source, lines in breakpoints.items():
             verified.extend(self.request("setBreakpoints", {"source": {"path": str(source)},
-                                                             "breakpoints": [{"line": line} for line in lines]})["breakpoints"])
+                                                             "breakpoints": [({"line": line} if isinstance(line, int) else line)
+                                                                             for line in lines]})["breakpoints"])
         configured = self.send("configurationDone")
         self.response(launch)
         self.response(configured)
