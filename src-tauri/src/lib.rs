@@ -1,5 +1,8 @@
 mod commands;
 mod types;
+mod process_supervisor;
+
+pub use process_supervisor::entry as process_supervisor_entry;
 
 use tauri::Manager;
 
@@ -48,6 +51,8 @@ fn show_main_window(w: tauri::WebviewWindow, requests: tauri::State<'_, WindowRe
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    process_supervisor::initialize(&std::env::current_exe().expect("could not find IDE executable"))
+        .expect("could not initialize IDE process cleanup supervisor");
     tauri::Builder::default()
         .manage(BuildManager::default())
         .manage(WindowRequests::default())
@@ -159,6 +164,10 @@ pub fn run() {
             clear_native_close_guard,
             reset_linked_action,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) { process_supervisor::shutdown(); }
+        });
+    process_supervisor::shutdown();
 }

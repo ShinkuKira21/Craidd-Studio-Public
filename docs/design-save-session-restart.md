@@ -26,6 +26,11 @@ parent project's folder unless the parent configuration explicitly builds it.
 | Unrelated source, documentation, or no active Run/Debug | Save directly |
 
 The dialog lists the actual configurations and window IDs being restarted.
+Native source belongs to a live Gold LDI pair throughout the session, not just
+while its driver is paused. Saving any source in that native project offers
+Gold Restart Debug while the managed host is active, including between Blue
+hits after a reproduction finishes or White Stop B. A closed/unlinked partner
+or a stopped Gold session does not keep dormant native source active.
 Gold restart always stops every participant in the linked action. It reuses
 normal launch order, build preparation, and readiness gates. White restart
 stops the affected process and leaves unrelated windows running. A restarted
@@ -62,8 +67,9 @@ starting reproductions.
 
 ## Verification
 
-`npm run test:save-restart` covers server/client scope, eight clients, waiting
-LDI partners, explicit native build dependencies, Rust, nested projects,
+`npm run test:save-restart` covers server/client scope, eight clients, the full
+native LDI driver lifecycle (including completed/cancelled drivers between Blue
+hits), inactive/unlinked partners, explicit native build dependencies, Rust, nested projects,
 independent mixed actions, and unrelated files. Rust tests cover stale restart
 requests, changed scope/configuration/window identities, the LDI Gold rule,
 and keeping active bindings unchanged during save reconciliation.
@@ -72,4 +78,6 @@ Manual checks: save while paused at Blue with Save only, then save with Gold
 Restart Debug; add/change/remove Blue during Gold and use its timed restart
 action; remove the last Blue and restart; edit shared source in a hidden native
 preview; restart a server with White and verify clients remain alive; edit one
-client source used by several windows and verify Gold launch readiness order.
+client source used by several windows and verify Gold launch readiness order;
+save native source before the first Blue hit and after a reproduction finishes,
+while A is running: both must offer Save / Save and Gold Restart Debug.

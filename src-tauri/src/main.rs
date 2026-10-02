@@ -2,5 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if craidd_studio_lib::process_supervisor_entry() { return; }
     craidd_studio_lib::run()
 }

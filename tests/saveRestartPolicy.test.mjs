@@ -56,6 +56,38 @@ test("a waiting native LDI partner requires Gold restart with the managed host a
   }
 });
 
+test("native saves require Gold restart throughout LDI, including between reproductions", () => {
+  for (const status of ["waiting", "starting", "building", "running", "paused", "terminated", "idle", "cancelled", "error"]) {
+    const windows = [member("api", "API · Local", "debug", { ldiRole: "managed" }),
+      member("native", "Native · Scalar", null, { ldiRole: "native-library", status, debugging: false }),
+      member("client", "Client · Local")];
+    // No API build dependency, active editor, paused frame, or breakpoint
+    // associates these files: ownership comes from the live Gold LDI pair.
+    for (const file of ["/lab/Native/scalar.cpp", "/lab/Native/other.cpp", "/lab/Native/types.h"]) {
+      const plan = saveRestartPlan(file, solution, linked(windows));
+      assert.ok(plan, `${status}: ${file} must offer a restart`);
+      assert.equal(plan.scope, "gold");
+      assert.deepEqual(plan.affected, ["native"]);
+      assert.deepEqual(plan.targets.map((item) => item.windowLabel), ["api", "native", "client"]);
+      assert.equal(restartLabel(plan), "Gold Restart Debug");
+    }
+  }
+});
+
+test("dormant native windows do not prompt outside a live Gold managed pairing", () => {
+  const host = member("api", "API · Local", "debug", { ldiRole: "managed" });
+  const native = member("native", "Native · Scalar", null,
+    { ldiRole: "native-library", status: "terminated", debugging: false });
+  const client = member("client", "Client · Local");
+  const file = "/lab/Native/scalar.cpp";
+  assert.equal(saveRestartPlan(file, solution, { ...linked([host, native], null), members: [] }), null);
+  assert.equal(saveRestartPlan(file, solution, { ...linked([host, native, client]), members: [host, client] }), null);
+  assert.equal(saveRestartPlan(file, solution, linked([
+    { ...host, status: "terminated", activeAction: null, debugging: false }, native, client,
+  ])), null);
+  assert.equal(saveRestartPlan(file, solution, linked([host, native], "run")), null);
+});
+
 test("build dependencies attach a native source to the running managed configuration", () => {
   const composed = { ...solution, configs: [config("API · Local", "Server", { slots: { build: "Prepare", debug: "API Debug" } }),
     { name: "Prepare", kind: "build", method: "plan", target: ".", order: { steps: [{ kind: "build", configuration: "Native Build" }] } },

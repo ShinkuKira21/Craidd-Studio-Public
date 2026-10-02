@@ -146,9 +146,11 @@ fn prepare_cmake_build(program: &Path, spec: &RunSpec) -> Result<Option<String>,
     let profile = spec.args.iter().position(|arg| arg == "--config")
         .and_then(|index| spec.args.get(index + 1)).map(String::as_str).unwrap_or("Debug");
     let build_type = format!("-DCMAKE_BUILD_TYPE={profile}");
-    let output = Command::new(program).current_dir(&spec.cwd)
-        .args(["-S", ".", "-B", build_dir, build_type.as_str()])
-        .stdin(Stdio::null()).output().map_err(|e| format!("Could not configure CMake build tree: {e}"))?;
+    let mut command = Command::new(program);
+    command.current_dir(&spec.cwd).args(["-S", ".", "-B", build_dir, build_type.as_str()])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let output = crate::process_supervisor::spawn(&mut command).and_then(|child| child.wait_with_output())
+        .map_err(|e| format!("Could not configure CMake build tree: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -235,7 +237,7 @@ pub async fn start_config_for_label(app: AppHandle, label: String, mut spec: Run
         return Err("A run is already active in this window. Stop it first.".into());
     }
 
-    let mut child = command.spawn()
+    let mut child = crate::process_supervisor::spawn(&mut command)
         .map_err(|e| format!("Could not start {}: {e}", spec.program))?;
     let pgid = child.id() as i32;
 

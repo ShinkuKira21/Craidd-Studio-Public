@@ -154,7 +154,7 @@ pub fn start_cargo(window: WebviewWindow, app: AppHandle, state: State<'_, Build
     let label = window.label().to_string();
     let mut active = state.0.lock().map_err(|e| e.to_string())?;
     if active.contains_key(&label) { return Err("A build or run is already active in this window. Stop it first.".into()); }
-    let mut child = command.spawn().map_err(|e| format!("Could not start {}: {e}", cargo.display()))?;
+    let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not start {}: {e}", cargo.display()))?;
     let pgid = child.id() as i32;
     let stdout = child.stdout.take().ok_or("Could not capture Cargo stdout")?;
     let stderr = child.stderr.take().ok_or("Could not capture Cargo stderr")?;

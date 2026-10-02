@@ -346,8 +346,7 @@ fn command(
             }
         });
     }
-    let mut child = command
-        .spawn()
+    let mut child = crate::process_supervisor::spawn(&mut command)
         .map_err(|error| format!("Could not start {}: {error}", spec.program))?;
     let pgid = child.id() as i32;
     job.pgid.store(pgid, Ordering::SeqCst);

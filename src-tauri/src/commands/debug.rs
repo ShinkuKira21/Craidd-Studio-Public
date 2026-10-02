@@ -230,7 +230,7 @@ pub(crate) fn run_build_with_cancel(
     command.current_dir(cwd).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
     emit(app, label, json!({"status":"output", "text":format!("$ {} {}", executable.display(), args.join(" "))}));
-    let mut child = command.spawn().map_err(|e| format!("Could not {description}: {e}"))?;
+    let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not {description}: {e}"))?;
     let pgid = child.id() as i32;
     app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?
         .insert(label.into(), BuildJob { pgid, cancelled: cancelled.clone() });
@@ -263,7 +263,7 @@ fn executable_from_cargo(app: &AppHandle, label: &str, cwd: &Path, release: bool
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if release && !cargo_args.iter().any(|arg| arg == "--release") { command.arg("--release"); }
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
-    let mut child = command.spawn().map_err(|e| format!("Could not run cargo build: {e}"))?;
+    let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not run cargo build: {e}"))?;
     let pgid = child.id() as i32;
     let cancelled = Arc::new(AtomicBool::new(false));
     app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?
@@ -684,7 +684,7 @@ pub(crate) fn launch_prepared(
     if language == "csharp" { command.arg("--interpreter=vscode"); }
     command.current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
-    let mut child = command.spawn().map_err(|e| format!("Could not start {adapter_name}: {e}"))?;
+    let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not start {adapter_name}: {e}"))?;
     let pgid = child.id() as i32;
     let session = Arc::new(Session {
         writer: Mutex::new(child.stdin.take().ok_or("Debugger input unavailable")?),

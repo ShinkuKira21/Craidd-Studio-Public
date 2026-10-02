@@ -65,10 +65,19 @@ export function saveRestartPlan(file: string, solution: CraiddSolution, linked: 
   const owningRoots = solution.projects.map((item) => folder(solution.root, item.folder))
     .filter((root) => within(source, root));
   const ownerLength = Math.max(0, ...owningRoots.map((root) => root.length));
-  const active = linked.windows.filter((item) => ["waiting", "starting", "building", "running", "paused"].includes(item.status));
+  const live = (item: LinkedMember) => ["waiting", "starting", "building", "running", "paused"].includes(item.status);
+  const groupAction = linked.activeAction;
+  const inGroup = (item: LinkedMember) => linked.members.some((member) =>
+    member.windowLabel === item.windowLabel && member.instanceId === item.instanceId);
+  const liveManagedPair = groupAction === "debug" && linked.activeActionId !== null
+    && linked.windows.some((item) => item.ldiRole === "managed" && live(item) && inGroup(item));
+  // A native driver is transient: completion or White Stop B must not detach
+  // its source from the still-live Gold LDI session between Blue hits.
+  const active = linked.windows.filter((item) => live(item)
+    || (liveManagedPair && item.ldiRole === "native-library" && inGroup(item)));
   const actionFor = (item: LinkedMember): RestartAction | null => {
     const action = item.activeAction ?? (item.debugging ? "debug"
-      : linked.members.some((member) => member.windowLabel === item.windowLabel) ? linked.activeAction : null);
+      : inGroup(item) ? groupAction : null);
     return action === "run" || action === "debug" ? action : null;
   };
   const affected = active.filter((item) => {
@@ -79,8 +88,7 @@ export function saveRestartPlan(file: string, solution: CraiddSolution, linked: 
     return sourceRoots(solution, config, action).some((root) => root.length >= ownerLength && within(source, root));
   });
   if (!affected.length) return null;
-  const groupAction = linked.activeAction;
-  const grouped = affected.every((item) => linked.members.some((member) => member.windowLabel === item.windowLabel));
+  const grouped = affected.every(inGroup);
   const ldi = groupAction === "debug" && linked.members.some((item) => item.ldiRole === "native-library")
     && linked.members.some((item) => item.ldiRole === "managed")
     && affected.some((item) => item.ldiRole === "managed" || item.ldiRole === "native-library");
