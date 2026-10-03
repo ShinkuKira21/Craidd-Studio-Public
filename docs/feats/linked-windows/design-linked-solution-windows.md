@@ -12,8 +12,8 @@ solution, project choice, and clean tabs. Cursor positions and Monaco undo
 history are not yet restored. A shared writable document model is still
 required to preserve those across GUI teardown.
 **Companion:** [Window model](design-window-model.md),
-[solution orchestration](design-solution-orchestration.md),
-[configuration megamenu](design-configuration-megamenu.md),
+[solution orchestration](../configurations/design-solution-orchestration.md),
+[configuration megamenu](../configurations/design-configuration-megamenu.md),
 [linked solution window manager](design-linked-window-manager.md).
 The latest interaction decisions for shared Tauri launch, writable views,
 session closing, and breakpoint menus are in
@@ -95,10 +95,10 @@ admitting it needs help.
 
 - [linked solution window manager](design-linked-window-manager.md) —
   the tray, Hide, and window context selection.
-- [profile markers](design-profile-markers.md) — how the IDE measures
+- [profile markers](../profiling/design-profile-markers.md) — how the IDE measures
   what the code is doing, and how those measurements reach the user
   and the AI panel.
-- [philosophy-mixed-debugging.md](philosophy-mixed-debugging.md) — why
+- [philosophy-mixed-debugging.md](../../philosophies/philosophy-mixed-debugging.md) — why
   cross-process debugging of a shared process is out of reach on
   Linux.
 - [design-window-model.md](design-window-model.md) — one solution per
@@ -115,7 +115,7 @@ get relitigated.
 boundary, or from managed into native code generally. This is a
 Linux-wide limitation, not a Craidd one. The reasoning is long enough
 to deserve its own home: see
-[philosophy-mixed-debugging.md](philosophy-mixed-debugging.md). The
+[philosophy-mixed-debugging.md](../../philosophies/philosophy-mixed-debugging.md). The
 short version: `ptrace` permits one tracer per thread, and no
 .NET↔LLDB cooperation protocol exists. Mixed-mode is out of reach on
 Linux, not deferred.
@@ -177,7 +177,7 @@ Gold Linked Debug owns that driver alongside its managed origin, making the
 application-plus-driver pair eligible without changing the library's role.
 The driver waits for blue before launching. Unrelated library windows remain
 outside the runnable group. This is a planned extension to the membership
-rule above; see [LDI activation](design-ldi-debugging.md#gold-activation-and-breakpoint-roles).
+rule above; see [LDI activation](../ldi-debugging/design-ldi-debugging.md#gold-activation-and-breakpoint-roles).
 
 ---
 
@@ -606,7 +606,7 @@ The library therefore:
 A future **Add Debug Driver…** wizard would generate that driver. It
 is not designed here; it is named so the fallback is on the record.
 
-The [LDI design](design-ldi-debugging.md) now specifies a proposed paired-driver
+The [LDI design](../ldi-debugging/design-ldi-debugging.md) now specifies a proposed paired-driver
 workflow: Gold Linked Debug activates an enabled blue breakpoint at a managed
 call site and a compatible native red breakpoint in the library context. Blue
 holds the managed caller while its arguments are reproduced in the on-demand

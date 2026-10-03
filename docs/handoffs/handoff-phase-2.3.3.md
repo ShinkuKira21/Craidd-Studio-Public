@@ -55,7 +55,7 @@ be, and the tool Rider can't be on Linux.
   folder if `[config].directory` is declared and distinct.
 - Cargo's auto-bin convention applied: `src/main.rs` + `[package].name`
   produces a bin, same as Cargo's own rule.
-- `docs/design-manifests.md` written.
+- `docs/feats/project-model/design-manifests.md` written.
 
 ### Phase 2.3.3.1 — Configuration schema + inference
 - `.cln` gains `[[config]]` array and `default_config` string.
@@ -136,7 +136,7 @@ This is what makes the dialog fluid. Adding a method is one file.
 - Debug attaches to one project, one process.
 - Composed Configurations aren't debuggable as a whole.
 - A library with no entry point needs a driver project (Phase 3 feature).
-- `docs/design-mixed-debugging.md` is the reference.
+- `docs/philosophies/philosophy-mixed-debugging.md` is the reference.
 
 ### The manifesto
 
@@ -168,7 +168,7 @@ The escape hatch is always available and cheap: one command line in
 
 ## Known cleanup items
 
-- The `docs/design-configurations-sketches.md` sketches use `inherit:`
+- The `docs/feats/configurations/design-configurations-sketches.md` sketches use `inherit:`
   annotations that should become `override` affordances now that
   inherited fields are visually distinct.
 - `infer.rs` is one file. When it grows to per-language modules
@@ -201,9 +201,9 @@ The escape hatch is always available and cheap: one command line in
 - `src/types/project.ts` — `Profile`, `ConfigEntry`, `Manifest`.
 
 **Docs:**
-- `docs/design-manifests.md`
-- `docs/design-configurations-sketches.md`
-- `docs/design-mixed-debugging.md`
+- `docs/feats/project-model/design-manifests.md`
+- `docs/feats/configurations/design-configurations-sketches.md`
+- `docs/philosophies/philosophy-mixed-debugging.md`
 
 ---
 

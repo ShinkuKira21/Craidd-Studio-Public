@@ -138,7 +138,7 @@ No hardcoded framework knowledge at runtime. Detection reads
 declarations, it does not infer from extensions.
 
 No bundling of tools. Craidd owns no tools. It discovers,
-records, and delegates. See docs/philosophy-tool-discovery.md.
+records, and delegates. See docs/philosophies/philosophy-tool-discovery.md.
 
 No silent mutation. Every file change by Craidd is visible to
 the user. Every plugin action appears in the Output panel.
@@ -156,7 +156,7 @@ in .cln.
 
 No custom languages, no custom frameworks, no user-authored
 detection rules — until Phase 5+, if ever. See
-docs/design-project-identity.md for the reasoning.
+docs/feats/project-model/design-project-identity.md for the reasoning.
 
 Linux-only, by design. Not a Windows product. Not trying to be
 one.
@@ -176,7 +176,7 @@ This document is {a design | a philosophy | a plan | a placeholder}.
 
 Handoff
 At the end of a significant session, the assistant writes a handoff
-document: docs/handoff-phase-{X-Y-Z}.md.
+document: docs/handoffs/handoff-phase-{X-Y-Z}.md.
 
 The handoff contains:
 

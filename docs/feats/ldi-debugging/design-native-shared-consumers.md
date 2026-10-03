@@ -160,8 +160,8 @@ must not repopulate another context.
    reuse or bind a new explicit artifact; never display new source as if it
    necessarily describes the old loaded module.
 
-The current [Rust/C++ playground](../workspaces/ldi-rust-native-playground/README.md)
+The current [Rust/C++ playground](../../../workspaces/ldi-rust-native-playground/README.md)
 tests the live-debugging primitive with two projects. The existing
-[C# playground](../workspaces/ldi-interop-playground/README.md) tests the managed
+[C# playground](../../../workspaces/ldi-interop-playground/README.md) tests the managed
 provider. A combined three-project fixture should follow the context-routing
 implementation; this proposal does not claim that UI already exists.

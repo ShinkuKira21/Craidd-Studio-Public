@@ -83,7 +83,7 @@ Craidd does not ship a compiler, a runtime, a package manager, a
 language server, a debug adapter, an AI runtime, or a Python
 interpreter. Tools are discovered on the user's machine, recorded, and
 delegated to. When a tool is missing, Craidd says so and gets out of
-the way. See `docs/philosophy-tool-discovery.md` for the full
+the way. See `docs/philosophies/philosophy-tool-discovery.md` for the full
 argument. The rule applies to every phase, including the AI pipeline
 in Phase 4.
 
@@ -93,7 +93,7 @@ Every file change Craidd makes is visible to the user. Every process
 it spawns appears in the Output panel. Every diagnostic it emits goes
 to Problems. If a file is edited by any means — a human keystroke, a
 build script, an AI pipeline — the edit is a real save with the same
-confirm path as any other save. See `docs/design-error-handling.md`.
+confirm path as any other save. See `docs/feats/runtime/design-error-handling.md`.
 
 **4. `.craidd` is a marker. `.cln` is composition. Neither grows.**
 
@@ -103,7 +103,7 @@ to either file for convenience — a cached manifest value, a
 workspace-wide setting, a machine fact — belongs in the machine
 preferences file, or is read from the manifest, or is a bug in the
 model. See `docs/craidd-cln-model.md` and
-`docs/design-project-identity.md`.
+`docs/feats/project-model/design-project-identity.md`.
 
 **5. The user declares. The IDE obeys.**
 
@@ -189,8 +189,8 @@ project.
 
 **The gate.** LSP and DAP must be working before the AI panel lands.
 The panel is not a research project; it is a feature, and features
-ship after the foundation. See `docs/future-ide-considerations.md` for
-the shape of the panel and `docs/future-idea-python.md` for the ML
+ship after the foundation. See `docs/future/future-ide-considerations.md` for
+the shape of the panel and `docs/future/future-idea-python.md` for the ML
 angle below.
 
 ### Python and ML tooling
@@ -224,7 +224,7 @@ bottom panel, not a new architecture.
 **The gate.** Python support and the Training view are Phase 4.x. They
 wait for Phase 3 (LSP) and Phase 3.x (DAP) to be complete, and for
 Rust, TypeScript, C++, and C# to work end-to-end. The full sketch is
-in `docs/future-idea-python.md`.
+in `docs/future/future-idea-python.md`.
 
 ---
 
@@ -236,7 +236,7 @@ in `docs/future-idea-python.md`.
 - Persistent build logs. The console is the log.
 - Auto-telemetry. No. Ever.
 - Custom languages and frameworks. Fixed set. See
-  `docs/design-project-identity.md`.
+  `docs/feats/project-model/design-project-identity.md`.
 - A workspace concept. `.cln` is the workspace.
 - An AI that acts outside the project graph. The AI is a consumer of
   the model, not a peer of it.

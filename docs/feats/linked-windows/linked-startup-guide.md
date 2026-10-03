@@ -60,7 +60,7 @@ prerequisites override that participant's legacy priority. A failed check
 prevents later phases from launching. Stop cancels queued phases and stops the
 remaining launched instances. Startup dependencies apply only to linked launches;
 an explicit **Before this action** build preparation applies to individual actions
-too. See [Declarative build order](design-declarative-build-order.md).
+too. See [Declarative build order](../configurations/design-declarative-build-order.md).
 
 ## Detection limits
 

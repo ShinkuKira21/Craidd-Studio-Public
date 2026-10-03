@@ -26,7 +26,7 @@ tool the user already runs.
 - `pyright` / `pylsp` understand Python. Craidd speaks LSP to it.
 
 The IDE is the orchestrator. The language servers are the experts.
-See `docs/future-ide-considerations.md` for the full argument.
+See `docs/future/future-ide-considerations.md` for the full argument.
 
 ---
 
@@ -112,7 +112,7 @@ typescript: language_server -> vtsls, typescript-language-server
 
 Discovered once per language, recorded in
 `~/.craidd-studio/user_preferences.toml`, never installed. Same rules
-as `docs/philosophy-tool-discovery.md`.
+as `docs/philosophies/philosophy-tool-discovery.md`.
 
 ### Lifecycle
 
@@ -122,7 +122,7 @@ solution opens. It does not start at app launch.
 
 This is a hard rule and it exists because startup latency is the
 single thing that keeps an IDE feeling fast. See
-`docs/future-ide-considerations.md`, "Startup performance at scale."
+`docs/future/future-ide-considerations.md`, "Startup performance at scale."
 
 **One server per (project, language) pair.** Not one per file, not
 one per solution. If two projects declare Rust and they both have

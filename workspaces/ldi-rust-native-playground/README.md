@@ -24,7 +24,7 @@ phase, though the original process is naturally paused while stopped in C++.
 Ordinary red debugging without a Native pairing still reveals native stops in
 the session-owning Rust window. A library has no standalone debug executable.
 Rust pairing does not invoke the C# capture provider. See
-[the design and current limits](../../docs/design-ldi-debugging-rust.md).
+[the design and current limits](../../docs/feats/ldi-debugging/design-ldi-debugging-rust.md).
 
 ## Manual two-window acceptance
 
@@ -109,4 +109,4 @@ Native Breakpoints are app/window-scoped and must be re-paired after reopening.
 
 The current shared-library design question—Rust and C# both using Native
 Scalar in three IDE windows—is recorded separately in
-[Shared native consumers](../../docs/design-native-shared-consumers.md).
+[Shared native consumers](../../docs/feats/ldi-debugging/design-native-shared-consumers.md).

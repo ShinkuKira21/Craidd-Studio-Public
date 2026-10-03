@@ -1,13 +1,13 @@
 # Design: Project Tools and dependency workflows
 
 **Status:** Proposed, 19 September 2026. Planning only; no UI or backend implementation in this document.
-**Companions:** [Configuration megamenu](design-configuration-megamenu.md), [project configurations and NuGet](design-project-configurations-and-nuget.md), [tool discovery philosophy](philosophy-tool-discovery.md), [terminal design](design-terminal.md).
+**Companions:** [Configuration megamenu](design-configuration-megamenu.md), [project configurations and NuGet](design-project-configurations-and-nuget.md), [tool discovery philosophy](../../philosophies/philosophy-tool-discovery.md), [terminal design](../editor/design-terminal.md).
 
 ## Goal
 
 Craidd should make a solution containing an ASP.NET API and a Tauri 2 app feel like one workspace while keeping each project's ecosystem intact. The toolbar configuration picker chooses the **default project and its action** for this window. The menu-bar label is **`{Project Name} Tools`**, derived from that default project. The menu, Command Palette, and Solution Explorer are three entrances to project actions.
 
-This design covers *project dependencies*, such as NuGet packages and Cargo crates. It does not install an SDK, compiler, global package, or Linux system package. Every dependency operation is an explicit user action through the project's installed tool. This distinction needs to be recorded in [tool discovery philosophy](philosophy-tool-discovery.md) and the manifest ownership rules before implementation; their current absolute “never installs anything” wording also covers explicit project dependency operations.
+This design covers *project dependencies*, such as NuGet packages and Cargo crates. It does not install an SDK, compiler, global package, or Linux system package. Every dependency operation is an explicit user action through the project's installed tool. This distinction needs to be recorded in [tool discovery philosophy](../../philosophies/philosophy-tool-discovery.md) and the manifest ownership rules before implementation; their current absolute “never installs anything” wording also covers explicit project dependency operations.
 
 ## Progressive project understanding
 
@@ -189,7 +189,7 @@ Package commands may modify project files and download dependencies. The user ex
 
 ## Running several projects: Duplicate Window
 
-**One Play button starts one run target per window.** To run three GUIs and an ASP.NET API at once, open the same solution in four windows with `File → Duplicate Window`, select a different default project/configuration in each, and press Play in each window. This follows [the one-solution-per-window model](design-window-model.md): each window sees one solution, and several windows may intentionally see the same solution. A Tauri CLI run may itself coordinate frontend and Rust child processes; it still occupies one window's run slot.
+**One Play button starts one run target per window.** To run three GUIs and an ASP.NET API at once, open the same solution in four windows with `File → Duplicate Window`, select a different default project/configuration in each, and press Play in each window. This follows [the one-solution-per-window model](../linked-windows/design-window-model.md): each window sees one solution, and several windows may intentionally see the same solution. A Tauri CLI run may itself coordinate frontend and Rust child processes; it still occupies one window's run slot.
 
 The current Rust runner already keys active runs by window label, so process/output/Stop can remain isolated. The new window must have its **own in-memory project selection, profile, debugger session, Output, and Stop control**; choosing an API in one window must not change a GUI window. The saved solution default is only the starting suggestion for a new window. Selecting a row or using a chevron must not rewrite `.cln`; an explicit `Make solution default` action may do that. The duplicate opens the same on-disk solution in a fresh window, rather than copying unsaved editor buffers or an active process.
 

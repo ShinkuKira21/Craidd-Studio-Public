@@ -1,8 +1,8 @@
 # LDI Gate 0: standalone held-frame test plan
 
 **Status:** Test specification plus an implemented first mechanism harness,
-29 September 2026. See [the internal test fixture](../tests/fixtures/ldi-gate-0/README.md).
-The small user-facing example is [LDI GUI Lab](../workspaces/ldi-gui-lab/README.md).
+29 September 2026. See [the internal test fixture](../../../tests/fixtures/ldi-gate-0/README.md).
+The small user-facing example is [LDI GUI Lab](../../../workspaces/ldi-gui-lab/README.md).
 Test counters, logging, capture reports and Python are test infrastructure,
 not requirements for developer projects or dependencies of the IDE's LDI runtime.
 The complete fault/acceptance matrix below is broader than the tests currently

@@ -148,7 +148,7 @@ python: profiler  -> py-spy          (time, live stack sampling)
 
 Discovered once per language, recorded in
 `~/.craidd-studio/user_preferences.toml`, never installed. Same rules
-as `docs/philosophy-tool-discovery.md`. Same banners. Same "Not
+as `docs/philosophies/philosophy-tool-discovery.md`. Same banners. Same "Not
 found" state.
 
 ### Invocation
@@ -257,7 +257,7 @@ The debugger tells you *why*. Craidd has both, and they share a
 group, but they are separate tools. The Profiler panel does not become
 a debugger view.
 
-**Not the marker system.** `docs/design-profile-markers.md` describes
+**Not the marker system.** `docs/feats/profiling/design-profile-markers.md` describes
 a *future* capability: source-resident markers, per-region measurement,
 cross-run comparison, and integration with the AI panel. That design
 depends on the marker infrastructure. The first profiler slice does

@@ -7,8 +7,8 @@ is only reachable from a managed process, on Linux, without mixed-mode
 debugging.
 
 **Current design:** The proposal below records the original interposition
-approach. Use [the LDI design](design-ldi-debugging.md) and
-[Gate 0 plan](design-ldi-gate-0.md) for the revised scalar workflow: Gold Linked
+approach. Use [the LDI design](../feats/ldi-debugging/design-ldi-debugging.md) and
+[Gate 0 plan](../feats/ldi-debugging/design-ldi-gate-0.md) for the revised scalar workflow: Gold Linked
 Debug activates an enabled blue **Native Debugging Breakpoint** at the managed
 call site paired with a compatible native red marker. A stays at that managed
 stop while B reproduces readable scalar arguments, then resumes only after B
@@ -222,7 +222,7 @@ The IDE is the only component that knows about both.
 location and kind. The existing `breakpoints.rs` store already has a
 `scope` field that is currently flattened to `"all"` on every save;
 that field becomes the `kind` discriminant when this feature lands.
-See the note in [design-linked-solution-windows.md](design-linked-solution-windows.md)
+See the note in [design-linked-solution-windows.md](../feats/linked-windows/design-linked-solution-windows.md)
 about per-instance activation — it is the same mechanism.
 
 ---

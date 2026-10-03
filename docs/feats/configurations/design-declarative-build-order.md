@@ -1,6 +1,6 @@
 # Declarative build order: working prototype
 
-The executable example is [`workspaces/build-order-lab`](../workspaces/build-order-lab/README.md).
+The executable example is [`workspaces/build-order-lab`](../../../workspaces/build-order-lab/README.md).
 It extends Power configurations without changing ecosystem manifests or making
 libraries into runnable sessions.
 

@@ -148,7 +148,7 @@ call-site pairing resolve; show **Paired** or **Waiting for blue** separately
 from adapter verification and actual breakpoint hits. Matching names cannot
 promise that a branch will run. A library breakpoint already served by a
 standalone native driver does not require LDI pairing.
-See the proposed [LDI activation and reminder design](design-ldi-debugging.md#gold-activation-and-breakpoint-roles).
+See the proposed [LDI activation and reminder design](../ldi-debugging/design-ldi-debugging.md#gold-activation-and-breakpoint-roles).
 These additions are design work, not currently implemented menu behavior.
 
 A normal click or **Set Breakpoint here** targets the session currently

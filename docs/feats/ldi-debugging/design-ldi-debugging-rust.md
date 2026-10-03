@@ -6,8 +6,8 @@ reveal/focus still needs manual acceptance. Shared-consumer arbitration,
 callbacks and richer Rust debugging remain proposals.
 **Applies to:** Phase 3.x onward (after the C# LDI path is manually accepted).
 **Companion:** [LDI debugging](design-ldi-debugging.md),
-[Linked solution windows](design-linked-solution-windows.md),
-[Mixed debugging](philosophy-mixed-debugging.md),
+[Linked solution windows](../linked-windows/design-linked-solution-windows.md),
+[Mixed debugging](../../philosophies/philosophy-mixed-debugging.md),
 [Shared native consumers](design-native-shared-consumers.md).
 **Governs:** Rust↔C++ live debugging, per-window Power Config ownership,
 and where Native Breakpoint pairing selects a live or reproduction provider.
@@ -86,21 +86,21 @@ a function-entry breakpoint, particularly with threads or repeated calls.
 
 The implementation on 3 October 2026 provides:
 
-- [`debug.rs`](../src-tauri/src/commands/debug.rs) starts Cargo executables
+- [`debug.rs`](../../../src-tauri/src/commands/debug.rs) starts Cargo executables
   under LLDB and pushes the solution's red breakpoints into active sessions.
   Rust pairing now consumes `module` events, private entry stops, mixed stacks
   and scopes/variables through that same adapter.
-- [`ldi.rs`](../src-tauri/src/commands/ldi.rs) implements C# call capture,
+- [`ldi.rs`](../../../src-tauri/src/commands/ldi.rs) implements C# call capture,
   driver/interposer execution and verified native-entry focus. Its existing
   Native Breakpoint commands dispatch `.rs` calls to the independent
-  [`native_debug.rs`](../src-tauri/src/commands/native_debug.rs) provider;
+  [`native_debug.rs`](../../../src-tauri/src/commands/native_debug.rs) provider;
   Rust never enters the managed hold/reproduction state machine.
-- [`linkedWindowsStore.ts`](../src/store/linkedWindowsStore.ts),
-  [`viewedActions.ts`](../src/lib/viewedActions.ts) and backend
-  [`view_linked_window`](../src-tauri/src/commands/linked_windows.rs) adopt
+- [`linkedWindowsStore.ts`](../../../src/store/linkedWindowsStore.ts),
+  [`viewedActions.ts`](../../../src/lib/viewedActions.ts) and backend
+  [`view_linked_window`](../../../src-tauri/src/commands/linked_windows.rs) adopt
   **hidden** sessions. Selecting a visible sibling focuses it instead.
   Rust now uses a separate debug-only subscription rather than adoption:
-  [`nativeDebugStore.ts`](../src/store/nativeDebugStore.ts) supplies B's source,
+  [`nativeDebugStore.ts`](../../../src/store/nativeDebugStore.ts) supplies B's source,
   stack, locals and transport while B retains its own Power Config.
 - `DebugManager` has one active adapter slot per owning window label.
   A live Rust session can remain owned by A; B must be a subscriber, not
@@ -157,7 +157,7 @@ native compositor focus behavior**: the two-window checklist in the workspace
 README still needs desktop acceptance. The broader workflow below retains
 future design material beyond this bounded implementation.
 
-The [Rust/C++ playground](../workspaces/ldi-rust-native-playground/README.md)
+The [Rust/C++ playground](../../../workspaces/ldi-rust-native-playground/README.md)
 is available now. Its real-adapter probe verifies Rust→C++ Step Into, direct
 native-only landing, both private automatic entries, loaded module identity,
 a mixed stack, Step Out back to Rust, and mutation of borrowed Rust memory.
@@ -184,7 +184,7 @@ that tracer in this workflow. The native debugger — lldb-dap
 native breakpoint in the C++ code that is running inside the managed
 process, because there is no way for it to reach that code.
 
-See [philosophy-mixed-debugging.md](philosophy-mixed-debugging.md)
+See [philosophy-mixed-debugging.md](../../philosophies/philosophy-mixed-debugging.md)
 for the full argument. This requires debugger/runtime integration;
 an IDE cannot solve it by simply attaching a second ptrace debugger
 to the same controlled threads.
@@ -247,7 +247,7 @@ to cross does not exist here.
 
 If LDI isn't the answer, what is? The linked-window system — the
 mechanism already described in
-[design-linked-solution-windows.md](design-linked-solution-windows.md)
+[design-linked-solution-windows.md](../linked-windows/design-linked-solution-windows.md)
 — provides the substrate. A new live-session binding is needed to preserve
 each visible window's Power Config while presenting one process in both.
 
@@ -587,7 +587,7 @@ Two boundaries. Two answers. One substrate.
 ## Evidence and remaining acceptance
 
 The one-session primitive has now been confirmed empirically using
-[`native_debug_probe.py`](../workspaces/ldi-rust-native-playground/tools/native_debug_probe.py).
+[`native_debug_probe.py`](../../../workspaces/ldi-rust-native-playground/tools/native_debug_probe.py).
 On this machine (rustc 1.99.0, GCC 16.2.1, LLDB-DAP 23.1.1), all three cases
 passed: Rust Step Into, direct native entry, and borrowed-buffer entry.
 Each case read native parameters, found a Rust caller in the same stack,

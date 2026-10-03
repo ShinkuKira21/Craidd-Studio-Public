@@ -1,7 +1,7 @@
 # Handoff: State of Craidd-Studio
 
 **Date:** End of Phase 2.4 (Containment Foundation).
-**Previous handoff:** `docs/handoff-phase-2.3.3.md` (Configurations dialog,
+**Previous handoff:** `docs/handoffs/handoff-phase-2.3.3.md` (Configurations dialog,
 UI complete).
 **Current phase:** 2.4 complete. Next is exploratory C# build test.
 **Next session:** Battle path below — start with "What to ask in the new chat".
@@ -213,9 +213,9 @@ DAP is a *phase*, not a script. Comes after C# and C++ builds work.
 > manually so I can observe the IDE's behaviour.
 >
 > Reference documents: `docs/craidd-cln-model.md`,
-> `docs/phase-3-rust-build-debug-toolchains.md`,
-> `docs/philosophy-tool-discovery.md`, `docs/working-protocol.md`,
-> `docs/handoff-phase-2.3.3.md`.
+> `docs/roadmaps/phase-3-rust-build-debug-toolchains.md`,
+> `docs/philosophies/philosophy-tool-discovery.md`, `docs/working-protocol.md`,
+> `docs/handoffs/handoff-phase-2.3.3.md`.
 
 ---
 
@@ -224,7 +224,7 @@ DAP is a *phase*, not a script. Comes after C# and C++ builds work.
 - `src-tauri/tauri-app.cln` and `src-tauri/src-tauri.craidd` are early
   test artifacts. Harmless. Delete when convenient.
 - `src-tauri/src/src.craidd` same.
-- `docs/exclude-lang.md` may be truncated — verify.
+- `docs/future/exclude-lang.md` may be truncated — verify.
 
 ---
 

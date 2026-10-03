@@ -129,7 +129,7 @@ example) and per-project defaults. Everything it produces is tagged
 `dotnet`, `node`, `pnpm`, `g++`, `clang++`, `cmake`, `python3`, and
 others). Writes results to `~/.craidd-studio/user_preferences.toml`.
 Never installs anything. Ever. The full rule is in
-`docs/philosophy-tool-discovery.md`.
+`docs/philosophies/philosophy-tool-discovery.md`.
 
 **`commands/build.rs`** — the Cargo-specific build runner. Parses
 Cargo's JSON messages for compiler diagnostics and artifact paths.
@@ -248,8 +248,8 @@ dialog. Three sections: Text Editor, Toolchains, Debugging.
 ## The linked-window system
 
 This is the newest subsystem and the one most likely to be unfamiliar.
-The full design lives in `docs/design-linked-solution-windows.md` and
-`docs/design-linked-window-manager.md`. The short version:
+The full design lives in `docs/feats/linked-windows/design-linked-solution-windows.md` and
+`docs/feats/linked-windows/design-linked-window-manager.md`. The short version:
 
 **The thesis.** A window is a viewport. A session is a process. The
 tray is the switcher. Hiding is turning a viewport off.
@@ -359,24 +359,24 @@ window system.
 `store/solutionStore.ts`.
 
 **If you want to change how builds or runs work:** read
-`docs/design-configurations-sketches.md`, then `commands/runner.rs`,
+`docs/feats/configurations/design-configurations-sketches.md`, then `commands/runner.rs`,
 then `store/buildStore.ts`.
 
 **If you want to change the linked-window behavior:** read
-`docs/design-linked-solution-windows.md` and
-`docs/design-linked-window-manager.md`, then
+`docs/feats/linked-windows/design-linked-solution-windows.md` and
+`docs/feats/linked-windows/design-linked-window-manager.md`, then
 `commands/linked_windows.rs`, then `store/linkedWindowsStore.ts`.
 
 **If you want to add a language:** read
-`docs/design-project-identity.md` and `src/lib/languages.ts`. The
+`docs/feats/project-model/design-project-identity.md` and `src/lib/languages.ts`. The
 language list is fixed and grows only when LSP, build, and debug
 support are real.
 
 **If you want to add tool discovery for a new toolchain:** read
-`docs/philosophy-tool-discovery.md`, then `commands/toolchain.rs`.
+`docs/philosophies/philosophy-tool-discovery.md`, then `commands/toolchain.rs`.
 
 **If you want to add a UI surface:** read
-`docs/design-window-model.md` first. The window owns one solution and
+`docs/feats/linked-windows/design-window-model.md` first. The window owns one solution and
 one solution owns one window. Anything that assumes otherwise is a
 design change, not a feature.
 

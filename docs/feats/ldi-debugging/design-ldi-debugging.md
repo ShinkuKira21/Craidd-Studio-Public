@@ -6,8 +6,8 @@ flow still needs manual acceptance. This is not a claim that all gates below pas
 **Recorded:** 29 September 2026.
 **Starting point:** `master` at `7594cc6`.
 
-This develops [the LDI philosophy](philosophy-ldi-debugging.md) and
-[the mixed-debugging philosophy](philosophy-mixed-debugging.md).
+This develops [the LDI philosophy](../../philosophies/philosophy-ldi-debugging.md) and
+[the mixed-debugging philosophy](../../philosophies/philosophy-mixed-debugging.md).
 The goal is a **light mockup environment, not a general-purpose debugging bridge**.
 
 **Authoritative interaction:** blue selects the live call; B reproduces it;
@@ -74,7 +74,7 @@ being impossible. This design never attaches LLDB to A while netcoredbg owns it.
 
 ## 2. The experience
 
-Using [Build Order Lab](../workspaces/build-order-lab/README.md):
+Using [Build Order Lab](../../../workspaces/build-order-lab/README.md):
 
 1. Right-click the gutter at an executable `NativeMath.Add(left, right)` call
    site and choose **Native Debugging Breakpoint** to set a blue marker.
@@ -454,7 +454,7 @@ The source should remain small and editable. Saving a permanent test driver
 can be added later; scalar v1 needs only a transient generated project and
 restart of its current input record. Never overwrite user-edited fixture code.
 
-Reuse [declarative build order](design-declarative-build-order.md).
+Reuse [declarative build order](../configurations/design-declarative-build-order.md).
 Build native prerequisites and resolve actual outputs from the selected
 configurations, not guessed framework-version paths. A proxy/bootstrap build
 is not a dependency of this scalar workflow. Preparing B's driver before A
@@ -564,11 +564,11 @@ order. See the [DAP schema](https://github.com/microsoft/debug-adapter-protocol/
 
 | Area | Existing behavior | Narrow required change |
 | --- | --- | --- |
-| [Breakpoint storage](../src-tauri/src/commands/breakpoints.rs) | Normalizes scope to all; deduplicates file/line | Keep blue binding session-local initially; do not erase ordinary markers |
-| [DAP handling](../src-tauri/src/commands/debug.rs) | Source breakpoints and stack/scopes/variables exist | Retain verified breakpoint IDs, bind exact stopped frame, read supported scalar locals |
-| [Debug transport](../src-tauri/src/commands/debug.rs) | One stored thread ID; controls addressed by label | Backend partner-lock checks for every A-resuming command; correct stopped-thread identity |
-| [Linked coordinator](../src-tauri/src/commands/linked_windows.rs) | Group membership captured at action start | Register on-demand B under ownership; invalidate late launches/releases on Stop |
-| [Build order](../src-tauri/src/commands/build_order.rs) | Typed build preparation exists | Prepare ordinary native driver and check artifact identity |
+| [Breakpoint storage](../../../src-tauri/src/commands/breakpoints.rs) | Normalizes scope to all; deduplicates file/line | Keep blue binding session-local initially; do not erase ordinary markers |
+| [DAP handling](../../../src-tauri/src/commands/debug.rs) | Source breakpoints and stack/scopes/variables exist | Retain verified breakpoint IDs, bind exact stopped frame, read supported scalar locals |
+| [Debug transport](../../../src-tauri/src/commands/debug.rs) | One stored thread ID; controls addressed by label | Backend partner-lock checks for every A-resuming command; correct stopped-thread identity |
+| [Linked coordinator](../../../src-tauri/src/commands/linked_windows.rs) | Group membership captured at action start | Register on-demand B under ownership; invalidate late launches/releases on Stop |
+| [Build order](../../../src-tauri/src/commands/build_order.rs) | Typed build preparation exists | Prepare ordinary native driver and check artifact identity |
 
 DAP setBreakpoints replaces a source's list. Merge applicable ordinary/blue
 locations, preserve verification/relocation, and resolve logical marker identity
@@ -591,9 +591,9 @@ captured values, and the matching partner release resumes A exactly once.
 Unreadable arguments fail while A remains stopped.
 
 **Implementation checkpoint, 29 September 2026:**
-[LDI Gate 0](../tests/fixtures/ldi-gate-0/README.md) provides an internal real
+[LDI Gate 0](../../../tests/fixtures/ldi-gate-0/README.md) provides an internal real
 netcoredbg/LLDB harness with generated driver/capture/transcripts.
-[LDI GUI Lab](../workspaces/ldi-gui-lab/README.md)
+[LDI GUI Lab](../../../workspaces/ldi-gui-lab/README.md)
 is the small user-facing C# GUI / C++ library example. Its projects do not need
 test instrumentation, capture files or Python; those belong to the test fixture,
 not the IDE's LDI runtime or the developer workflow.
@@ -824,7 +824,7 @@ the UI must label the reproduction's scope and never claim whole-process
 equivalence. Another A thread may mutate a buffer after capture and before
 A's real call; the mockup is a snapshot, not a concurrency replay.
 
-The current [no-IDE interposer probe](../tests/fixtures/ldi-gate-0/README.md#experimental-typed-interposer)
+The current [no-IDE interposer probe](../../../tests/fixtures/ldi-gate-0/README.md#experimental-typed-interposer)
 demonstrates actual .NET marshalling through a typed library-name proxy,
 bounded string/buffer capture, an A pre-call hold, B's real native breakpoint,
 and explicit release; it also rejects an oversized input before B and re-arms
