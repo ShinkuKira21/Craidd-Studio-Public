@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -133,8 +133,16 @@ impl Drop for LdiManager {
     }
 }
 
-fn regex(pattern: &str) -> Regex {
-    Regex::new(pattern).expect("constant LDI pattern")
+pub(crate) fn regex(pattern: &str) -> Arc<Regex> {
+    // Both recognizers reuse many constant patterns for every source line.
+    // Cache compiled regexes only, never source results or binding identities.
+    static PATTERNS: OnceLock<Mutex<HashMap<String, Arc<Regex>>>> = OnceLock::new();
+    let mut patterns = PATTERNS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(compiled) = patterns.get(pattern) { return compiled.clone(); }
+    let compiled = Arc::new(Regex::new(pattern).expect("constant LDI pattern"));
+    if patterns.len() >= 128 { patterns.clear(); }
+    patterns.insert(pattern.into(), compiled.clone());
+    compiled
 }
 
 // A deliberately bounded syntax recognizer, not a C#/C++ language service.
@@ -335,7 +343,7 @@ fn managed_scalar_call(source: &str, call: &regex::Captures<'_>) -> Result<Call,
     })
 }
 
-fn native_signature(export: &str, kind: CallKind) -> Regex {
+fn native_signature(export: &str, kind: CallKind) -> Arc<Regex> {
     let arguments = match kind {
         CallKind::ScalarI32 => r"(?:int32_t|int)\s+\w+\s*,\s*(?:int32_t|int)\s+\w+",
         CallKind::Utf8Bytes => r"const\s+char\s*\*\s*\w+\s*,\s*const\s+uint8_t\s*\*\s*\w+\s*,\s*size_t\s+\w+",
@@ -518,7 +526,7 @@ pub async fn list_ldi_call_sites(
 }
 
 #[tauri::command]
-pub fn set_ldi_blue(
+pub async fn set_ldi_blue(
     window: WebviewWindow,
     app: AppHandle,
     file: String,
@@ -526,16 +534,22 @@ pub fn set_ldi_blue(
     partner_label: String,
     condition: Option<String>,
 ) -> Result<Blue, String> {
+    let owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || set_blue_for_label(&app, &owner, file, line, partner_label, condition))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn set_blue_for_label(app: &AppHandle, owner: &str, file: String, line: u32, partner_label: String, condition: Option<String>) -> Result<Blue, String> {
     if file.ends_with(".rs") {
-        return super::native_debug::set_blue(&app, window.label(), &file, line, &partner_label, condition);
+        return super::native_debug::set_blue(app, owner, &file, line, &partner_label, condition);
     }
     let (origin, partner) =
-        super::linked_windows::ldi_selections(&app, window.label(), &partner_label)?;
+        super::linked_windows::ldi_selections(app, owner, &partner_label)?;
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
     let pending_restart = state
         .pairs
-        .get(window.label())
+        .get(owner)
         .is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire));
     let path = Path::new(&file)
         .canonicalize()
@@ -629,13 +643,18 @@ pub fn reconcile_ldi_blues_on_save(app: AppHandle, file: String) -> Result<bool,
 }
 
 #[tauri::command]
-pub fn get_ldi_blues(window: WebviewWindow, app: AppHandle) -> Vec<Blue> {
-    let mut rust_blues = super::native_debug::blues(&app, window.label());
+pub async fn get_ldi_blues(window: WebviewWindow, app: AppHandle) -> Vec<Blue> {
+    let owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || blues_for_label(&app, &owner)).await.unwrap_or_default()
+}
+
+fn blues_for_label(app: &AppHandle, owner: &str) -> Vec<Blue> {
+    let mut rust_blues = super::native_debug::blues(app, owner);
     let manager = app.state::<LdiManager>();
     let Ok(state) = manager.0.lock() else {
         return vec![];
     };
-    let points = state.blues.values().flatten().cloned().map(|mut blue| {
+    let points = state.blues.values().flatten().filter(|blue| blue.origin_label == owner || blue.partner_label == owner).cloned().map(|mut blue| {
         blue.pending_restart = state.pairs.get(&blue.origin_label).is_some_and(|pair|
             !pair.cancelled.load(Ordering::Acquire) && !pair.bindings.iter().any(|binding|
                 binding.blue.file == blue.file && binding.blue.line == blue.line
@@ -658,7 +677,7 @@ pub fn get_ldi_blues(window: WebviewWindow, app: AppHandle) -> Vec<Blue> {
                 &blue.partner_label,
             )
             .ok()?;
-            if window.label() != a.label && window.label() != b.label {
+            if owner != a.label && owner != b.label {
                 return None;
             }
             if a.instance_id != blue.origin_instance || b.instance_id != blue.partner_instance {

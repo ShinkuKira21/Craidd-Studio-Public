@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { revealDebugSource } from "../lib/debugSource";
 import { useBreakpoints } from "./breakpointStore";
 import { useSolution } from "./solutionStore";
 import type { OrderRequest } from "../types/project";
@@ -57,7 +58,9 @@ export const useDebug = create<DebugState>((set, get) => ({
 
 export async function listenToDebug(): Promise<() => void> {
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  return getCurrentWebviewWindow().listen<DebugEvent>("craidd:debug-state", (event) => {
+  let disposed = false;
+  let stopSerial = 0;
+  const unlisten = await getCurrentWebviewWindow().listen<DebugEvent>("craidd:debug-state", (event) => {
     const message = event.payload;
     if (message.status === "output") {
       useDebug.setState((state) => ({ output: appendOutput(state.output, message.text ?? "") }));
@@ -69,6 +72,7 @@ export async function listenToDebug(): Promise<() => void> {
       return;
     }
     const active = message.status === "paused";
+    const serial = ++stopSerial;
     useDebug.setState((state) => ({
       status: message.status as DebugStatus,
       reason: active ? message.nativeRouted ? "Paused in native code · inspect the paired Native window" : message.reason ?? state.reason : null,
@@ -79,7 +83,8 @@ export async function listenToDebug(): Promise<() => void> {
       output: message.text ? appendOutput(state.output, message.text) : state.output,
     }));
     if (message.status === "paused" && message.file && message.line && !message.nativeRouted) {
-      void useSolution.getState().revealFile(message.file, message.line, 1);
+      void revealDebugSource(message.file, message.line, 1, () => !disposed && serial === stopSerial);
     }
   });
+  return () => { disposed = true; unlisten(); };
 }

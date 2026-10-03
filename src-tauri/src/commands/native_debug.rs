@@ -14,7 +14,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -52,6 +52,7 @@ pub struct Context {
     call_file: String,
     call_line: u32,
     status: String,
+    native_stop: bool,
     file: Option<String>,
     line: Option<u32>,
     frames: Value,
@@ -90,16 +91,20 @@ impl State {
             .iter()
             .map(|b| b.partner.spec.cwd.clone())
             .collect();
+        let generation = NEXT.fetch_add(1, Ordering::Relaxed);
+        let context = bindings
+            .first()
+            .map(|binding| owner_context(generation, pgid, 0, owner, binding, "running"));
         self.live.insert(
             owner.into(),
             Live {
                 pgid,
-                generation: NEXT.fetch_add(1, Ordering::Relaxed),
+                generation,
                 stop: 0,
                 bindings,
                 native_roots,
                 modules: HashMap::new(),
-                context: None,
+                context,
             },
         );
         Ok(())
@@ -125,6 +130,11 @@ impl State {
             && !matches!(action, "pause" | "stop")
         {
             return Err("Native stepping needs a paused Rust process".into());
+        }
+        if live.context.as_ref().is_some_and(|c| !c.native_stop)
+            && !matches!(action, "pause" | "stop")
+        {
+            return Err("Rust is not stopped in the Native inspector. Use the Rust window to continue or step".into());
         }
         let context = live.context.as_ref().ok_or("Native inspection ended")?;
         let binding = live
@@ -185,8 +195,8 @@ impl State {
     }
 }
 
-fn regex(pattern: &str) -> Regex {
-    Regex::new(pattern).expect("constant native binding pattern")
+fn regex(pattern: &str) -> Arc<Regex> {
+    super::ldi::regex(pattern)
 }
 fn same_path(a: &str, b: &str) -> bool {
     a == b
@@ -386,9 +396,24 @@ fn validate(app: &AppHandle, binding: &Binding) -> Result<(), String> {
     let a = super::linked_windows::rust_native_selection(app, &binding.origin.label, false)?;
     let b = super::linked_windows::rust_native_selection(app, &binding.partner.label, true)?;
     if !selection_matches(&binding.origin, &a) || !selection_matches(&binding.partner, &b) {
+        let (saved, current, side) = if !selection_matches(&binding.origin, &a) {
+            (&binding.origin, &a, "Rust")
+        } else {
+            (&binding.partner, &b, "Native")
+        };
+        let changed = if saved.instance_id != current.instance_id {
+            "window instance"
+        } else if saved.configuration != current.configuration {
+            "Power Config"
+        } else if saved.profile != current.profile {
+            "profile"
+        } else if saved.solution != current.solution {
+            "solution"
+        } else {
+            "resolved command"
+        };
         return Err(
-            "Native pairing changed. Set the Rust Native Breakpoint again for these Power Configs"
-                .into(),
+            format!("Native pairing changed ({side} {changed}). Set the Rust Native Breakpoint again for these Power Configs"),
         );
     }
     Ok(())
@@ -757,7 +782,13 @@ pub(crate) fn started(
     }
     let manager = app.state::<NativeDebugManager>();
     let mut state = manager.0.lock().map_err(|e| e.to_string())?;
-    state.reserve(owner, pgid, bindings)
+    state.reserve(owner, pgid, bindings)?;
+    let context = state.live[owner].context.clone();
+    drop(state);
+    if let Some(context) = context {
+        publish(app, &context.partner_label, &Some(context.clone()));
+    }
+    Ok(())
 }
 fn matching_reds(solution: &str, native: &Native) -> Vec<Breakpoint> {
     super::breakpoints::load_breakpoints(solution.into())
@@ -847,6 +878,7 @@ fn project_context(
         call_file: binding.blue.file.clone(),
         call_line: binding.blue.line,
         status: "paused".into(),
+        native_stop: true,
         file: first
             .and_then(|f| f["source"]["path"].as_str())
             .map(str::to_owned),
@@ -854,6 +886,19 @@ fn project_context(
         frames: frames.clone(),
         variables: json!([]),
     }
+}
+fn owner_context(
+    generation: u64,
+    pgid: i32,
+    stop: u64,
+    owner: &str,
+    binding: &Binding,
+    status: &str,
+) -> Context {
+    let mut context = project_context(generation, pgid, stop, owner, binding, &json!([]));
+    context.status = status.into();
+    context.native_stop = false;
+    context
 }
 
 /// (routed to B, silently resume an unmatched private symbol entry).
@@ -950,6 +995,18 @@ pub(crate) fn on_frames(
         })
         .filter(|b| !super::debug::has_debug_session(app, &b.partner.label))
         .map(|b| project_context(live.generation, pgid, stop, owner, b, &frames));
+    let inspection = context.is_some();
+    let context = context.or_else(|| {
+        live.bindings
+            .iter()
+            .find(|b| {
+                previous
+                    .as_ref()
+                    .is_none_or(|c| c.partner_label == b.partner.label)
+            })
+            .or_else(|| live.bindings.first())
+            .map(|b| owner_context(live.generation, pgid, stop, owner, b, "paused"))
+    });
     live.context = context.clone();
     drop(state);
     if let Some(old) = previous.as_ref().filter(|old| {
@@ -961,11 +1018,15 @@ pub(crate) fn on_frames(
     }
     if let Some(context) = &context {
         publish(app, &context.partner_label, &Some(context.clone()));
-        if let Some(window) = app.get_webview_window(&context.partner_label) {
-            let _ = window.unminimize();
-            let _ = window.set_focus();
+        if inspection {
+            if let Some(window) = app.get_webview_window(&context.partner_label) {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
         }
-    } else if previous.is_some()
+    }
+    if !inspection
+        && previous.is_some_and(|c| c.native_stop)
         && !skip
         && first
             .and_then(|f| f["source"]["path"].as_str())
@@ -975,7 +1036,7 @@ pub(crate) fn on_frames(
             let _ = window.set_focus();
         }
     }
-    (context.is_some(), skip)
+    (inspection, skip)
 }
 pub(crate) fn stopping(app: &AppHandle, owner: &str, pgid: i32, stop: u64) {
     if let Ok(mut state) = app.state::<NativeDebugManager>().0.lock() {
@@ -997,6 +1058,9 @@ pub(crate) fn event(app: &AppHandle, owner: &str, pgid: i32, stop: u64, value: &
         return;
     };
     if value["status"] == "variables" {
+        if !context.native_stop {
+            return;
+        }
         context.variables = value["variables"].clone();
     }
     if value["status"] == "running" {
@@ -1209,6 +1273,24 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "recognition latency measurement; no debugger required"]
+    fn native_breakpoint_recognition_latency() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("workspaces/ldi-rust-native-playground");
+        let source = fs::read_to_string(root.join("Rust/src/main.rs")).unwrap();
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            assert_eq!(calls(&source).unwrap().len(), 2);
+            definition(root.join("Native").to_str().unwrap(), "demo_add").unwrap();
+        }
+        eprintln!(
+            "100 Rust call+Native definition recognitions: {:?}",
+            start.elapsed()
+        );
+    }
+    #[test]
     fn binding_verifies_immediate_rust_caller_not_just_native_symbol() {
         let native = Native {
             file: "/lib/scalar.cpp".into(),
@@ -1304,6 +1386,31 @@ mod tests {
             .unwrap();
         assert_eq!(active.blue.entry_point, "demo_accumulate");
         assert_eq!(active.blue.line, 12);
+    }
+    #[test]
+    fn owner_link_exposes_stop_without_fabricating_a_native_stop() {
+        let mut state = State::default();
+        let binding = binding("rust", "native");
+        state.reserve("rust", 100, vec![binding.clone()]).unwrap();
+        let context = state.live["rust"].context.as_ref().unwrap().clone();
+        assert!(!context.native_stop);
+        assert!(context.frames.as_array().unwrap().is_empty());
+        assert!(state
+            .control_target("native", &context.token, "stop")
+            .is_ok());
+        assert!(state
+            .control_target("native", &context.token, "stepInto")
+            .is_err());
+        let live = state.live.get_mut("rust").unwrap();
+        live.stop = 1;
+        let context = owner_context(live.generation, 100, 1, "rust", &binding, "paused");
+        live.context = Some(context.clone());
+        assert!(state
+            .control_target("native", &context.token, "stop")
+            .is_ok());
+        assert!(state
+            .control_target("native", &context.token, "continue")
+            .is_err());
     }
     #[test]
     fn module_identity_is_required_even_when_source_and_symbol_match() {

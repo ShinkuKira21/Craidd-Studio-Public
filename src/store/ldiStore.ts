@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { Breakpoint } from "./breakpointStore";
 import { choicesForConfig, resolveSpec } from "./buildStore";
 import { useSolution } from "./solutionStore";
-import { useLinkedWindows } from "./linkedWindowsStore";
+import { publishLinkedWindow, useLinkedWindows } from "./linkedWindowsStore";
 import { usePreferences } from "./preferencesStore";
 import { showSessionNotice } from "./sessionFeedbackStore";
 
@@ -49,16 +49,28 @@ export interface LdiSession {
   phase: string; error: string | null;
 }
 export const useLdi = create<{ blues: LdiBlue[]; session: LdiSession | null; nativeSourceVersion: number }>(() => ({ blues: [], session: null, nativeSourceVersion: 0 }));
+let refreshSequence = 0;
+let mutationVersion = 0;
 
 export async function refreshLdiBlues() {
+  const sequence = ++refreshSequence;
+  const version = mutationVersion;
   const { invoke } = await import("@tauri-apps/api/core");
   const blues = await invoke<LdiBlue[]>("get_ldi_blues");
-  useLdi.setState({ blues });
+  if (sequence === refreshSequence && version === mutationVersion) useLdi.setState({ blues });
 }
 export async function setLdiBlue(file: string, line: number, partnerLabel: string, condition?: string) {
+  ++mutationVersion;
+  // Config selection publishes asynchronously. Bind what the user sees now,
+  // not the registry's previous selection after a quick switch/duplicate.
+  const current = useSolution.getState();
+  await publishLinkedWindow(current.solution, current.clnPath);
   const { invoke } = await import("@tauri-apps/api/core");
   const blue = await invoke<LdiBlue>("set_ldi_blue", { file, line, partnerLabel, condition: condition ?? null });
-  await refreshLdiBlues();
+  ++mutationVersion;
+  useLdi.setState((state) => ({ blues: [...state.blues.filter((point) =>
+    point.originLabel !== blue.originLabel || point.file !== blue.file || point.line !== blue.line), blue] }));
+  void refreshLdiBlues().catch((error) => console.error("[LDI]", error));
   if (blue.mode === "live-native") {
     if (blue.pendingRestart) notifyRustRestart();
   } else if (blue.pendingRestart || useLinkedWindows.getState().activeAction === "debug") notifyLdiRestart();
@@ -68,11 +80,12 @@ export async function listLdiCallSites(file: string, partnerLabels: string[]): P
   return invoke<LdiCallSite[]>("list_ldi_call_sites", { file, partnerLabels, previewConfigs: ldiPreviewConfigs() });
 }
 
-function waitForNativeWindow(label: string, configName: string): Promise<void> {
+function waitForNativeWindow(label: string, configName: string, visible = false): Promise<void> {
   return new Promise((resolve, reject) => {
     const ready = () => useLinkedWindows.getState().windows.some((item) =>
       item.windowLabel === label && item.ldiRole === "native-library"
-      && item.selectedConfigName === configName && !item.restoring);
+      && item.selectedConfigName === configName && !item.restoring
+      && Boolean(item.instanceId) && (!visible || item.visible));
     if (ready()) { resolve(); return; }
     const unsubscribe = useLinkedWindows.subscribe(() => { if (ready()) finish(); });
     const timer = window.setTimeout(() => finish(new Error(`The ${configName} window did not finish opening`)), 20_000);
@@ -91,7 +104,13 @@ export async function setupLdiBlue(file: string, line: number, configName: strin
   }
   const existing = useLinkedWindows.getState().windows.find((item) =>
     item.solutionPath === clnPath && item.ldiRole === "native-library" && item.selectedConfigName === configName);
-  if (existing) { await setLdiBlue(file, line, existing.windowLabel); return; }
+  if (existing) {
+    if (file.endsWith(".rs") && !existing.visible) {
+      throw new Error("Show the existing Native window from the Window Manager before pairing Rust Native Debugging");
+    }
+    await waitForNativeWindow(existing.windowLabel, configName, file.endsWith(".rs"));
+    await setLdiBlue(file, line, existing.windowLabel); return;
+  }
   const key = `${clnPath}\u0000${configName}`;
   let opening = openingNativeWindows.get(key);
   if (!opening) {
@@ -101,7 +120,7 @@ export async function setupLdiBlue(file: string, line: number, configName: strin
         path: clnPath, kind: "solution", name: solution.name, windowLabel: "", selectedConfigName: configName,
         startHidden: !file.endsWith(".rs") && yellowRing && usePreferences.getState().ldiDuplicateMode === "hide",
       } });
-      await waitForNativeWindow(label, configName);
+      await waitForNativeWindow(label, configName, file.endsWith(".rs"));
       return label;
     })();
     openingNativeWindows.set(key, opening);
@@ -111,9 +130,13 @@ export async function setupLdiBlue(file: string, line: number, configName: strin
   await setLdiBlue(file, line, label);
 }
 export async function removeLdiBlue(file: string, line: number) {
+  ++mutationVersion;
   const { invoke } = await import("@tauri-apps/api/core");
   const restart = await invoke<boolean>("remove_ldi_blue", { file, line });
-  await refreshLdiBlues();
+  ++mutationVersion;
+  useLdi.setState((state) => ({ blues: state.blues.filter((point) =>
+    point.originLabel !== useLinkedWindows.getState().ownWindowLabel || point.file !== file || point.line !== line) }));
+  void refreshLdiBlues().catch((error) => console.error("[LDI]", error));
   if (restart) { if (file.endsWith(".rs")) notifyRustRestart(); else notifyLdiRestart(); }
 }
 function notifyRustRestart() {
@@ -157,6 +180,7 @@ export async function listenToLdi(): Promise<() => void> {
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   let disposed = false;
   let queued = false;
+  let selectionKey = "";
   const refresh = () => {
     if (queued || disposed) return;
     queued = true;
@@ -176,7 +200,11 @@ export async function listenToLdi(): Promise<() => void> {
         refresh();
       }
     }),
-    getCurrentWebviewWindow().listen("craidd:linked-state", refresh),
+    getCurrentWebviewWindow().listen<{ windows: { windowLabel: string; instanceId: string; selectedConfigName: string | null; selectedProfileName: string | null; ldiRole: string | null; visible: boolean; restoring: boolean; dirtyCount: number }[] }>("craidd:linked-state", ({ payload }) => {
+      const key = JSON.stringify(payload.windows.map((item) => [item.windowLabel, item.instanceId,
+        item.selectedConfigName, item.selectedProfileName, item.ldiRole, item.visible, item.restoring, item.dirtyCount]));
+      if (key !== selectionKey) { selectionKey = key; refresh(); }
+    }),
   ]);
   refresh();
   return () => { disposed = true; cleanups.forEach((cleanup) => cleanup()); };

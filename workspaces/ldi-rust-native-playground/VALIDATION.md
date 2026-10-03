@@ -29,14 +29,25 @@ the selected CMake File API artifact, then confirms Step Out no longer qualifies
 as native inspection. This is not just a symbol-name probe.
 
 Frontend regressions exercise the actual native-context store and viewed-action
-routing with desktop IPC stubbed: 11 checks cover preserved Power Configs,
+routing with desktop IPC stubbed: 17 checks cover preserved Power Configs,
 source/stack/locals, token-scoped controls, detach, late-clear and bootstrap races,
-wrong-window events, blocked builds, hidden-window adoption and inspector rendering.
+wrong-window events, blocked builds, hidden-window adoption and inspector rendering,
+one-click setup, stale marker refreshes, missing SDK sources, persistent owner Stop
+after Step Out, and disabled Gold presence without a standalone library debugger.
 Backend regressions cover call recognition, module/caller identity, generation-safe
 controls, active-call selection, frozen bookmarks, detach and shared private points.
 The frontend production build and full backend regression suite also pass:
-104 backend unit tests and 5 process-cleanup checks, with the existing ignored
+105 backend unit tests and 5 process-cleanup checks, with the existing ignored
 C# native-driver/CMake integration explicitly run and passing as well.
+
+Recognition microbenchmark (same host, Debug build, 100 Rust source + selected
+Native-definition scans): 10.253 s before compiled-pattern reuse, 0.034 s after
+sharing compiled regexes through `Arc`. Roughly 103 ms → 0.34 ms per recognition;
+this measures the recognizer, not end-to-end window creation or click latency.
+Set/get source scans now run on blocking workers, marker acceptance does not
+await a full refresh, and ordinary linked output/tab updates no longer trigger
+source recognition. No source-resolution results are cached, so saves and
+artifact/config identity validation are still checked against current state.
 
 This verifies the implemented live-native provider and routing, but does not
 claim a completed native desktop focus/reveal run. Follow the README's manual

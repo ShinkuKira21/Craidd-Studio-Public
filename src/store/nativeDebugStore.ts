@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { DebugFrame, DebugVariable } from "./debugStore";
-import { useSolution } from "./solutionStore";
+import { revealDebugSource } from "../lib/debugSource";
 import { useLinkedWindows } from "./linkedWindowsStore";
 
 /** A debug-only subscription, deliberately separate from build/config/editor
@@ -13,6 +13,7 @@ export interface NativeDebugContext {
   callFile: string;
   callLine: number;
   status: "running" | "paused";
+  nativeStop: boolean;
   file: string | null;
   line: number | null;
   frames: DebugFrame[];
@@ -45,9 +46,11 @@ export async function listenToNativeDebug(): Promise<() => void> {
     if (notice?.status === "detached" && previous && notice.token.split(":")[0] !== previous.token.split(":")[0]) return;
     const context = notice?.status === "detached" ? null : notice;
     useNativeDebug.setState({ context });
-    if (context?.status === "paused" && context.file && context.line
+    if (context?.nativeStop && context.status === "paused" && context.file && context.line
       && (previous?.token !== context.token || previous.file !== context.file || previous.line !== context.line)) {
-      void useSolution.getState().revealFile(context.file, context.line, 1)
+      void revealDebugSource(context.file, context.line, 1, () => !disposed
+        && useNativeDebug.getState().context?.token === context.token
+        && useNativeDebug.getState().context?.file === context.file)
         .catch((error) => console.error("[native debug] Could not reveal native stop:", error));
     }
   };

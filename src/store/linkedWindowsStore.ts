@@ -267,11 +267,13 @@ export async function listenToLinkedWindows(): Promise<() => void> {
         const solution = useSolution.getState().solution;
         if (solution) selectConfiguration(solution, value);
       } else if (kind === "select_profile") useBuild.getState().setSelectedProfile(value);
-      else if (kind === "reveal_file" && value) {
+      else if ((kind === "reveal_file" || kind === "reveal_debug_source") && value) {
         try {
           const location = JSON.parse(value) as { file: string; line: number };
           if (typeof location.file === "string" && Number.isInteger(location.line) && location.line > 0) {
-            void useSolution.getState().revealFile(location.file, location.line, 1);
+            if (kind === "reveal_debug_source") {
+              void import("../lib/debugSource").then(({ revealDebugSource }) => revealDebugSource(location.file, location.line));
+            } else void useSolution.getState().revealFile(location.file, location.line, 1);
           }
         } catch { /* Stale navigation request. */ }
       }

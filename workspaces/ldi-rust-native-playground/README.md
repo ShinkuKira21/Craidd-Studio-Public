@@ -44,7 +44,11 @@ desktop focus/reveal checklist still needs a manual run on your compositor.
    `Native/scalar.cpp`, `left = 20`, `right = 22`, and a Rust `call_add` frame
    below it. A remains on its Rust editor and reports paused in native code.
    Check that A still selects **Rust · Local**, B **Native · Scalar**.
-5. Step Over in B, then Step Out: return to Rust and focus A. Continue to see
+5. Step Over in B, then Step Out: return to Rust and focus A. B clears its C++
+   stack/locals but keeps the live Rust link and Stop. Native step controls only
+   appear at a verified C++ stop; outside that stop, use A for Rust stepping.
+   The Gold link/Stop counts two windows but one Rust process, not two debuggers.
+   Continue to see
    `scalar: 20 + 22 = 42`, followed
    by `borrowed buffer: [6, 7, 8], sum = 21`. There must be no driver capture.
 6. Restart with a blue at `// RUST_CALL_BUFFER` to inspect the real buffer

@@ -122,7 +122,9 @@ An unmatched private entry in that module resumes without a visible call-site
 hold; a shared red stop is never swallowed. Unverifiable stops stay in A with
 a diagnostic. A's editor is not automatically replaced by the routed C++ stop.
 B's Continue/Step/Stop commands carry an adapter-generation/stop token; Stop
-ends the real Rust process. Step Out to Rust clears B's view and focuses A.
+ends the real Rust process. Step Out to Rust clears B's native frames and focuses
+A, but keeps B's owner-session link and Stop available. Native stepping is
+disabled outside a verified C++ stop; a paused-in-Rust link offers owner navigation.
 Closing/hiding B or changing either Power Config detaches private entries and
 the view, without killing A or deleting shared reds. The original native
 project stays build-locked until Rust's adapter ends, even after view detach.

@@ -1091,7 +1091,7 @@ pub fn dispatch_linked_window_command(
     kind: String,
     value: Option<String>,
 ) -> Result<(), String> {
-    if !matches!(kind.as_str(), "start_build" | "start_run" | "start_debug" | "stop" | "debug_control" | "select_config" | "select_profile" | "reveal_file" | "select_tab") {
+    if !matches!(kind.as_str(), "start_build" | "start_run" | "start_debug" | "stop" | "debug_control" | "select_config" | "select_profile" | "reveal_file" | "reveal_debug_source" | "select_tab") {
         return Err("Unsupported linked window command".into());
     }
     let registry = state.0.lock().map_err(|e| e.to_string())?;
@@ -1133,7 +1133,7 @@ pub fn dispatch_linked_window_command(
                 });
                 return Ok(());
             }
-            "select_tab" | "reveal_file" => {
+            "select_tab" | "reveal_file" | "reveal_debug_source" => {
                 let path = if kind == "select_tab" {
                     value.filter(|path| target.tabs.iter().any(|tab| tab.path == *path))
                         .ok_or("That tab is not open in the hidden window")?
