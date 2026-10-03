@@ -2,7 +2,7 @@
 
 **Status:** Design. Recorded 3 October 2026.
 **Applies to:** Phase 3.x onward (after LDI's Rust FFI path lands).
-**Companion:** [LDI debugging](design-ldi-debugging.md),
+**Companion:** [LDI debugging](../ldi-debugging/design-ldi-debugging.md),
 [Linked solution windows](../linked-windows/design-linked-solution-windows.md),
 [Linked window manager](../linked-windows/design-linked-window-manager.md).
 **Governs:** How Craidd represents, displays, and lets the user
