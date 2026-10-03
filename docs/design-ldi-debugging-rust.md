@@ -1,24 +1,168 @@
 # Design: LDI for Rust — linked-window debugging across native boundaries
 
-**Status:** Design. Recorded 3 October 2026.
+**Status:** Initial Rust→C++ live-native pairing implemented 3 October 2026;
+build, regression tests and real LLDB qualification pass. Native desktop
+reveal/focus still needs manual acceptance. Shared-consumer arbitration,
+callbacks and richer Rust debugging remain proposals.
 **Applies to:** Phase 3.x onward (after the C# LDI path is manually accepted).
 **Companion:** [LDI debugging](design-ldi-debugging.md),
 [Linked solution windows](design-linked-solution-windows.md),
-[Mixed debugging](philosophy-mixed-debugging.md).
-**Governs:** How Rust↔C++ and C++↔Rust FFI is debugged in Craidd,
-why it is a linked-window concern rather than an LDI concern, and
-where the two systems touch.
+[Mixed debugging](philosophy-mixed-debugging.md),
+[Shared native consumers](design-native-shared-consumers.md).
+**Governs:** Rust↔C++ live debugging, per-window Power Config ownership,
+and where Native Breakpoint pairing selects a live or reproduction provider.
+The acceptance fixture covers Rust calling C++; a C++ host calling Rust
+and callbacks are not yet qualified.
 
 ---
 
 ## The one-sentence version
 
-**Rust and C++ share a process, so LLDB-DAP already sees both
-sides. The linked-window system is what makes the two views
-coherent; LDI is not involved.**
+**Rust and C++ share a process, so one LLDB-DAP session sees both
+sides. Reuse Native Breakpoint pairing as the user interaction,
+but bind the native window to that live session instead of invoking
+the managed LDI reproduction provider.**
 
 Everything below is the argument for that sentence, the shape of
 the architecture, and the boundary where LDI *does* re-enter.
+
+---
+
+## Review: Power Config ownership and the accepted interaction
+
+The user confirmed **native-only landing**, with the Native window focused
+when the native stop is verified, matching the C#→Native workflow. Pairing
+remains useful: it records which Power Config, native project and function
+the user wants to work with. The execution mechanism depends on the caller.
+
+| Responsibility | Rust window A | Native window B |
+| --- | --- | --- |
+| Selected Power Config | Rust · Local | Native · Scalar |
+| Toolchain/build | Cargo; requests the saved native build dependency | CMake; produces the native artifact |
+| Debug process | Owns the original Rust process and its one LLDB adapter | No independent process for a library |
+| Native breakpoint | Requests a live-session binding to B | Resolves the native source/entry or matching red |
+| Native stop | Shows that its process is paused in native code | Shows native source, stack and locals; receives focus |
+| Step/Continue | Routes to A's adapter | Routes to the same adapter through the explicit binding |
+
+Viewing a native stop must not change either window's selected Power Config,
+project tree, build ownership or existing editor tabs. Keep an explicit
+**debug context** separate from the **Power Config**. B's White Build still
+means its CMake configuration; B's native step controls target the bound
+process. They must identify that process in the toolbar.
+
+There is **no extra Rust call-site hold** and no capture/driver by default.
+However, once C++ hits a breakpoint, the original Rust process is paused
+under normal native debugging. Rust cannot continue executing the same
+synchronous call while that call is stopped in C++. A may preserve its Rust
+editor view, but must truthfully show “paused in Native Scalar”.
+
+### One pairing concept, two providers
+
+| Caller | Pairing intent | Execution provider | Release behavior |
+| --- | --- | --- | --- |
+| Rust → C++ | Native Breakpoint targets B's Power Config | Live LLDB session owned by A | Continue/step the original process |
+| C# → C++ | Native Breakpoint targets B's Power Config | Existing managed LDI reproduction | Finish/abandon B, then release A for its original call |
+
+These providers may share setup and focus/reveal UI, but the Rust binding must
+not masquerade as a managed `LdiManager::Pair`. Its controls must never run the
+managed hold/release or interposer logic. The initial Rust Native Breakpoint UI
+selects the `live-native` provider; the playground exercises paired entry stops
+as well as ordinary red breakpoints.
+
+For the first Rust version, a binding should identify the owner session
+generation, target project/Power Config, actual loaded native module, function
+and source location. Once LLDB reports a matching native frame, publish that
+stop to B and focus B. The adapter remains owned by A. Retain the Rust caller
+frame in A's view; do not fabricate a second stack or imply two processes.
+
+An entry breakpoint means **any matching call in the chosen session** can
+stop there. A blue marker promising “this particular Rust call site only”
+needs additional caller/thread verification. If that requires a private
+call-site stop, it can arm the native landing and resume immediately without
+showing a held-A phase. Do not claim exact call-site isolation just by setting
+a function-entry breakpoint, particularly with threads or repeated calls.
+
+### Implemented slice and qualification boundary
+
+The implementation on 3 October 2026 provides:
+
+- [`debug.rs`](../src-tauri/src/commands/debug.rs) starts Cargo executables
+  under LLDB and pushes the solution's red breakpoints into active sessions.
+  Rust pairing now consumes `module` events, private entry stops, mixed stacks
+  and scopes/variables through that same adapter.
+- [`ldi.rs`](../src-tauri/src/commands/ldi.rs) implements C# call capture,
+  driver/interposer execution and verified native-entry focus. Its existing
+  Native Breakpoint commands dispatch `.rs` calls to the independent
+  [`native_debug.rs`](../src-tauri/src/commands/native_debug.rs) provider;
+  Rust never enters the managed hold/reproduction state machine.
+- [`linkedWindowsStore.ts`](../src/store/linkedWindowsStore.ts),
+  [`viewedActions.ts`](../src/lib/viewedActions.ts) and backend
+  [`view_linked_window`](../src-tauri/src/commands/linked_windows.rs) adopt
+  **hidden** sessions. Selecting a visible sibling focuses it instead.
+  Rust now uses a separate debug-only subscription rather than adoption:
+  [`nativeDebugStore.ts`](../src/store/nativeDebugStore.ts) supplies B's source,
+  stack, locals and transport while B retains its own Power Config.
+- `DebugManager` has one active adapter slot per owning window label.
+  A live Rust session can remain owned by A; B must be a subscriber, not
+  start another tracer. Shared Rust/C# consumers need the explicit contexts
+  described in [the follow-up](design-native-shared-consumers.md).
+
+Set a Native Debugging Breakpoint on a saved, direct Rust `extern "C"` call
+(including a simple `#[link_name]` alias), select/open the Native library
+Power Config, then start **Rust White Debug**. At launch, Craidd freezes the
+bindings and requests CMake codemodel metadata before the declared native
+preparation. After building, it verifies that the selected shared-library
+target actually compiles the export source. The default landing is a private
+native entry; existing red points within that export take precedence at launch
+and retain their conditions. Ordinary red points remain solution-wide.
+
+B receives focus only after the selected library's actual loaded module,
+native source/function range and immediate Rust caller file/line all match.
+An unmatched private entry in that module resumes without a visible call-site
+hold; a shared red stop is never swallowed. Unverifiable stops stay in A with
+a diagnostic. A's editor is not automatically replaced by the routed C++ stop.
+B's Continue/Step/Stop commands carry an adapter-generation/stop token; Stop
+ends the real Rust process. Step Out to Rust clears B's view and focuses A.
+Closing/hiding B or changing either Power Config detaches private entries and
+the view, without killing A or deleting shared reds. The original native
+project stays build-locked until Rust's adapter ends, even after view detach.
+
+Limits of this first implementation:
+
+- One live owner per Native window; no simultaneous Rust/C# context chooser.
+  Existing C# LDI remains its own provider. Conflicting sessions/builds fail
+  explicitly instead of replacing the Native inspector or rebuilding a mapped
+  library. The shared-consumer design below is not implemented by this slice.
+- Linux shared CMake libraries, with a direct `cmake --build <directory>`
+  Power slot and a declared configure/build preparation (the playground
+  provides both). The build directory must stay inside the native project.
+  Static libraries and relocated copies of the artifact are not qualified.
+- Bounded source recognition: declarations and direct calls in the same `.rs`
+  file, one supported FFI call on the selected line, and one explicit
+  `extern "C"` definition in a `.c/.cpp/.cc/.cxx` implementation. Macro/raw
+  string/block-comment-heavy Rust, indirect pointers, re-exports and other
+  ABIs need a language-service resolver; use ordinary red debugging meanwhile.
+- Blue conditions are not implemented for Rust; use a red C++ condition on
+  native parameters. Pairing changes apply on the next Rust Debug launch.
+  Native landing selection is frozen for the launch; changing entry/red
+  policy during a session needs a restart.
+- Pairings are app/window-scoped, like existing managed blues, not persisted
+  across a full IDE restart. Optimized/multithreaded code, callbacks and rich
+  Rust visualizers remain unqualified. Native must be visible and saved.
+
+The controls, editor preservation, late-event handling and inspector rendering
+have automated frontend coverage; binding identity, close/detach and real
+module/stack qualification have backend coverage. These are **not proof of
+native compositor focus behavior**: the two-window checklist in the workspace
+README still needs desktop acceptance. The broader workflow below retains
+future design material beyond this bounded implementation.
+
+The [Rust/C++ playground](../workspaces/ldi-rust-native-playground/README.md)
+is available now. Its real-adapter probe verifies Rust→C++ Step Into, direct
+native-only landing, both private automatic entries, loaded module identity,
+a mixed stack, Step Out back to Rust, and mutation of borrowed Rust memory.
+An ignored backend integration test feeds those real stacks/modules into the
+production binding validator. It does not drive the native IDE windows.
 
 ---
 
@@ -28,23 +172,22 @@ Before defining what LDI does for Rust, it is worth restating what
 LDI is *for* — because the scope of LDI is determined entirely by
 which boundary it addresses.
 
-LDI addresses exactly one boundary: **managed ↔ native, in a single
-process, on Linux.** C# calling C++ through `DllImport`. Python
-calling a C extension through CPython's C API. Anything where one
-language *hosts* the other inside one address space, and the host's
-runtime owns the process.
+The implemented LDI provider addresses **C#/.NET ↔ native, in a single
+process, on Linux**, while netcoredbg controls the original process.
+Other runtimes require their own evidence and providers; they are not
+automatically supported merely because they load native extensions.
 
 The problem LDI solves is not the FFI itself. It is that Linux's
-`ptrace` permits **one tracer per thread**, and the host's debugger
-— netcoredbg, debugpy — is the tracer. The native debugger — lldb-dap
+`ptrace` permits **one tracer per thread**, and netcoredbg is already
+that tracer in this workflow. The native debugger — lldb-dap
 — cannot attach. It cannot see the native frames. It cannot set a
 native breakpoint in the C++ code that is running inside the managed
 process, because there is no way for it to reach that code.
 
 See [philosophy-mixed-debugging.md](philosophy-mixed-debugging.md)
-for the full argument. The short version: mixed-mode debugging is a
-Windows architecture built over thirty years. It has no Linux
-equivalent, and it is not fixable by an IDE.
+for the full argument. This requires debugger/runtime integration;
+an IDE cannot solve it by simply attaching a second ptrace debugger
+to the same controlled threads.
 
 LDI works around this by **not sharing the process**. It holds the
 managed frame at the boundary, captures the call's ABI-level form,
@@ -72,15 +215,17 @@ happy. There is no wall.
 **lldb-dap understands both sides.** Both the Rust binary and the
 C++ library, when compiled with debug information — Rust with DWARF
 (the default on Linux), C++ with `-g` — produce the same DWARF
-format. lldb-dap walks the stack from a Rust frame into a C++ frame
-and back. Type layouts are readable on both sides. This is what
-LLDB was built for; it has been true since Rust 1.x on Linux with
-modern lldb.
+format. lldb-dap can walk the stack from a Rust frame into a C++ frame
+and back. Basic arguments and locals are verified in the playground.
+Rich Rust type display, pretty-printers, optimized/inlined frames and
+split debug information need separate qualification; DWARF alone does
+not guarantee every type will be displayed well.
 
 **There is no "reproduction" to do.** The C++ code is already
 running in the process lldb-dap is attached to. There is nothing to
-capture, nothing to feed to a driver, nothing to hold. The original
-call is being debugged live.
+capture and nothing to feed to a driver. The original call is debugged
+live and is normally paused when a native breakpoint hits. No synthetic
+LDI hold/release is needed.
 
 **There is no interposer to build.** `LD_PRELOAD` exists for exactly
 the C# case: redirecting the host's call to a shim so the shim can
@@ -103,22 +248,19 @@ to cross does not exist here.
 If LDI isn't the answer, what is? The linked-window system — the
 mechanism already described in
 [design-linked-solution-windows.md](design-linked-solution-windows.md)
-— is. Not a variant of it. The same system, unmodified.
+— provides the substrate. A new live-session binding is needed to preserve
+each visible window's Power Config while presenting one process in both.
 
 Consider a solution with a Rust server and a C++ helper library:
 
-+++
+```toml
 [solution]
 name = "pipeline"
+projects = ["server/server.craidd", "native/native.craidd"]
+```
 
-[[project]]
-path = "server/server.craidd"        # language = "rust"
-role = "application"
-
-[[project]]
-path = "native/native.craidd"        # language = "cpp"
-role = "library"
-+++
+The two `.craidd` markers declare `language = "rust"`, `kind = "application"`
+and `language = "cpp"`, `kind = "library"`, respectively.
 
 `server` links `libnative.so`. `server/src/main.rs` calls
 `extern "C" fn process_batch(...)`. The Rust binary and the C++
@@ -171,10 +313,9 @@ C++ breakpoint fires. Window B, viewing the same session, shows the
 same stopped frame with its own scroll position and its own
 breakpoint list.
 
-**This is what Visual Studio's mixed-mode debugger gives you on
-Windows, and what CLion gives you for C++↔C++, and what no IDE on
-Linux gives you for Rust↔C++.** It is one lldb-dap session. The
-linked windows do not reproduce the call, do not hold anything, do
+This two-window presentation now has the bounded implementation described above.
+It makes no claim that other IDEs lack native Rust/C++ debugging.
+The linked windows do not reproduce the call or create a managed hold, and do
 not build a driver. They present one session's state through two
 project-aware viewports.
 
@@ -187,10 +328,11 @@ the one you are looking at. The `native` library is a library, not a
 participant; it participates *inside* whichever process loads it,
 not as its own window.
 
-If the solution has only one runnable process (a Rust binary linking
-a C++ library), there is no group. The gold buttons do not appear.
-The two windows are two views of one session, and White controls
-that session from either of them.
+If there is only one runnable process, Gold Debug must not invent a
+second process for the library. Gold Build may still coordinate both
+projects. Current toolbar visibility is based on linked-window membership,
+so “only one runnable process” does not itself guarantee no Gold buttons.
+The implemented native debug controls target one explicit live-session binding.
 
 ### Problems, output, and reveal
 
@@ -214,7 +356,7 @@ switches which session's context the focused window is rendering.
 
 Concretely, for a Rust↔C++ solution, the pieces are:
 
-+++
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │  One OS process: ./target/debug/server                          │
 │                                                                 │
@@ -239,7 +381,7 @@ Concretely, for a Rust↔C++ solution, the pieces are:
         │                │       │                │
         │  server.craidd │       │  native.craidd │
         │  tree of .rs   │       │  tree of .cpp  │
-        │  Rust .cln     │       │  C++ .cln      │
+        │  shared .cln   │       │  shared .cln   │
         │  project view  │       │  project view  │
         │                │       │                │
         │  shared        │◄─────►│  shared        │
@@ -251,13 +393,12 @@ Concretely, for a Rust↔C++ solution, the pieces are:
                 └────── linked window ────┘
                         registry
                     (Rust, in-process)
-+++
+```
 
-The linked-window registry tracks both windows as participants in
-the same `.cln`. It knows which is visible, which session each is
-viewing, and which has focus. It does *not* know or care that the
-two windows point at two projects of one process. That distinction
-is a rendering concern, not a coordination concern.
+The registry tracks both windows in the same `.cln`. The proposed binding
+must additionally distinguish the adapter owner from its native viewers.
+That distinction affects control, teardown and event routing as well as
+rendering; two windows must not accidentally become two process owners.
 
 The lldb-dap adapter is started by whichever window runs the binary.
 Usually that is Window A — the Rust application window — because
@@ -265,10 +406,11 @@ Usually that is Window A — the Rust application window — because
 `library`-kind project. Window B does not start its own process.
 B is a viewer.
 
-When B presses White Debug, the registry routes that to A's session
-context; B does not spawn a second `server`. When A presses White
-Debug, both windows see the resulting pause because both are
-subscribed to the same session's DAP events.
+Proposed: once B is explicitly bound, its native Step/Continue controls
+route to A's session without launching a second `server`. B's library
+Power Config does not gain a standalone executable. Starting a debug
+session remains A's responsibility; simultaneous event subscriptions
+are part of the new binding, not already provided by hidden-window adoption.
 
 ---
 
@@ -278,13 +420,12 @@ There is one case where LDI is still the right answer for a
 Rust-adjacent solution, and it is worth naming so the boundary is
 explicit.
 
-**If the Rust process loads a C++ library through a runtime that
-owns the process — a Python host loading a Rust extension through
-PyO3, for example — the managed/native wall reappears.** The Python
-interpreter is the tracer; lldb-dap cannot attach; the Rust code
-inside the extension is invisible to any debugger that would
-understand it. That is the C# case wearing different clothes, and
-LDI is the answer there.
+**If another debugger already traces a host process containing Rust
+or C++, a second native debugger can face the same ownership conflict.**
+This is conditional on the actual debugger architecture. A Python
+interpreter is not itself a ptrace tracer, and debugpy must not be
+assumed to own ptrace like netcoredbg. PyO3/Python support needs a
+separate investigation; the present C# LDI provider does not support it.
 
 **If the Rust process uses `libloading` to `dlopen` a C++ library
 at runtime — as a plugin system might — the boundary is not a wall,
@@ -303,17 +444,17 @@ debugging in the linked-window sense, and the two sessions are
 genuinely separate. This is where the gold/white split is *for*.
 It is also not LDI, because there is no shared process to hold.
 
-The pattern is clear: **LDI applies when a runtime owns the process
-and hides the native code from the native debugger.** Rust does not
-own its process in that way. Its native code is native code. The
-native debugger can see it.
+Choose a provider from the actual process/debugger boundary. A native
+Rust process under LLDB can debug its C++ calls directly. The current
+C# provider reproduces supported calls because netcoredbg owns the
+original process's debug session.
 
 ---
 
 ## What the linked-window system needs to add
 
-Very little, because the C# LDI work has already built most of it.
-But there are three gaps specific to the Rust↔C++ case worth naming,
+The C# LDI work provides useful foundations, but there are three gaps
+specific to the Rust↔C++ case worth naming,
 because they determine when the story stops being "just use linked
 windows" and starts being "we need to build something."
 
@@ -337,25 +478,26 @@ not a new concept; it is the boundary rule applied to sessions
 instead of trees. A C++ library whose `.so` is loaded by a running
 Rust session is a *sub-context* of that session, not a peer.
 
-The simplest version: when a Rust session is running and its process
-has loaded a library whose `.craidd` is declared in the same `.cln`,
-the linked-window registry notes that the library project is
-"attached" to the session. The C++ window becomes a viewport onto
-that session's context, with the library project's tree shown. The
-C++ window does not start its own process.
+The first version should start from the user's explicit pairing. Confirm
+that the session's loaded module matches the native project's resolved
+artifact, rather than attaching every same-named library in a solution.
+The registry records a live-session binding; the C++ window keeps its own
+project/Power Config and becomes a debug viewport onto the bound session.
+It does not start its own process.
 
 ### 2. Breakpoint routing across the boundary
 
-Currently, when a breakpoint is set from a window viewing a hidden
-session, the registry forwards it to the owning window's session.
-That works. What needs to be verified is the *visible* case: two
+Currently, red breakpoint persistence is solution-wide and `debug.rs`
+pushes updates to active adapters for that solution. Hidden-window controls
+are routed to their owner. What needs to be verified is the *visible* case: two
 visible windows, one session, breakpoints set from either. Both
 must install into the single lldb-dap session that owns the process.
 
-This is almost certainly already correct — the breakpoint store is
-per-solution, and the DAP breakpoint push is per-session — but it
-should be tested explicitly with a Rust↔C++ binary under a single
-lldb-dap, with a breakpoint set from each window.
+The store is per-solution and the DAP push is per-session. The native
+primitive has been verified by the probe; setting/updating a breakpoint
+from each visible IDE window still needs explicit UI acceptance. Private
+pairing breakpoints also need consumer/session scope when Rust and C# share
+the native project.
 
 ### 3. Stepping across the frame
 
@@ -390,7 +532,8 @@ binary:
 - Stepping across the FFI boundary, up and down, in the same stack.
 - Problems and output attributed to the right project.
 - The Gold/White split available when there are also separate processes.
-- No driver, no interposer, no startup hook, no hold.
+- No driver, no interposer, no startup hook, no extra managed call-site hold.
+- A truthful shared-process pause and per-window Power Config ownership.
 - No "reproduce the call in a second process" machinery.
 - No second debugger.
 
@@ -441,28 +584,37 @@ Two boundaries. Two answers. One substrate.
 
 ---
 
-## The open question
+## Evidence and remaining acceptance
 
-The claim that lldb-dap walks a Rust frame into a C++ frame and
-back, with both sides' DWARF readable, is true in principle. It
-should be confirmed empirically before the linked-window story for
-Rust↔C++ is treated as complete.
+The one-session primitive has now been confirmed empirically using
+[`native_debug_probe.py`](../workspaces/ldi-rust-native-playground/tools/native_debug_probe.py).
+On this machine (rustc 1.99.0, GCC 16.2.1, LLDB-DAP 23.1.1), all three cases
+passed: Rust Step Into, direct native entry, and borrowed-buffer entry.
+Each case read native parameters, found a Rust caller in the same stack,
+and stepped back to Rust. The program returned 42 and mutated the original
+buffer to `[6, 7, 8]` with sum 21. Three native ABI tests also passed.
 
-The test is small: a Rust binary with a C++ static library linked
-at compile time, both built with debug info, a breakpoint in each
-language, and a single lldb-dap session that steps from one to the
-other. If that works — and on modern rustc + lldb it should — then
-this document's architecture is correct as stated.
+The fixture uses a C++ shared library linked at build time; no driver is
+generated. It is a debugger acceptance fixture, not evidence that the IDE's
+window routing is implemented. The saved `.cln` makes both Power Configs
+available and expresses CMake-before-Cargo preparation.
 
-If it does not work, the failing half is diagnostic. If lldb-dap
-cannot read Rust types, the fix is a Rust provider — but a much
-smaller one than the C# interposer, because the process is shared
-and the debugger is already attached. If lldb-dap cannot step across
-the frame, the fix is a frame-filtering concern in the linked-window
-view layer, not a reproduction concern.
+Remaining acceptance: two visible windows keep their Power Configs;
+native-only pairing resolves the correct module/function; B reveals the
+verified native stop and gains focus; A accurately reports the same process
+paused in native code; B's controls operate A's adapter; stale session
+generations and module/source mismatches are rejected; closing/hiding B
+does not destroy A's process or silently resume it. Rich Rust types and
+optimized stepping remain separate tests. A stepping failure should first
+be traced through build flags, symbols and adapter messages before blaming
+the renderer.
 
-Either way, the answer is *not* "use LDI." The wall LDI addresses
-does not exist for Rust↔C++.
+The first implementation should share Native Breakpoint setup but select the
+live-session provider. The managed reproduction provider remains for C#.
+
+Primary references: [Rust external blocks](https://doc.rust-lang.org/reference/items/external-blocks.html),
+[Cargo native-link build-script instructions](https://doc.rust-lang.org/cargo/reference/build-scripts.html),
+[LLDB-DAP configuration](https://lldb.llvm.org/use/lldbdap.html).
 
 ---
 

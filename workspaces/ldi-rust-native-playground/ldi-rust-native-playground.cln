@@ -1,0 +1,103 @@
+[solution]
+version = "1.0"
+name = "Rust + C++ Native Playground"
+projects = ["Rust/Rust.craidd", "Native/Native.craidd"]
+default_project = "Rust/Rust.craidd"
+default_config = "Rust · Local"
+
+[[config]]
+name = "Rust · Local"
+kind = "run"
+target = "Rust/Rust.craidd"
+[config.slots]
+build = "Prepare Rust"
+run = "Rust · Run"
+debug = "Rust · Debug"
+
+[[config]]
+name = "Native · Scalar"
+kind = "build"
+target = "Native/Native.craidd"
+[config.slots]
+build = "Native · Scalar Build"
+
+[[config]]
+name = "Native · Scalar Build"
+kind = "build"
+method = "cmake"
+target = "Native/Native.craidd"
+default_profile = "Debug"
+[config.order]
+before = "Prepare Native"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "demo_scalar"]
+
+[[config]]
+name = "Prepare Native"
+kind = "build"
+method = "plan"
+target = "Native/Native.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native · Build"
+
+[[config]]
+name = "Prepare Rust"
+kind = "build"
+method = "plan"
+target = "Rust/Rust.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native · Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Rust · Build"
+
+[[config]]
+name = "Native · Build"
+kind = "build"
+method = "cmake"
+target = "Native/Native.craidd"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "demo_scalar"]
+
+[[config]]
+name = "Rust · Build"
+kind = "build"
+method = "cargo"
+command = "cargo build --offline"
+target = "Rust/Rust.craidd"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = []
+
+[[config]]
+name = "Rust · Run"
+kind = "run"
+method = "cargo"
+command = "cargo run --offline -- 20 22"
+target = "Rust/Rust.craidd"
+[config.order]
+before = "Prepare Rust"
+
+[[config]]
+name = "Rust · Debug"
+kind = "debug"
+method = "cargo"
+command = "cargo run --offline -- 20 22"
+target = "Rust/Rust.craidd"
+[config.order]
+before = "Prepare Native"
+
+[[config]]
+name = "Rust · Tests"
+kind = "run"
+method = "cargo"
+command = "cargo test --offline"
+target = "Rust/Rust.craidd"
+[config.order]
+before = "Prepare Native"

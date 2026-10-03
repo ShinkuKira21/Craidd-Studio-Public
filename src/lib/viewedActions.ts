@@ -2,6 +2,7 @@ import { choicesForConfig, selectConfiguration, useBuild } from "../store/buildS
 import { useDebug } from "../store/debugStore";
 import { dispatchLinkedWindowCommand, useLinkedWindows } from "../store/linkedWindowsStore";
 import { useSolution } from "../store/solutionStore";
+import { controlNativeInspection, currentNativeInspection } from "../store/nativeDebugStore";
 
 type Action = "build" | "run" | "debug";
 type DebugControl = "continue" | "pause" | "stepOver" | "stepInto" | "stepOut" | "stop";
@@ -29,6 +30,7 @@ export async function selectViewedProfile(name: string | null): Promise<void> {
 }
 
 export async function startViewedAction(action: Action, configName?: string): Promise<void> {
+  if (currentNativeInspection()) throw new Error("This Native window is inspecting the Rust process. Stop that debug session before rebuilding or launching here.");
   const remote = viewedHiddenWindow();
   if (!remote) { await useBuild.getState().start(action, configName); return; }
   if (["starting", "building", "running", "paused"].includes(remote.status)) {
@@ -51,6 +53,7 @@ export async function startViewedAction(action: Action, configName?: string): Pr
 }
 
 export async function stopViewedAction(): Promise<void> {
+  if (currentNativeInspection()) { await controlNativeInspection("stop"); return; }
   const linked = useLinkedWindows.getState();
   const targetLabel = linked.viewedWindowLabel ?? linked.ownWindowLabel;
   if (linked.activeAction && targetLabel && linked.members.some((member) => member.windowLabel === targetLabel)) {
@@ -68,6 +71,7 @@ export async function stopViewedAction(): Promise<void> {
 }
 
 export async function controlViewedDebug(action: DebugControl): Promise<void> {
+  if (currentNativeInspection()) { await controlNativeInspection(action); return; }
   const remote = viewedHiddenWindow();
   if (remote) await dispatchLinkedWindowCommand(remote.windowLabel, "debug_control", action);
   else await useDebug.getState().control(action);

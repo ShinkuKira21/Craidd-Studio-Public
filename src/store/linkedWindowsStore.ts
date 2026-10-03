@@ -33,7 +33,7 @@ export interface LinkedMember {
   windowId: number;
   instanceId: string;
   solutionPath: string;
-  ldiRole: "managed" | "native-library" | null;
+  ldiRole: "managed" | "live-native" | "native-library" | null;
   projectName: string;
   status: string;
   visible: boolean;

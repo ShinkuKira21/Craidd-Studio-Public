@@ -1,0 +1,4 @@
+/Native/build/
+/Rust/target/
+/.validation/
+**/__pycache__/

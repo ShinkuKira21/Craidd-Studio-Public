@@ -61,6 +61,7 @@ pub fn run() {
         .manage(DebugManager::default())
         .manage(DebugBuildManager::default())
         .manage(commands::ldi::LdiManager::default())
+        .manage(commands::native_debug::NativeDebugManager::default())
         .manage(commands::build_order::OrderManager::default())
         .manage(LinkedWindowRegistry::default())
         .on_window_event(|window, event| {
@@ -97,6 +98,8 @@ pub fn run() {
             commands::ldi::reconcile_ldi_blues_on_save,
             commands::ldi::get_ldi_blues,
             commands::ldi::abandon_ldi_reproduction,
+            commands::native_debug::get_native_debug_context,
+            commands::native_debug::native_debug_control,
             get_linked_runtime,
             mark_linked_window_ready,
             abort_parked_restore,

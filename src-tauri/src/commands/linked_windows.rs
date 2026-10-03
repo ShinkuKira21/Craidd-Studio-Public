@@ -321,6 +321,9 @@ fn ldi_role(item: &Participant) -> Option<&'static str> {
     if is_application(item.project_kind.as_deref()) && item.specs.get("debug")
         .is_some_and(|spec| super::debug::normalize_debug_method(&spec.program) == Some("dotnet")) {
         Some("managed")
+    } else if is_application(item.project_kind.as_deref()) && item.specs.get("debug")
+        .is_some_and(|spec| super::debug::normalize_debug_method(&spec.program) == Some("cargo")) {
+        Some("live-native")
     } else if item.project_kind.as_deref() == Some("library") && item.specs.get("build")
         .is_some_and(|spec| super::debug::normalize_debug_method(&spec.program) == Some("cmake")) {
         Some("native-library")
@@ -383,6 +386,24 @@ pub(crate) struct LdiSelection {
     pub window_id: u32,
     pub solution: String,
     pub spec: RunSpec,
+    pub configuration: Option<String>,
+    pub profile: Option<String>,
+}
+
+/// Live Rust inspection is a view of A's adapter, not another executable or
+/// an adoption of A's Power Config. Keep managed LDI's origin rules unchanged.
+pub(crate) fn rust_native_selection(app: &AppHandle, label: &str, native: bool) -> Result<LdiSelection, String> {
+    let manager = app.state::<LinkedWindowRegistry>();
+    let registry = manager.0.lock().map_err(|error| error.to_string())?;
+    let item = registry.windows.get(label).ok_or("Debugging window is no longer open")?;
+    if ldi_role(item) != Some(if native { "native-library" } else { "live-native" }) || item.restoring {
+        return Err("Select a Rust Debug Power Config and a CMake Library Build Power Config".into());
+    }
+    if native && !item.visible { return Err("Show the Native window before starting Rust Native Debugging".into()); }
+    if native && item.dirty_count > 0 { return Err("Save or discard the Native window's edits before pairing or stepping Rust Native Debugging".into()); }
+    Ok(LdiSelection { label: label.into(), instance_id: item.instance_id.clone(), window_id: item.window_id,
+        configuration: item.selected_config_name.clone(), profile: item.selected_profile_name.clone(),
+        solution: item.solution_path.clone(), spec: item.specs[if native { "build" } else { "debug" }].clone() })
 }
 
 pub(crate) fn ldi_origin_selection(app: &AppHandle, origin: &str) -> Result<LdiSelection, String> {
@@ -398,6 +419,7 @@ pub(crate) fn ldi_origin_selection(app: &AppHandle, origin: &str) -> Result<LdiS
     }
     let spec = item.specs.get("debug").ok_or("C# Debug configuration is unavailable")?;
     Ok(LdiSelection { label: origin.into(), instance_id: item.instance_id.clone(),
+        configuration: item.selected_config_name.clone(), profile: item.selected_profile_name.clone(),
         window_id: item.window_id, solution: item.solution_path.clone(), spec: spec.clone() })
 }
 
@@ -412,6 +434,7 @@ pub(crate) fn ldi_selections(app: &AppHandle, origin: &str, partner: &str) -> Re
     let b = &registry.windows[partner];
     if [a, b].iter().any(|item| item.restoring) { return Err("Wait for both LDI windows to finish opening before pairing".into()); }
     let selection = |label: &str, item: &Participant, action: &str| LdiSelection {
+        configuration: item.selected_config_name.clone(), profile: item.selected_profile_name.clone(),
         label: label.into(), instance_id: item.instance_id.clone(), window_id: item.window_id,
         solution: item.solution_path.clone(),
         spec: item.specs[action].clone(),
@@ -604,6 +627,9 @@ pub fn update_linked_window(
     update: LinkedWindowUpdate,
 ) -> Result<LinkedSnapshot, String> {
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
+    let native_selection = |item: &Participant| (item.solution_path.clone(), item.instance_id.clone(),
+        item.selected_config_name.clone(), item.selected_profile_name.clone(), serde_json::to_value(&item.specs).ok());
+    let previous_selection = registry.windows.get(window.label()).map(native_selection);
     if let Some(previous) = registry.windows.get(window.label()) {
         if previous.retired_renderer_ids.contains(&update.renderer_id) { return Ok(snapshot(&registry, window.label())); }
         if update.renderer_id == previous.renderer_id && update.revision <= previous.revision && !previous.restoring {
@@ -691,7 +717,12 @@ pub fn update_linked_window(
         let name = solution_name_of(&item.solution_path);
         emit_window_title(&app, window.label(), item, &name);
     }
-    Ok(snapshot(&registry, window.label()))
+    let selection_changed = previous_selection.is_some()
+        && previous_selection != registry.windows.get(window.label()).map(native_selection);
+    let result = snapshot(&registry, window.label());
+    drop(registry);
+    if selection_changed { super::native_debug::window_closed(&app, window.label()); }
+    Ok(result)
 }
 
 pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option<&str>, line: Option<u32>, reason: Option<&str>) {

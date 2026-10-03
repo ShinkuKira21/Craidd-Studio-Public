@@ -10,7 +10,7 @@ export interface LdiBlue {
   file: string; line: number; originLabel: string; partnerLabel: string;
   partnerWindowId: number; entryPoint: string; landing: "automatic-entry" | "red";
   library: string; method: string;
-  mode: "scalar" | "typed-interposer"; locals: [string, string];
+  mode: "scalar" | "typed-interposer" | "live-native"; locals: [string, string];
   condition: string | null;
   warning: string | null; nativePoints: Breakpoint[];
   pendingRestart: boolean;
@@ -59,7 +59,9 @@ export async function setLdiBlue(file: string, line: number, partnerLabel: strin
   const { invoke } = await import("@tauri-apps/api/core");
   const blue = await invoke<LdiBlue>("set_ldi_blue", { file, line, partnerLabel, condition: condition ?? null });
   await refreshLdiBlues();
-  if (blue.pendingRestart || useLinkedWindows.getState().activeAction === "debug") notifyLdiRestart();
+  if (blue.mode === "live-native") {
+    if (blue.pendingRestart) notifyRustRestart();
+  } else if (blue.pendingRestart || useLinkedWindows.getState().activeAction === "debug") notifyLdiRestart();
 }
 export async function listLdiCallSites(file: string, partnerLabels: string[]): Promise<LdiCallSite[]> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -97,7 +99,7 @@ export async function setupLdiBlue(file: string, line: number, configName: strin
       const { invoke } = await import("@tauri-apps/api/core");
       const label = await invoke<string>("open_workspace_window", { entry: {
         path: clnPath, kind: "solution", name: solution.name, windowLabel: "", selectedConfigName: configName,
-        startHidden: yellowRing && usePreferences.getState().ldiDuplicateMode === "hide",
+        startHidden: !file.endsWith(".rs") && yellowRing && usePreferences.getState().ldiDuplicateMode === "hide",
       } });
       await waitForNativeWindow(label, configName);
       return label;
@@ -112,7 +114,11 @@ export async function removeLdiBlue(file: string, line: number) {
   const { invoke } = await import("@tauri-apps/api/core");
   const restart = await invoke<boolean>("remove_ldi_blue", { file, line });
   await refreshLdiBlues();
-  if (restart) notifyLdiRestart();
+  if (restart) { if (file.endsWith(".rs")) notifyRustRestart(); else notifyLdiRestart(); }
+}
+function notifyRustRestart() {
+  showSessionNotice({ key: `rust-native-next-launch:${Date.now()}`,
+    message: "Rust Native Breakpoint changes apply on the next Rust Debug launch. The running process keeps its original bindings; Stop and start Rust White Debug to rearm them." });
 }
 function notifyLdiRestart() {
   const linked = useLinkedWindows.getState();
@@ -135,7 +141,8 @@ function notifyLdiRestart() {
 export async function reconcileLdiBluesOnSave(file: string) {
   const { invoke } = await import("@tauri-apps/api/core");
   try {
-    await invoke("reconcile_ldi_blues_on_save", { file });
+    const restart = await invoke<boolean>("reconcile_ldi_blues_on_save", { file });
+    if (restart && file.endsWith(".rs")) notifyRustRestart();
   } finally {
     await refreshLdiBlues();
   }
@@ -145,6 +152,7 @@ export async function abandonLdi(token: string, partnerLabel?: string) {
   await invoke("abandon_ldi_reproduction", { token, partnerLabel });
 }
 export async function listenToLdi(): Promise<() => void> {
+  const { listenToNativeDebug } = await import("./nativeDebugStore");
   const { listen } = await import("@tauri-apps/api/event");
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   let disposed = false;
@@ -158,6 +166,7 @@ export async function listenToLdi(): Promise<() => void> {
     });
   };
   const cleanups = await Promise.all([
+    listenToNativeDebug(),
     getCurrentWebviewWindow().listen<LdiSession>("craidd:ldi-state", ({ payload }) => useLdi.setState({ session: payload })),
     listen("craidd:ldi-blues", refresh), listen("craidd:breakpoints-changed", refresh),
     listen<string>("craidd:native-source-saved", ({ payload }) => {

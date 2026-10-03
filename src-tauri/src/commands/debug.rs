@@ -45,7 +45,7 @@ struct Session {
     breakpoints_ready: AtomicBool,
     solution_path: String,
     blue: Mutex<Vec<super::ldi::ManagedBlueBreakpoint>>,
-    private_breakpoints: Vec<Breakpoint>,
+    private_breakpoints: Mutex<Vec<Breakpoint>>,
     alive: Arc<AtomicBool>,
     reaped: Arc<AtomicBool>,
 }
@@ -83,8 +83,9 @@ impl Drop for DebugManager {
 pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
     if let Some(status) = value["status"].as_str() {
         if matches!(status, "building" | "running" | "paused" | "terminated" | "error") {
-            note_debug_state(app, label, status, value["file"].as_str(),
-                value["line"].as_u64().and_then(|line| u32::try_from(line).ok()),
+            let native_routed = value["nativeRouted"] == true;
+            note_debug_state(app, label, status, if native_routed { None } else { value["file"].as_str() },
+                if native_routed { None } else { value["line"].as_u64().and_then(|line| u32::try_from(line).ok()) },
                 value["reason"].as_str().or_else(|| if status == "error" { value["text"].as_str() } else { None }));
         }
     }
@@ -498,7 +499,7 @@ fn send_breakpoints_locked(session: &Session, points: &[Breakpoint], files: &mut
     // Private LDI entry stops survive edits to ordinary red breakpoints but
     // are never persisted. At the same line, the private unconditional entry
     // wins over a newly-added conditional red marker.
-    let mut effective = session.private_breakpoints.clone();
+    let mut effective = session.private_breakpoints.lock().map_err(|error|error.to_string())?.clone();
     effective.extend_from_slice(points);
     let mut by_file = breakpoint_lines(&effective);
     let blues = session.blue.lock().map_err(|error| error.to_string())?.clone();
@@ -615,6 +616,7 @@ pub async fn start_debug(window: WebviewWindow, app: AppHandle, request_spec: De
 }
 
 pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: DebugRequest) -> Result<(), String> {
+    super::native_debug::check_window_launch(&app, &label)?;
     super::ldi::check_launch(&app, &label, request_spec.ldi_token)?;
     if app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window already has a debug session".into());
@@ -634,6 +636,8 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
         _ => return Err(format!("Debugging is not supported for the {method} method")),
     };
     adapter_path(language)?;
+    if language == "cpp" { super::native_debug::check_cmake_build(&app, &cwd)?; }
+    let native_snapshot = if language == "rust" { Some(super::native_debug::prepare_queries(&app, &label)?) } else { None };
     let (build_args, args) = split_debug_args(&method, command_args);
     emit(&app, &label, json!({"status":"building"}));
     let prepared = if let Some(request) = order {
@@ -689,7 +693,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
             }
         }
     } else { None };
-    launch_prepared(app, label, language, cwd, solution_path, executable, args, env, breakpoints, dev_lease, ldi_token)
+    launch_prepared(app, label, language, cwd, solution_path, executable, args, env, breakpoints, dev_lease, ldi_token, native_snapshot)
 }
 
 /// Both normal debugging and the LDI library driver use the same DAP lifecycle.
@@ -698,13 +702,19 @@ pub(crate) fn launch_prepared(
     solution_path: String, executable: PathBuf, args: Vec<String>, mut env: BTreeMap<String, String>,
     breakpoints: Vec<Breakpoint>, dev_lease: Option<super::tauri_dev::DevLease>,
     ldi_token: Option<u64>,
+    native_snapshot: Option<Vec<super::native_debug::Binding>>,
 ) -> Result<(), String> {
     super::ldi::check_launch(&app, &label, ldi_token)?;
+    super::native_debug::check_window_launch(&app, &label)?;
     if ldi_token.is_some() && language == "csharp" {
         super::ldi::validate_origin_program(&app, &label, &executable)?;
         super::ldi::configure_origin_launch_env(&app, &label, &executable, &mut env)?;
     }
     let adapter = adapter_path(language)?;
+    let native_bindings = if language == "rust" {
+        super::native_debug::prepare(&app, &label, &solution_path, &cwd, native_snapshot.unwrap_or_default())?
+    } else { vec![] };
+    let live_native = !native_bindings.is_empty();
     let adapter_name = adapter.file_name().and_then(|name| name.to_str()).unwrap_or("debug adapter").to_string();
     if app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window already has a debug session".into());
@@ -724,9 +734,11 @@ pub(crate) fn launch_prepared(
         breakpoints_ready: AtomicBool::new(false),
         solution_path,
         blue: Mutex::new(if ldi_token.is_some() { super::ldi::active_blues(&app, &label) } else { vec![] }),
-        private_breakpoints: if ldi_token.is_some() && language == "cpp" {
+        private_breakpoints: Mutex::new(if language == "rust" {
+            super::native_debug::private_points(&native_bindings)
+        } else if ldi_token.is_some() && language == "cpp" {
             breakpoints.iter().filter(|point| point.scope == "ldi-auto-entry").cloned().collect()
-        } else { vec![] },
+        } else { vec![] }),
         alive: Arc::new(AtomicBool::new(true)),
         reaped: Arc::new(AtomicBool::new(false)),
     });
@@ -734,6 +746,13 @@ pub(crate) fn launch_prepared(
     let stderr = child.stderr.take().ok_or("Debugger errors unavailable")?;
     app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.insert(label.clone(), session.clone());
     if let Err(error) = super::ldi::adapter_started(&app, &label, pgid, ldi_token) {
+        session.alive.store(false, Ordering::Release);
+        unsafe { libc::killpg(pgid, libc::SIGTERM); }
+        let _ = child.wait();
+        if let Ok(mut sessions) = app.state::<DebugManager>().0.lock() { sessions.remove(&label); }
+        return Err(error);
+    }
+    if let Err(error) = super::native_debug::started(&app, &label, pgid, native_bindings) {
         session.alive.store(false, Ordering::Release);
         unsafe { libc::killpg(pgid, libc::SIGTERM); }
         let _ = child.wait();
@@ -761,6 +780,7 @@ pub(crate) fn launch_prepared(
         let mut variable_requests = 0usize;
         let mut terminated_emitted = false;
         let mut stop_generation = 0u64;
+        let mut stop_reason = String::new();
         let mut inspection_generations: HashMap<u64, u64> = HashMap::new();
         // A private driver stop after native return must not be presented as
         // user source. Defer B's pause until its frame is verified.
@@ -793,13 +813,15 @@ pub(crate) fn launch_prepared(
                     }
                     "stopped" => {
                         stop_generation += 1;
+                        stop_reason = message["body"]["reason"].as_str().unwrap_or("").into();
+                        super::native_debug::stopping(&app_reader, &label_reader, pgid, stop_generation);
                         super::ldi::on_stop(&app_reader, &label_reader, pgid);
                         stopped_variables.clear();
                         variable_requests = 0;
                         ready_reader.store(true, Ordering::Release);
                         let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
                         session.thread_id.store(thread_id, Ordering::Relaxed);
-                        if super::ldi::partner_stop_is_held(&app_reader, &label_reader, pgid) {
+                        if live_native || super::ldi::partner_stop_is_held(&app_reader, &label_reader, pgid) {
                             pending_native_stop = Some((stop_generation, message["body"]["reason"].clone()));
                         } else {
                             pending_native_stop = None;
@@ -820,12 +842,14 @@ pub(crate) fn launch_prepared(
                             session.thread_id.store(id, Ordering::Relaxed);
                         }
                         emit(&app_reader, &label_reader, json!({"status":"running"}));
+                        super::native_debug::event(&app_reader, &label_reader, pgid, stop_generation, &json!({"status":"running"}));
                     }
                     "thread" => {
                         if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0 && session.thread_id.load(Ordering::Relaxed) == 0) {
                             session.thread_id.store(id, Ordering::Relaxed);
                         }
                     }
+                    "module" => super::native_debug::module(&app_reader, &label_reader, pgid, &message["body"]),
                     "output" => emit(&app_reader, &label_reader, json!({"status":"output", "text":message["body"]["output"]})),
                     "exited" => {
                         emit(&app_reader, &label_reader, json!({"status":"terminated"}));
@@ -927,11 +951,13 @@ pub(crate) fn launch_prepared(
                     "stackTrace" => {
                         let frames = message["body"]["stackFrames"].clone();
                         let first = frames.as_array().and_then(|items| items.first());
+                        let (native_routed, skip_private_entry) = super::native_debug::on_frames(
+                            &app_reader, &label_reader, pgid, stop_generation, &frames, &stop_reason);
                         let reason = pending_native_stop.as_ref().filter(|(generation, _)| *generation == stop_generation)
                             .and_then(|(_, reason)| reason.as_str());
                         let finish_native = first.is_some_and(|frame| super::ldi::on_frame(
                             &app_reader, &label_reader, pgid, frame, reason));
-                        if finish_native {
+                        if finish_native || skip_private_entry {
                             pending_native_stop = None;
                             hidden_driver_frames = Some(frames);
                             if session.transport_busy.load(Ordering::Acquire) {
@@ -950,6 +976,7 @@ pub(crate) fn launch_prepared(
                                 "threadId":session.thread_id.load(Ordering::Acquire)}));
                         }
                         emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
+                            "nativeRouted":native_routed,
                             "file":first.and_then(|frame| frame["source"]["path"].as_str()),
                             "line":first.and_then(|frame| frame["line"].as_u64())}));
                         if let Some(id) = first.and_then(|frame| frame["id"].as_i64()) {
@@ -979,6 +1006,8 @@ pub(crate) fn launch_prepared(
                         variable_requests = variable_requests.saturating_sub(1);
                         if variable_requests == 0 {
                             emit(&app_reader, &label_reader, json!({"status":"variables", "variables":stopped_variables}));
+                            super::native_debug::event(&app_reader, &label_reader, pgid, stop_generation,
+                                &json!({"status":"variables", "variables":stopped_variables}));
                             super::ldi::on_variables(&app_reader, &label_reader, pgid, &stopped_variables);
                         }
                     }
@@ -991,6 +1020,7 @@ pub(crate) fn launch_prepared(
         super::ldi::on_adapter_end(&app_reader, &label_reader, pgid);
         let _ = child.kill();
         let _ = child.wait();
+        super::native_debug::ended(&app_reader, &label_reader, pgid);
         let mut replacement = false;
         if let Ok(mut active) = app_reader.state::<DebugManager>().0.lock() {
             replacement = active.get(&label_reader).is_some_and(|session| session.pgid != pgid);
@@ -1071,6 +1101,46 @@ pub fn control_debug_by_label(app: &AppHandle, label: &str, action: &str) -> Res
         let builds = app.state::<DebugBuildManager>();
         control_debug(label, &state, &builds, action)
     })
+}
+
+/// A native subscriber cannot accidentally operate a replacement adapter.
+pub(crate) fn control_live_native(app: &AppHandle, label: &str, pgid: i32, action: &str) -> Result<(), String> {
+    let manager = app.state::<DebugManager>();
+    let active = manager.0.lock().map_err(|e| e.to_string())?;
+    let session = active.get(label).filter(|session|session.pgid == pgid && session.alive.load(Ordering::Acquire))
+        .ok_or("The owning Rust debugger ended or restarted")?;
+    let command = match action {
+        "continue" => "continue", "pause" => "pause", "stepOver" => "next",
+        "stepInto" => "stepIn", "stepOut" => "stepOut", "stop" => "disconnect",
+        _ => return Err("Unsupported native debug control".into()),
+    };
+    if action == "stop" {
+        request(session, command, json!({"terminateDebuggee":true}))?;
+        let alive=session.alive.clone();
+        thread::spawn(move || { thread::sleep(Duration::from_millis(800));
+            if alive.load(Ordering::Acquire) { unsafe { libc::killpg(pgid,libc::SIGTERM); } }
+        });
+        return Ok(());
+    }
+    let thread = session.thread_id.load(Ordering::Acquire);
+    if thread <= 0 { return Err("The Rust debugger thread is not ready".into()); }
+    if session.transport_busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+        return Err("A debugger control is already in progress".into());
+    }
+    if let Err(error)=request(session,command,json!({"threadId":thread})) {session.transport_busy.store(false,Ordering::Release); return Err(error);}
+    Ok(())
+}
+
+pub(crate) fn detach_native_points(app: &AppHandle, label: &str, pgid: i32, points: &[Breakpoint]) -> Result<(),String> {
+    let session = app.state::<DebugManager>().0.lock().map_err(|e|e.to_string())?.get(label)
+        .filter(|s|s.pgid==pgid).cloned();
+    let Some(session)=session else {return Ok(())};
+    // Remove only this provider's private entry; solution red markers survive.
+    session.private_breakpoints.lock().map_err(|e|e.to_string())?.retain(|p|p.scope!="rust-native-entry" || !points.iter().any(|r|r.file==p.file && r.line==p.line));
+    if session.breakpoints_ready.load(Ordering::Acquire) {
+        send_breakpoints(&session,&super::breakpoints::load_breakpoints(session.solution_path.clone())?)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Result<(), String> {
@@ -1170,6 +1240,7 @@ pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
 
 /// Closing B detaches LDI; it is not Gold Stop and must not kill A.
 pub fn cancel_closing_window_debug_by_label(app: &AppHandle, label: &str) {
+    super::native_debug::window_closed(app, label);
     match super::ldi::partner_window_closing(app, label) {
         Ok(true) => cancel_debug_session_only(app, label),
         Ok(false) => cancel_debug_by_label(app, label),

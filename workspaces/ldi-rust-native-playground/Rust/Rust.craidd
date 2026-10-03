@@ -1,0 +1,5 @@
+[project]
+name = "Rust FFI Caller"
+language = "rust"
+root = "."
+kind = "application"

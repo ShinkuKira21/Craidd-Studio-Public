@@ -15,6 +15,7 @@ interface DebugEvent {
   line?: number;
   frames?: DebugFrame[];
   variables?: DebugVariable[];
+  nativeRouted?: boolean;
 }
 
 interface DebugState {
@@ -70,14 +71,14 @@ export async function listenToDebug(): Promise<() => void> {
     const active = message.status === "paused";
     useDebug.setState((state) => ({
       status: message.status as DebugStatus,
-      reason: active ? message.reason ?? state.reason : null,
+      reason: active ? message.nativeRouted ? "Paused in native code · inspect the paired Native window" : message.reason ?? state.reason : null,
       file: active ? message.file ?? state.file : null,
       line: active ? message.line ?? state.line : null,
       frames: active ? message.frames ?? state.frames : [],
       variables: active ? state.variables : [],
       output: message.text ? appendOutput(state.output, message.text) : state.output,
     }));
-    if (message.status === "paused" && message.file && message.line) {
+    if (message.status === "paused" && message.file && message.line && !message.nativeRouted) {
       void useSolution.getState().revealFile(message.file, message.line, 1);
     }
   });

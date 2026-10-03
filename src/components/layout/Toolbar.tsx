@@ -10,6 +10,7 @@ import { detectLinkedStartupSuggestions } from "../../lib/linkedStartup";
 import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
 import WindowManager from "./WindowManager";
 import { useDebug } from "../../store/debugStore";
+import { useNativeDebug } from "../../store/nativeDebugStore";
 
 type Kind = "build" | "run" | "debug";
 
@@ -26,6 +27,7 @@ function Toolbar() {
   const linked = useLinkedWindows();
   const ldi = useLdi((state) => state.session);
   const debugStatus = useDebug((s) => s.status);
+  const nativeContext = useNativeDebug((s) => s.context);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [startupSetupRequested, setStartupSetupRequested] = useState(false);
   const [previewName, setPreviewName] = useState<string | null>(null);
@@ -44,7 +46,8 @@ function Toolbar() {
   const remote = linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
     && item.windowLabel !== linked.ownWindowLabel);
   const heldByLdi = Boolean(ldi?.held && ldi.phase !== "stopped" && ldi.originLabel === (remote?.windowLabel ?? linked.ownWindowLabel));
-  const viewedStatus = remote?.status ?? (["building", "running", "paused"].includes(debugStatus) ? debugStatus : status);
+  const native = !remote ? nativeContext : null;
+  const viewedStatus = native?.status ?? remote?.status ?? (["building", "running", "paused"].includes(debugStatus) ? debugStatus : status);
   const running = ["waiting", "starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
   const viewedProfileName = remote ? remote.selectedProfileName : selectedProfileName;
@@ -105,7 +108,7 @@ function Toolbar() {
 
       <KindButton kind="debug" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices ? previewChoices.debug : remote ? remoteChoices?.debug ?? null : undefined} onFire={(name) => fire("debug", name)} />
       {(linked.linked || linked.activeAction) && <GoldButton kind="debug" linked={linked} />}
-      {(remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running")) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
+      {(native || (remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {viewedStatus === "paused" ? <>
           <DebugTransport disabled={heldByLdi} label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
           <DebugTransport disabled={heldByLdi} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
@@ -115,7 +118,7 @@ function Toolbar() {
       </div>}
 
       <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[220px]">
-        {running && (remote ? remote.selectedConfigName : activeConfigName) ? (
+        {native ? <span className="text-blue-300" title="Controls operate the owning Rust process; your Native Power Config is unchanged">Native view · Rust · {native.status}</span> : running && (remote ? remote.selectedConfigName : activeConfigName) ? (
           <>
             <span className="text-zinc-500">White{remote ? ` CS${remote.windowId}` : ""} · </span><span className="text-zinc-400">{remote ? remote.selectedConfigName : activeConfigName}</span>
             <span className="text-zinc-600"> · </span>

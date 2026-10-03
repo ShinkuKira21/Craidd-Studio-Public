@@ -22,23 +22,23 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Blue {
-    file: String,
-    line: u32,
-    condition: Option<String>,
-    origin_label: String,
-    partner_label: String,
-    origin_instance: String,
-    partner_instance: String,
-    partner_window_id: u32,
-    entry_point: String,
-    library: String,
-    method: String,
-    landing: String,
-    mode: String,
-    locals: [String; 2],
-    warning: Option<String>,
-    native_points: Vec<Breakpoint>,
-    pending_restart: bool,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    pub(crate) condition: Option<String>,
+    pub(crate) origin_label: String,
+    pub(crate) partner_label: String,
+    pub(crate) origin_instance: String,
+    pub(crate) partner_instance: String,
+    pub(crate) partner_window_id: u32,
+    pub(crate) entry_point: String,
+    pub(crate) library: String,
+    pub(crate) method: String,
+    pub(crate) landing: String,
+    pub(crate) mode: String,
+    pub(crate) locals: [String; 2],
+    pub(crate) warning: Option<String>,
+    pub(crate) native_points: Vec<Breakpoint>,
+    pub(crate) pending_restart: bool,
 }
 
 #[derive(Clone)]
@@ -140,7 +140,7 @@ fn regex(pattern: &str) -> Regex {
 // A deliberately bounded syntax recognizer, not a C#/C++ language service.
 // Erase comments without changing line numbers so commented imports/exports
 // cannot establish a binding. Raw/verbatim string syntax is outside this slice.
-fn without_comments(source: &str) -> Result<String, String> {
+pub(crate) fn without_comments(source: &str) -> Result<String, String> {
     let mut chars = source.chars().peekable();
     let mut result = String::new();
     let mut quote = None;
@@ -441,18 +441,18 @@ fn selected_target_matches(args: &[String], library: &str) -> bool {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlueCallSitePreview {
-    line: u32,
-    entry_point: String,
-    partner_labels: Vec<String>,
-    config_names: Vec<String>,
+    pub(crate) line: u32,
+    pub(crate) entry_point: String,
+    pub(crate) partner_labels: Vec<String>,
+    pub(crate) config_names: Vec<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LdiPreviewConfig {
-    name: String,
-    cwd: String,
-    args: Vec<String>,
+    pub(crate) name: String,
+    pub(crate) cwd: String,
+    pub(crate) args: Vec<String>,
 }
 
 #[tauri::command]
@@ -467,6 +467,9 @@ pub async fn list_ldi_call_sites(
     if preview_configs.len() > 32 { return Err("Too many native configurations to preview".into()); }
     let origin_label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
+        if file.ends_with(".rs") {
+            return super::native_debug::preview(&app, &origin_label, &file, &partner_labels, &preview_configs);
+        }
         let origin = super::linked_windows::ldi_origin_selection(&app, &origin_label)?;
         let selections = partner_labels.into_iter().filter_map(|label|
             super::linked_windows::ldi_selections(&app, &origin_label, &label).ok().map(|(origin, partner)| (origin, partner))
@@ -483,6 +486,7 @@ pub async fn list_ldi_call_sites(
             let cwd = Path::new(&config.cwd).canonicalize().ok()?;
             if !cwd.starts_with(&solution_root) || !config.args.iter().any(|arg| arg == "--build") { return None; }
             Some((config.name, LdiSelection { label: "preview".into(), instance_id: String::new(),
+                configuration: None, profile: None,
                 window_id: 0, solution: origin.solution.clone(), spec: super::runner::RunSpec {
                     label: "preview".into(), program: "cmake".into(), args: config.args,
                     env: Default::default(), cwd: cwd.to_string_lossy().into_owned(),
@@ -522,6 +526,9 @@ pub fn set_ldi_blue(
     partner_label: String,
     condition: Option<String>,
 ) -> Result<Blue, String> {
+    if file.ends_with(".rs") {
+        return super::native_debug::set_blue(&app, window.label(), &file, line, &partner_label, condition);
+    }
     let (origin, partner) =
         super::linked_windows::ldi_selections(&app, window.label(), &partner_label)?;
     let manager = app.state::<LdiManager>();
@@ -582,6 +589,7 @@ pub fn set_ldi_blue(
 
 #[tauri::command]
 pub fn remove_ldi_blue(window: WebviewWindow, app: AppHandle, file: String, line: u32) -> Result<bool, String> {
+    if file.ends_with(".rs") { return super::native_debug::remove_blue(&app, window.label(), &file, line); }
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
     let pending_restart = state
@@ -598,6 +606,7 @@ pub fn remove_ldi_blue(window: WebviewWindow, app: AppHandle, file: String, line
 
 #[tauri::command]
 pub fn reconcile_ldi_blues_on_save(app: AppHandle, file: String) -> Result<bool, String> {
+    if file.ends_with(".rs") { return super::native_debug::reconcile(&app, &file); }
     let path = Path::new(&file).canonicalize().map_err(|error| error.to_string())?;
     if path.extension().and_then(|part| part.to_str()) != Some("cs") { return Ok(false); }
     let manager = app.state::<LdiManager>();
@@ -621,6 +630,7 @@ pub fn reconcile_ldi_blues_on_save(app: AppHandle, file: String) -> Result<bool,
 
 #[tauri::command]
 pub fn get_ldi_blues(window: WebviewWindow, app: AppHandle) -> Vec<Blue> {
+    let mut rust_blues = super::native_debug::blues(&app, window.label());
     let manager = app.state::<LdiManager>();
     let Ok(state) = manager.0.lock() else {
         return vec![];
@@ -636,7 +646,7 @@ pub fn get_ldi_blues(window: WebviewWindow, app: AppHandle) -> Vec<Blue> {
     let active_origins = state.pairs.iter().filter(|(_, pair)| !pair.cancelled.load(Ordering::Acquire))
         .map(|(origin, _)| origin.clone()).collect::<std::collections::HashSet<_>>();
     drop(state);
-    points
+    let managed = points
         .into_iter()
         .filter_map(|mut blue| {
             if !active_origins.contains(&blue.origin_label) {
@@ -669,7 +679,9 @@ pub fn get_ldi_blues(window: WebviewWindow, app: AppHandle) -> Vec<Blue> {
             blue.native_points = binding.and_then(|call| native_points(&call, &b)).unwrap_or_default();
             Some(blue)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    rust_blues.extend(managed);
+    rust_blues
 }
 
 pub(crate) fn prepare_pairs(
@@ -1232,7 +1244,7 @@ pub(crate) fn on_variables(app: &AppHandle, label: &str, pgid: i32, variables: &
                     driver, vec![library.to_string_lossy().into_owned(),
                         capture.file.to_string_lossy().into_owned(), completion.to_string_lossy().into_owned(),
                         token.to_string()], binding.selection.spec.env.clone(), vec![binding.native.clone()],
-                    None, Some(token))
+                    None, Some(token), None)
             });
             if let Err(error) = result {
                 let manager = app.state::<LdiManager>();
@@ -1318,6 +1330,7 @@ pub(crate) fn on_variables(app: &AppHandle, label: &str, pgid: i32, variables: &
                 vec![binding.native.clone()],
                 None,
                 Some(token),
+                None,
             )
         });
         if let Err(error) = result {
@@ -1403,6 +1416,12 @@ fn shared_library(
     target: Option<&str>,
     native_source: &Path,
 ) -> Result<PathBuf, String> {
+    shared_library_for_source(build, Some(name), target, native_source)
+}
+
+pub(crate) fn shared_library_for_source(
+    build: &Path, name: Option<&str>, target: Option<&str>, native_source: &Path,
+) -> Result<PathBuf, String> {
     let reply = build.join(".cmake/api/v1/reply");
     let index = fs::read_dir(&reply)
         .map_err(|error| error.to_string())?
@@ -1469,8 +1488,8 @@ fn shared_library(
             for artifact in info["artifacts"].as_array().into_iter().flatten() {
                 if let Some(path) = artifact["path"].as_str() {
                     let path = build.join(path);
-                    if path.file_name().and_then(|value| value.to_str())
-                        == Some(&format!("lib{name}.so"))
+                    if name.map_or_else(|| path.extension().and_then(|v|v.to_str()) == Some("so"),
+                        |name|path.file_name().and_then(|value| value.to_str()) == Some(&format!("lib{name}.so")))
                     {
                         candidates.push(path.canonicalize().map_err(|error| error.to_string())?);
                     }
@@ -1481,12 +1500,14 @@ fn shared_library(
     candidates.sort();
     candidates.dedup();
     if candidates.len() != 1 {
-        return Err(format!("LDI needs exactly one CMake SHARED_LIBRARY artifact named lib{name}.so matching the DllImport and compiling the selected native breakpoint's source. Static/ambiguous/mismatched libraries are not supported."));
+        return Err(if let Some(name)=name {
+            format!("LDI needs exactly one CMake SHARED_LIBRARY artifact named lib{name}.so matching the DllImport and compiling the selected native breakpoint's source. Static/ambiguous/mismatched libraries are not supported.")
+        } else {"Rust Native Debugging needs one CMake SHARED_LIBRARY artifact compiling the selected export source in the selected target. Static/ambiguous/mismatched targets are not supported in this version.".into()});
     }
     Ok(candidates.remove(0))
 }
 
-fn argument(args: &[String], flag: &str) -> Option<String> {
+pub(crate) fn argument(args: &[String], flag: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == flag)
         .map(|pair| pair[1].clone())
@@ -1506,6 +1527,7 @@ fn build_library(
         return Err("LDI v1 needs a direct CMake --build Library Power slot; a native preparation plan/configure-only command is not supported yet".into());
     }
     let cwd = Path::new(&spec.cwd);
+    super::native_debug::check_cmake_build(app, cwd)?;
     let build = cwd.join(argument(&spec.args, "--build").unwrap_or("build".into()));
     let query = build.join(".cmake/api/v1/query");
     fs::create_dir_all(&query).map_err(|error| error.to_string())?;
@@ -2275,6 +2297,7 @@ mod tests {
                 locals: call.locals.clone(), warning: None, native_points: vec![], pending_restart: false };
             bindings.push(Binding { blue, call, native, automatic_entry: true,
                 selection: super::super::linked_windows::LdiSelection { label: partner.into(),
+                    configuration: None, profile: None,
                     instance_id: partner.into(), window_id: 2, solution: "/solution.cln".into(),
                     spec: super::super::runner::RunSpec { label: library.into(), program: "cmake".into(),
                         args: vec![], env: Default::default(), cwd: "/native".into(), linked: None, order: None } },
@@ -2325,6 +2348,7 @@ mod tests {
             .join("workspaces/ldi-interop-playground");
         let managed = include_str!("../../../workspaces/ldi-interop-playground/Gui/MainWindow.cs");
         let selection = super::super::linked_windows::LdiSelection {
+            configuration: None, profile: None,
             label: "native".into(), instance_id: "one".into(), window_id: 2,
             solution: root.join("ldi-interop-playground.cln").to_string_lossy().into_owned(),
             spec: super::super::runner::RunSpec { label: "native".into(), program: "cmake".into(),

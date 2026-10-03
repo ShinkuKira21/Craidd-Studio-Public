@@ -14,3 +14,4 @@ pub mod breakpoints;
 pub mod debug;
 pub mod build_order;
 pub mod ldi;
+pub mod native_debug;

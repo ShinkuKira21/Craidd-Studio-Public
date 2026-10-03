@@ -13,6 +13,7 @@ import { CRAIDD_DARK_THEME, defineCraiddDarkTheme } from "../../lib/editorThemes
 import { listLdiCallSites, removeLdiBlue, setLdiBlue, setupLdiBlue, useLdi } from "../../store/ldiStore";
 import type { LdiBlue, LdiCallSite } from "../../store/ldiStore";
 import type { CraiddSolution } from "../../types/project";
+import { useNativeDebug } from "../../store/nativeDebugStore";
 
 interface CallSiteCacheEntry {
   savedContent: string;
@@ -37,14 +38,14 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
   return [...lines.map((line) => {
     const condition = points.find((point) => point.file === file && point.line === line)?.condition;
     const unmatchedLibrary = library && !blues.some((blue) => blue.nativePoints.some((point) => point.file === file && point.line === line));
-    const reminder = unmatchedLibrary
+    const reminder = unmatchedLibrary && !linked.windows.some((item) => item.ldiRole === "live-native")
       ? `LDI reminder: right-click the C# gutter in ${managed ? `CS${managed.windowId}` : "a linked managed window"} where this extern function is called (not defined), and choose Native Debugging Breakpoint. A red library marker alone does not launch a reproduction; use a .c/.cpp implementation, not a header prototype.`
       : `Breakpoint · line ${line}`;
     return {
       range: new monaco.Range(liveRedLines.get(`${file}:${line}`) ?? line, 1, liveRedLines.get(`${file}:${line}`) ?? line, 1),
       options: {
         isWholeLine: false,
-        glyphMarginClassName: unmatchedLibrary ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
+        glyphMarginClassName: unmatchedLibrary && !linked.windows.some((item) => item.ldiRole === "live-native") ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
         glyphMarginHoverMessage: { value: `${reminder}${condition ? `\nCondition: ${condition}` : ""}` },
       },
     };
@@ -54,8 +55,10 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
     return { range: new monaco.Range(liveBlueLines.get(blueKey(blue)) ?? blue.line, 1,
       liveBlueLines.get(blueKey(blue)) ?? blue.line, 1),
       options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${warning || blue.pendingRestart ? " craidd-breakpoint-warning" : ""}`,
-        glyphMarginHoverMessage: { value: (warning ? `⚠ ${warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}`)
-          + (blue.pendingRestart ? "\n\nApplies after Gold Restart Debug. The running session keeps its original Blue bindings." : "") } } };
+        glyphMarginHoverMessage: { value: (warning ? `⚠ ${warning}` : blue.mode === "live-native"
+          ? `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}\nRust White Debug: inspect the real process in Native. No driver or separate Rust call-site hold.`
+          : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}`)
+          + (blue.pendingRestart ? `\n\nApplies after ${blue.mode === "live-native" ? "Rust Debug restarts" : "Gold Restart Debug"}. The running session keeps its original Blue bindings.` : "") } } };
   }), ...callSites.filter((site) => !lines.includes(site.line)
     && !blues.some((blue) => blue.file === file && blue.line === site.line && blue.originLabel === linked.ownWindowLabel))
     .map((site) => {
@@ -68,7 +71,7 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
         isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-ghost-blue${needsWindow ? " craidd-breakpoint-ghost-needs-window" : ""}`,
         glyphMarginHoverMessage: { value: needsWindow
           ? `⚠ You need to duplicate this window and open Power Config: ${choices}, where ${site.entryPoint} exists. ${site.configNames.length === 1 ? "If you left-click, the IDE will try to do this for you." : "Left-click to choose which native configuration to open."} Right-click for other breakpoint options.`
-          : `Set Blue Breakpoint → ${names} (${site.entryPoint}). ${site.partnerLabels.length === 1 ? "Left-click to set it" : "Left-click to choose the partner"}; right-click for other breakpoint options. Gold Linked Debug only.` },
+          : `Set Native Debugging Breakpoint → ${names} (${site.entryPoint}). ${site.partnerLabels.length === 1 ? "Left-click to set it" : "Left-click to choose the partner"}; right-click for other breakpoint options. ${file?.endsWith(".rs") ? "Rust White Debug · live process." : "Gold Linked Debug only."}` },
       } };
     }), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }
@@ -111,8 +114,10 @@ export default function CodeView() {
   const debugStatus = useDebug((s) => s.status);
   const debugFile = useDebug((s) => s.file);
   const debugLine = useDebug((s) => s.line);
+  const nativeContext = useNativeDebug((s) => s.context);
   const pausedLine = remoteEditContext
     ? remoteEditContext.status === "paused" && remoteEditContext.activeFile?.path === activeFileId ? remoteEditContext.pausedLine : null
+    : nativeContext?.status === "paused" && nativeContext.file === activeFileId ? nativeContext.line
     : debugStatus === "paused" && debugFile === activeFileId ? debugLine : null;
   const navigation = useSolution((s) => s.navigation);
   // Monaco owns the live text while typing. The store still receives every
@@ -123,9 +128,10 @@ export default function CodeView() {
 
   useEffect(() => {
     const clear = () => { callSitesRef.current = []; setCallSites([]); };
-    if (!activeFileId?.endsWith(".cs") || activeDirty) { clear(); return; }
+    if (!activeFileId || !/\.(cs|rs)$/.test(activeFileId) || activeDirty) { clear(); return; }
     const linked = useLinkedWindows.getState();
-    if (linked.windows.find((item) => item.windowLabel === linked.ownWindowLabel)?.ldiRole !== "managed") { clear(); return; }
+    const role = linked.windows.find((item) => item.windowLabel === linked.ownWindowLabel)?.ldiRole;
+    if (role !== (activeFileId.endsWith(".rs") ? "live-native" : "managed")) { clear(); return; }
     const cached = callSiteCacheRef.current.get(activeFileId);
     if (cached && cached.savedContent === savedContent && cached.selectionKey === ldiSelectionKey
       && cached.solution === solution && cached.nativeSourceVersion === nativeSourceVersion) {
@@ -193,8 +199,10 @@ export default function CodeView() {
     const target = linked.remoteEditing ? linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
       && item.windowLabel !== linked.ownWindowLabel) : null;
     const debug = useDebug.getState();
+    const native = useNativeDebug.getState().context;
     const currentPausedLine = target
       ? target.status === "paused" && target.activeFile?.path === file ? target.pausedLine : null
+      : native?.status === "paused" && native.file === file ? native.line
       : debug.status === "paused" && debug.file === file ? debug.line : null;
     const liveBlueLines = new Map<string, number>();
     const liveRedLines = new Map<string, number>();
