@@ -543,8 +543,38 @@ pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str, locations: &[(Strin
     Ok(())
 }
 
-fn dap_ready_for_configuration(initialized_event: bool, launch_succeeded: bool, configured: bool) -> bool {
-    initialized_event && launch_succeeded && !configured
+#[derive(Default)]
+struct DapStartup {
+    configuration_sent: bool,
+    configuration_succeeded: bool,
+    launch_succeeded: bool,
+    running_announced: bool,
+}
+
+impl DapStartup {
+    fn on_initialized(&mut self) -> bool {
+        if self.configuration_sent { return false; }
+        self.configuration_sent = true;
+        true
+    }
+
+    fn on_launch_response(&mut self) -> bool {
+        self.launch_succeeded = true;
+        self.ready_to_announce()
+    }
+
+    fn on_configuration_response(&mut self) -> bool {
+        self.configuration_succeeded = true;
+        self.ready_to_announce()
+    }
+
+    fn ready_to_announce(&mut self) -> bool {
+        if !self.configuration_succeeded || !self.launch_succeeded || self.running_announced {
+            return false;
+        }
+        self.running_announced = true;
+        true
+    }
 }
 
 pub fn adapter_available_for_language(language: &str) -> bool {
@@ -726,9 +756,7 @@ pub(crate) fn launch_prepared(
         let _dev_lease = dev_lease;
         let mut reader = BufReader::new(stdout);
         let mut pending: HashMap<u64, String> = HashMap::new();
-        let mut initialized_event = false;
-        let mut launch_succeeded = false;
-        let mut configured = false;
+        let mut startup = DapStartup::default();
         let mut stopped_variables = Vec::new();
         let mut variable_requests = 0usize;
         let mut terminated_emitted = false;
@@ -753,14 +781,14 @@ pub(crate) fn launch_prepared(
             if message["type"] == "event" {
                 match message["event"].as_str().unwrap_or("") {
                     "initialized" => {
-                        initialized_event = true;
-                        if dap_ready_for_configuration(initialized_event, launch_succeeded, configured) {
+                        // DAP adapters may withhold the launch response until
+                        // configurationDone; waiting for launch here deadlocks LLDB.
+                        if startup.on_initialized() {
                             if let Err(error) = initialize_breakpoints(&session, &breakpoints) {
                                 emit(&app_reader, &label_reader, json!({"status":"output",
                                     "text":format!("Could not apply breakpoints: {error}")}));
                             }
                             let _ = request(&session, "configurationDone", json!({}));
-                            configured = true;
                         }
                     }
                     "stopped" => {
@@ -875,20 +903,20 @@ pub(crate) fn launch_prepared(
                         if let Ok(seq) = request(&session, "launch", launch.clone()) { pending.insert(seq, "launch".into()); }
                     }
                     "launch" => {
-                        launch_succeeded = true;
-                        if dap_ready_for_configuration(initialized_event, launch_succeeded, configured) {
-                            if let Err(error) = initialize_breakpoints(&session, &breakpoints) {
-                                emit(&app_reader, &label_reader, json!({"status":"output",
-                                    "text":format!("Could not apply breakpoints: {error}")}));
+                        if startup.on_launch_response() {
+                            if !ready_reader.swap(true, Ordering::AcqRel) {
+                                emit(&app_reader, &label_reader, json!({"status":"running"}));
                             }
-                            let _ = request(&session, "configurationDone", json!({}));
-                            configured = true;
+                            if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
                         }
                     }
                     "configurationDone" => {
-                        ready_reader.store(true, Ordering::Release);
-                        emit(&app_reader, &label_reader, json!({"status":"running"}));
-                        if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
+                        if startup.on_configuration_response() {
+                            if !ready_reader.swap(true, Ordering::AcqRel) {
+                                emit(&app_reader, &label_reader, json!({"status":"running"}));
+                            }
+                            if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
+                        }
                     }
                     "threads" => {
                         if let Some(id) = message["body"]["threads"].as_array()
@@ -1266,11 +1294,19 @@ mod tests {
     }
 
     #[test]
-    fn dap_configuration_waits_for_initialized_event_and_launch_response() {
-        assert!(!dap_ready_for_configuration(true, false, false));
-        assert!(!dap_ready_for_configuration(false, true, false));
-        assert!(dap_ready_for_configuration(true, true, false));
-        assert!(!dap_ready_for_configuration(true, true, true));
+    fn dap_configuration_does_not_wait_for_launch_response() {
+        let mut startup = DapStartup::default();
+        assert!(startup.on_initialized());
+        assert!(!startup.on_initialized());
+        assert!(!startup.on_configuration_response());
+        assert!(startup.on_launch_response());
+        assert!(!startup.on_launch_response());
+
+        let mut early_launch = DapStartup::default();
+        assert!(!early_launch.on_launch_response());
+        assert!(early_launch.on_initialized());
+        assert!(early_launch.on_configuration_response());
+        assert!(!early_launch.on_configuration_response());
     }
 
     #[test]
