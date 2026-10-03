@@ -10,9 +10,24 @@ import type { Breakpoint } from "../../store/breakpointStore";
 import { useDebug } from "../../store/debugStore";
 import BreakpointMenu from "./BreakpointMenu";
 import { CRAIDD_DARK_THEME, defineCraiddDarkTheme } from "../../lib/editorThemes";
-import { removeLdiBlue, useLdi } from "../../store/ldiStore";
+import { listLdiCallSites, removeLdiBlue, setLdiBlue, setupLdiBlue, useLdi } from "../../store/ldiStore";
+import type { LdiBlue, LdiCallSite } from "../../store/ldiStore";
+import type { CraiddSolution } from "../../types/project";
 
-function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: string | null, pausedLine: number | null) {
+interface CallSiteCacheEntry {
+  savedContent: string;
+  selectionKey: string;
+  solution: CraiddSolution | null;
+  nativeSourceVersion: number;
+  sites: LdiCallSite[];
+}
+
+function blueKey(blue: LdiBlue): string {
+  return `${blue.file}\u0000${blue.line}\u0000${blue.originLabel}\u0000${blue.partnerLabel}`;
+}
+
+function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: string | null, pausedLine: number | null,
+  callSites: LdiCallSite[], dirty: boolean, liveBlueLines: Map<string, number>, liveRedLines: Map<string, number>) {
   const blues = useLdi.getState().blues;
   const linked = useLinkedWindows.getState();
   const library = linked.windows.find((item) => item.windowLabel === linked.ownWindowLabel)?.ldiRole === "native-library"
@@ -26,18 +41,36 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
       ? `LDI reminder: right-click the C# gutter in ${managed ? `CS${managed.windowId}` : "a linked managed window"} where this extern function is called (not defined), and choose Native Debugging Breakpoint. A red library marker alone does not launch a reproduction; use a .c/.cpp implementation, not a header prototype.`
       : `Breakpoint · line ${line}`;
     return {
-      range: new monaco.Range(line, 1, line, 1),
+      range: new monaco.Range(liveRedLines.get(`${file}:${line}`) ?? line, 1, liveRedLines.get(`${file}:${line}`) ?? line, 1),
       options: {
         isWholeLine: false,
         glyphMarginClassName: unmatchedLibrary ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
         glyphMarginHoverMessage: { value: `${reminder}${condition ? `\nCondition: ${condition}` : ""}` },
       },
     };
-  }), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => ({
-    range: new monaco.Range(blue.line, 1, blue.line, 1),
-    options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${blue.warning ? " craidd-breakpoint-warning" : ""}`,
-      glyphMarginHoverMessage: { value: blue.warning ? `⚠ ${blue.warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}` } },
-  })), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
+  }), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => {
+    const warning = [blue.warning, dirty ? "Unsaved edits: Blue still uses the last saved call site. Save to revalidate it." : null]
+      .filter(Boolean).join("\n");
+    return { range: new monaco.Range(liveBlueLines.get(blueKey(blue)) ?? blue.line, 1,
+      liveBlueLines.get(blueKey(blue)) ?? blue.line, 1),
+      options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${warning || blue.pendingRestart ? " craidd-breakpoint-warning" : ""}`,
+        glyphMarginHoverMessage: { value: (warning ? `⚠ ${warning}` : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}`)
+          + (blue.pendingRestart ? "\n\nApplies after Gold Restart Debug. The running session keeps its original Blue bindings." : "") } } };
+  }), ...callSites.filter((site) => !lines.includes(site.line)
+    && !blues.some((blue) => blue.file === file && blue.line === site.line && blue.originLabel === linked.ownWindowLabel))
+    .map((site) => {
+      const partners = site.partnerLabels.map((label) => linked.windows.find((item) => item.windowLabel === label))
+        .filter((item) => item !== undefined);
+      const names = partners.map((item) => `CS${item.windowId}: ${item.selectedConfigName ?? item.projectName}`).join(", ");
+      const needsWindow = partners.length === 0 && site.configNames.length > 0;
+      const choices = site.configNames.join(", ");
+      return { range: new monaco.Range(site.line, 1, site.line, 1), options: {
+        isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-ghost-blue${needsWindow ? " craidd-breakpoint-ghost-needs-window" : ""}`,
+        glyphMarginHoverMessage: { value: needsWindow
+          ? `⚠ You need to duplicate this window and open Power Config: ${choices}, where ${site.entryPoint} exists. ${site.configNames.length === 1 ? "If you left-click, the IDE will try to do this for you." : "Left-click to choose which native configuration to open."} Right-click for other breakpoint options.`
+          : `Set Blue Breakpoint → ${names} (${site.entryPoint}). ${site.partnerLabels.length === 1 ? "Left-click to set it" : "Left-click to choose the partner"}; right-click for other breakpoint options. Gold Linked Debug only.` },
+      } };
+    }), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }
 
 function revealCurrentNavigation(instance: editor.IStandaloneCodeEditor) {
@@ -54,10 +87,24 @@ export default function CodeView() {
   const monacoRef = useRef<Monaco | null>(null);
   const decorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
   const trackedPointsRef = useRef<Breakpoint[]>([]);
+  const trackedBluesRef = useRef<LdiBlue[]>([]);
+  const callSitesRef = useRef<LdiCallSite[]>([]);
+  const callSiteCacheRef = useRef(new Map<string, CallSiteCacheEntry>());
   const [breakpointMenu, setBreakpointMenu] = useState<{ x: number; y: number; line: number } | null>(null);
+  const [callSites, setCallSites] = useState<LdiCallSite[]>([]);
+  const [breakpointError, setBreakpointError] = useState<string | null>(null);
   const activeFileId = useSolution((s) => s.activeFileId);
+  const activeDirty = useSolution((s) => s.tabs.find((tab) => tab.fileId === s.activeFileId)?.dirty ?? false);
+  const solution = useSolution((s) => s.solution);
+  const savedContent = useSolution((s) => s.tabs.find((tab) => tab.fileId === s.activeFileId)?.originalContent ?? "");
   const points = useBreakpoints((s) => s.points);
   const blues = useLdi((s) => s.blues);
+  const nativeSourceVersion = useLdi((s) => s.nativeSourceVersion);
+  const ldiSelectionKey = useLinkedWindows((s) => {
+    const own = s.windows.find((item) => item.windowLabel === s.ownWindowLabel);
+    return [own?.ldiRole ?? "", ...s.windows.filter((item) => item.ldiRole === "native-library")
+      .map((item) => `${item.windowLabel}:${item.selectedConfigName ?? ""}:${item.selectedProfileName ?? ""}`)].join("|");
+  });
   const remoteEditContext = useLinkedWindows((s) => s.remoteEditing
     ? s.windows.find((item) => item.windowLabel === s.viewedWindowLabel && item.windowLabel !== s.ownWindowLabel)
     : undefined);
@@ -71,9 +118,35 @@ export default function CodeView() {
   // Monaco owns the live text while typing. The store still receives every
   // change for Save, but React only needs to rerender on a tab switch or a
   // disk reload (which changes originalContent).
-  useSolution((s) => s.tabs.find((t) => t.fileId === s.activeFileId)?.originalContent);
   const updateTabContent = useSolution((s) => s.updateTabContent);
   const active = useSolution.getState().tabs.find((t) => t.fileId === activeFileId);
+
+  useEffect(() => {
+    const clear = () => { callSitesRef.current = []; setCallSites([]); };
+    if (!activeFileId?.endsWith(".cs") || activeDirty) { clear(); return; }
+    const linked = useLinkedWindows.getState();
+    if (linked.windows.find((item) => item.windowLabel === linked.ownWindowLabel)?.ldiRole !== "managed") { clear(); return; }
+    const cached = callSiteCacheRef.current.get(activeFileId);
+    if (cached && cached.savedContent === savedContent && cached.selectionKey === ldiSelectionKey
+      && cached.solution === solution && cached.nativeSourceVersion === nativeSourceVersion) {
+      callSitesRef.current = cached.sites;
+      setCallSites(cached.sites);
+      return;
+    }
+    clear();
+    const partners = linked.windows.filter((item) => item.ldiRole === "native-library").map((item) => item.windowLabel);
+    let cancelled = false;
+    void listLdiCallSites(activeFileId, partners).then((sites) => {
+      if (cancelled) return;
+      const cache = callSiteCacheRef.current;
+      cache.delete(activeFileId);
+      cache.set(activeFileId, { savedContent, selectionKey: ldiSelectionKey, solution, nativeSourceVersion, sites });
+      if (cache.size > 8) cache.delete(cache.keys().next().value!);
+      callSitesRef.current = sites;
+      setCallSites(sites);
+    }).catch((error) => console.warn("[LDI] Could not preview native call sites:", error));
+    return () => { cancelled = true; };
+  }, [activeFileId, activeDirty, savedContent, ldiSelectionKey, solution, nativeSourceVersion]);
 
   const wordWrap = usePreferences((s) => s.wordWrap);
   const fontSize = usePreferences((s) => s.fontSize);
@@ -123,12 +196,24 @@ export default function CodeView() {
     const currentPausedLine = target
       ? target.status === "paused" && target.activeFile?.path === file ? target.pausedLine : null
       : debug.status === "paused" && debug.file === file ? debug.line : null;
+    const liveBlueLines = new Map<string, number>();
+    const liveRedLines = new Map<string, number>();
+    trackedPointsRef.current.forEach((point, index) => {
+      const line = decorations.getRange(index)?.startLineNumber;
+      if (line) liveRedLines.set(`${point.file}:${point.line}`, line);
+    });
+    trackedBluesRef.current.forEach((blue, index) => {
+      const line = decorations.getRange(trackedPointsRef.current.length + index)?.startLineNumber;
+      if (line) liveBlueLines.set(blueKey(blue), line);
+    });
     trackedPointsRef.current = currentPoints.filter((point) => point.file === file)
       .filter((point, index, all) => all.findIndex((item) => item.line === point.line) === index);
-    decorations.set(breakpointDecorations(monaco, currentPoints, file, currentPausedLine));
+    trackedBluesRef.current = useLdi.getState().blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel);
+    const dirty = useSolution.getState().tabs.find((tab) => tab.fileId === file)?.dirty ?? false;
+    decorations.set(breakpointDecorations(monaco, currentPoints, file, currentPausedLine, callSitesRef.current, dirty, liveBlueLines, liveRedLines));
   }, []);
 
-  useEffect(() => { refreshBreakpoints(); }, [refreshBreakpoints, points, blues, activeFileId, remoteEditContext?.windowLabel, pausedLine]);
+  useEffect(() => { refreshBreakpoints(); }, [refreshBreakpoints, points, blues, callSites, activeDirty, activeFileId, remoteEditContext?.windowLabel, pausedLine]);
 
   useEffect(() => {
     const onSaved = (event: Event) => {
@@ -156,7 +241,7 @@ export default function CodeView() {
   }
 
   return (
-    <div className="flex-1 min-h-0 bg-editor-bg">
+    <div className="relative flex-1 min-h-0 bg-editor-bg">
       <Editor
         height="100%"
         path={active.fileId}
@@ -172,14 +257,31 @@ export default function CodeView() {
           refreshBreakpoints();
           revealCurrentNavigation(instance);
           instance.onDidChangeModel(() => { revealCurrentNavigation(instance); refreshBreakpoints(); });
+          const markersAtLine = (file: string, line: number) => {
+            const decorations = decorationsRef.current;
+            return {
+              blue: trackedBluesRef.current.find((point, index) => point.file === file
+                && decorations?.getRange(trackedPointsRef.current.length + index)?.startLineNumber === line),
+              red: trackedPointsRef.current.find((point, index) => point.file === file
+                && decorations?.getRange(index)?.startLineNumber === line),
+            };
+          };
           instance.onMouseDown((event) => {
             if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !event.event.leftButton) return;
             const file = useSolution.getState().activeFileId;
             const line = event.target.position?.lineNumber;
-            if (file && line) void (useLdi.getState().blues.some((blue) => blue.file === file && blue.line === line
-              && blue.originLabel === useLinkedWindows.getState().ownWindowLabel)
-              ? removeLdiBlue(file, line) : useBreakpoints.getState().toggle(file, line))
-              .catch((error) => alert(`Breakpoint failed: ${String(error)}`));
+            if (!file || !line) return;
+            setBreakpointError(null);
+            const { blue, red } = markersAtLine(file, line);
+            const site = callSitesRef.current.find((item) => item.line === line);
+            if (blue) void removeLdiBlue(file, blue.line).catch((error) => setBreakpointError(String(error)));
+            else if (!red && site?.partnerLabels.length === 1) {
+              void setLdiBlue(file, line, site.partnerLabels[0]).catch((error) => setBreakpointError(String(error)));
+            } else if (!red && site?.partnerLabels.length === 0 && site.configNames.length === 1) {
+              void setupLdiBlue(file, line, site.configNames[0], true).catch((error) => setBreakpointError(String(error)));
+            } else if (!red && site && (site.partnerLabels.length > 1 || site.configNames.length > 1)) {
+              setBreakpointMenu({ x: event.event.posx, y: event.event.posy, line });
+            } else void useBreakpoints.getState().toggle(file, red?.line ?? line).catch((error) => setBreakpointError(String(error)));
           });
           instance.onContextMenu((event) => {
             if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
@@ -187,13 +289,20 @@ export default function CodeView() {
             const line = event.target.position?.lineNumber;
             if (!line) return;
             event.event.preventDefault();
-            setBreakpointMenu({ x: event.event.posx, y: event.event.posy, line });
+            const file = useSolution.getState().activeFileId;
+            const markers = file ? markersAtLine(file, line) : null;
+            setBreakpointMenu({ x: event.event.posx, y: event.event.posy, line: markers?.blue?.line ?? markers?.red?.line ?? line });
           });
         }}
         options={options}
       />
+      {breakpointError && <div role="alert" className="absolute bottom-3 right-3 z-30 max-w-sm rounded border border-amber-600 bg-zinc-900 px-3 py-2 text-xs text-amber-200 shadow-xl">
+        {breakpointError}
+        <button type="button" className="ml-3 text-zinc-400 hover:text-white" onClick={() => setBreakpointError(null)}>Dismiss</button>
+      </div>}
       {breakpointMenu && activeFileId && <BreakpointMenu file={activeFileId}
         line={breakpointMenu.line} x={breakpointMenu.x} y={breakpointMenu.y}
+        callSite={callSites.find((site) => site.line === breakpointMenu.line)}
         onClose={() => setBreakpointMenu(null)} />}
     </div>
   );

@@ -23,6 +23,7 @@ export interface LinkedSnapshot {
   debugAdapterAvailable: boolean;
   busy: boolean;
   activeAction: Action | null;
+  activeActionId: number | null;
   activeCount: number;
   problems: (BuildProblem & { windowLabel: string; projectName: string })[];
 }
@@ -31,6 +32,7 @@ export interface LinkedMember {
   windowLabel: string;
   windowId: number;
   instanceId: string;
+  solutionPath: string;
   ldiRole: "managed" | "native-library" | null;
   projectName: string;
   status: string;
@@ -40,6 +42,7 @@ export interface LinkedMember {
   selectedProfileName: string | null;
   canDebug: boolean;
   debugging: boolean;
+  activeAction: Action | null;
   activeFile: { path: string; name: string; language: string; content: string; dirty: boolean; truncated: boolean } | null;
   tabs: { path: string; name: string; dirty: boolean }[];
   output: string;
@@ -62,7 +65,7 @@ interface LinkedView {
 
 const empty: LinkedSnapshot = {
   sequence: 0, linked: false, members: [], windows: [], canBuild: false,
-  canRun: false, canDebug: false, debugAdapterAvailable: false, busy: false, activeAction: null, activeCount: 0,
+  canRun: false, canDebug: false, debugAdapterAvailable: false, busy: false, activeAction: null, activeActionId: null, activeCount: 0,
   problems: [],
 };
 
@@ -78,7 +81,7 @@ export const useLinkedWindows = create<LinkedSnapshot & LinkedView>((set) => ({
       // adopted. If focusing fails, the user sees nothing happen when
       // they clicked the row; surface the failure instead of swallowing it.
       try {
-        await invoke("focus_linked_window", { targetLabel: label });
+        await focusLinkedWindow(label);
       } catch (cause) {
         const message = String(cause);
         console.error("[craidd] Could not focus linked window:", cause);
@@ -155,13 +158,12 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     projectPath: project?.path ?? null,
     projectName: project?.name ?? null,
     projectKind: project?.kind ?? null,
-    nativeLibrary: project?.language === "cpp" && Boolean(project.manifests?.some((manifest) =>
-      manifest.kind === "cmake" && Array.isArray(manifest.values.libraries) && manifest.values.libraries.length > 0
-      && Array.isArray(manifest.values.executables) && manifest.values.executables.length === 0)),
     canBuild: Boolean(build.mainChoices.build),
     canRun: Boolean(build.mainChoices.run),
     canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""),
     debugging: ["building", "running", "paused"].includes(debug.status),
+    activeAction: ["building", "running", "paused"].includes(debug.status) ? "debug"
+      : ["starting", "running"].includes(build.status) ? build.action : null,
     status: ["building", "running", "paused"].includes(debug.status) ? debug.status : build.status,
     selectedConfigName: build.selectedConfigName,
     selectedProfileName: build.selectedProfileName,
@@ -315,6 +317,12 @@ async function prepareOwnWindow(decision: "save" | "discard"): Promise<void> {
       if (result !== "saved") throw new Error(`${result === "conflict" ? "Disk conflict" : "Could not save"}: ${tab.name}`);
     }
   }
+  if (decision === "save") {
+    await useSolution.getState().refreshDiskStates();
+    for (const tab of useSolution.getState().tabs.filter((item) => !item.dirty && item.diskState === "newer")) {
+      await useSolution.getState().reloadTabFromDisk(tab.fileId);
+    }
+  }
 }
 
 export async function prepareLinkedWindow(targetLabel: string, decision: "save" | "discard" | "inspect"): Promise<number> {
@@ -323,7 +331,14 @@ export async function prepareLinkedWindow(targetLabel: string, decision: "save" 
   if (!ownWindowLabel || !solutionPath || !windows.some((item) => item.windowLabel === targetLabel)) {
     throw new Error("That IDE window is no longer linked to this solution");
   }
+  return prepareApplicationWindow(targetLabel, solutionPath, decision);
+}
+
+export async function prepareApplicationWindow(targetLabel: string, solutionPath: string, decision: "save" | "discard" | "inspect"): Promise<number> {
+  const ownWindowLabel = useLinkedWindows.getState().ownWindowLabel;
+  if (!ownWindowLabel) throw new Error("This IDE window is no longer registered");
   if (targetLabel === ownWindowLabel) {
+    if (useSolution.getState().clnPath !== solutionPath) throw new Error("The solution changed before this window could be prepared");
     if (decision !== "inspect") await prepareOwnWindow(decision);
     await publishLinkedWindow(useSolution.getState().solution, solutionPath);
     return useSolution.getState().tabs.filter((tab) => tab.dirty).length;
@@ -364,9 +379,32 @@ export async function setLinkedWindowVisible(targetLabel: string, visible: boole
   }
 }
 
-export async function focusLinkedWindow(targetLabel: string): Promise<void> {
+export async function focusLinkedWindow(targetLabel: string): Promise<boolean> {
   const { invoke } = await import("@tauri-apps/api/core");
+  // The Rust command shows, unminimizes and requests focus. On Linux the
+  // compositor may decline activation even when Tauri reports success;
+  // report that as a soft fallback instead of retrying or claiming failure.
   await invoke("focus_linked_window", { targetLabel });
+  try {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const target = await WebviewWindow.getByLabel(targetLabel);
+    if (!target) return false;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 450));
+    return await target.isFocused();
+  } catch {
+    // The activation request was accepted, but focus verification is not
+    // available. Do not show a misleading "focus denied" notice.
+    return true;
+  }
+}
+
+let chromeOsGuestCheck: Promise<boolean> | null = null;
+
+export function isChromeOsGuest(): Promise<boolean> {
+  chromeOsGuestCheck ??= import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke<boolean>("is_chromeos_guest"))
+    .catch(() => false);
+  return chromeOsGuestCheck;
 }
 
 export function waitForLinkedWindowReady(targetLabel: string): Promise<void> {
@@ -381,6 +419,21 @@ export function waitForLinkedWindowReady(targetLabel: string): Promise<void> {
         unsubscribe();
         resolve();
       }
+    });
+  });
+}
+
+/** Wait for a newly created participant to finish opening or parking. */
+export function waitForLinkedWindowSession(targetLabel: string): Promise<LinkedMember> {
+  const find = () => useLinkedWindows.getState().windows.find((item) =>
+    item.windowLabel === targetLabel && !item.restoring);
+  const current = find();
+  if (current) return Promise.resolve(current);
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => { unsubscribe(); reject(new Error("The duplicated IDE window did not finish opening")); }, 30_000);
+    const unsubscribe = useLinkedWindows.subscribe(() => {
+      const member = find();
+      if (member) { window.clearTimeout(timer); unsubscribe(); resolve(member); }
     });
   });
 }

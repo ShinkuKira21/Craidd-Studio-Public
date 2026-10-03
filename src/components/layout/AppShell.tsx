@@ -16,6 +16,8 @@ import SaveConflictDialog from "../dialogs/SaveConflictDialog";
 import CriticalWorkspaceBanner from "./CriticalWorkspaceBanner";
 import EnvironmentNotice from "./EnvironmentNotice";
 import NewProjectDialog from "../dialogs/NewProjectDialog";
+import SaveSessionDialog from "../dialogs/SaveSessionDialog";
+import SessionNotice from "./SessionNotice";
 import { usePreferences } from "../../store/preferencesStore";
 import { useLayout } from "../../store/layoutStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
@@ -291,7 +293,7 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           <div className="relative flex-1 min-h-0 flex flex-col">
             {remoteContext && remoteEditing && <div className="h-8 shrink-0 flex items-center gap-2 px-3 border-b border-blue-900/50 bg-blue-950/30 text-[11px] text-zinc-300">
-              <span className="truncate">Editing in this window · controlling {remoteContext.projectName} (CS{remoteContext.windowId})</span>
+              <span className="truncate">Editing in this window · controlling {remoteContext.selectedConfigName ?? remoteContext.projectName} (CS{remoteContext.windowId})</span>
               <button type="button" className="ml-auto shrink-0 text-blue-300 hover:text-blue-100" onClick={() => setRemoteEditing(false)}>View hidden preview</button>
             </div>}
             <div className={"flex-1 min-h-0 flex flex-col " + (remoteContext && !remoteEditing ? "invisible pointer-events-none" : "")}
@@ -319,6 +321,8 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
       <StatusBar />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <AncestorSolutionDialog />
+      <SaveSessionDialog />
+      <SessionNotice />
       {prefsOpen && <PreferencesDialog initialArea={prefsArea} initialLanguage={prefsLanguage} onClose={() => setPrefsOpen(false)} />}
       {pendingSave?.kind === "deleted" && (
         <DeletedFileDialog

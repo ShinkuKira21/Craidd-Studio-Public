@@ -118,7 +118,7 @@ fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap
         if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); }
         Ok(())
     }); }
-    let mut child = process.spawn().map_err(|error| format!("Could not start Tauri frontend: {error}"))?;
+    let mut child = crate::process_supervisor::spawn(&mut process).map_err(|error| format!("Could not start Tauri frontend: {error}"))?;
     let pgid = child.id() as i32;
     let tail = Arc::new(Mutex::new(VecDeque::new()));
     if let Some(stdout) = child.stdout.take() { drain(stdout, tail.clone()); }

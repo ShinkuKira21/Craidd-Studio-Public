@@ -1,5 +1,8 @@
 mod commands;
 mod types;
+mod process_supervisor;
+
+pub use process_supervisor::entry as process_supervisor_entry;
 
 use tauri::Manager;
 
@@ -21,14 +24,16 @@ use commands::solution::{
 };
 use commands::manifests::read_manifests;
 use commands::infer::infer_configs;
-use commands::window::{WindowRequests, get_startup_state, record_workspace_open, take_window_open_request, open_workspace_window, open_welcome_window, apply_window_geometry, capture_window_geometry};
+use commands::window::{WindowRequests, get_startup_state, is_chromeos_guest, record_workspace_open, take_window_open_request, open_workspace_window, open_welcome_window, apply_window_geometry, capture_window_geometry};
 use commands::runner::{RunnerManager, start_config, stop_config, cancel_window_run};
-use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, set_linked_window_visible, update_parked_window_configuration, close_linked_window, view_linked_window, focus_linked_window, dispatch_linked_window_command, start_linked_action, acknowledge_linked_action, stop_linked_action, stop_linked_member, reveal_linked_problem, remove_linked_window, prepare_native_close, note_window_shown, get_linked_runtime, mark_linked_window_ready, abort_parked_restore, clear_native_close_guard, reset_linked_action, preview_linked_action, probe_linked_readiness};
+use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, set_linked_window_visible, update_parked_window_configuration, close_linked_window, get_application_windows, exit_application, stop_solution_sessions, view_linked_window, focus_linked_window, dispatch_linked_window_command, start_linked_action, acknowledge_linked_action, stop_linked_action, stop_linked_member, reveal_linked_problem, remove_linked_window, prepare_native_close, note_window_shown, get_linked_runtime, mark_linked_window_ready, abort_parked_restore, clear_native_close_guard, reset_linked_action, preview_linked_action, probe_linked_readiness};
 use commands::breakpoints::{load_breakpoints, save_breakpoints};
+use commands::linked_windows::restart_linked_sessions;
 use commands::debug::{DebugBuildManager, DebugManager, start_debug, debug_control, cancel_window_debug};
 
 #[tauri::command]
-fn show_main_window(w: tauri::WebviewWindow) -> Result<(), String> {
+fn show_main_window(w: tauri::WebviewWindow, requests: tauri::State<'_, WindowRequests>) -> Result<(), String> {
+    if requests.1.lock().map_err(|e| e.to_string())?.contains(w.label()) { return Ok(()); }
     if w.is_visible().map_err(|e| e.to_string())? { return Ok(()); }
     w.show().map_err(|e| e.to_string())?;
     note_window_shown(&w.app_handle(), w.label());
@@ -46,6 +51,8 @@ fn show_main_window(w: tauri::WebviewWindow) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    process_supervisor::initialize(&std::env::current_exe().expect("could not find IDE executable"))
+        .expect("could not initialize IDE process cleanup supervisor");
     tauri::Builder::default()
         .manage(BuildManager::default())
         .manage(WindowRequests::default())
@@ -83,8 +90,11 @@ pub fn run() {
             delete_path,
             rename_path,
             show_main_window,
+            commands::window::abort_initial_hidden_window,
             commands::ldi::set_ldi_blue,
+            commands::ldi::list_ldi_call_sites,
             commands::ldi::remove_ldi_blue,
+            commands::ldi::reconcile_ldi_blues_on_save,
             commands::ldi::get_ldi_blues,
             commands::ldi::abandon_ldi_reproduction,
             get_linked_runtime,
@@ -124,6 +134,7 @@ pub fn run() {
             stop_config,
             infer_configs,
             get_startup_state,
+            is_chromeos_guest,
             record_workspace_open,
             take_window_open_request,
             open_workspace_window,
@@ -132,6 +143,9 @@ pub fn run() {
             update_linked_window,
             set_linked_window_visible,
             close_linked_window,
+            get_application_windows,
+            exit_application,
+            stop_solution_sessions,
             view_linked_window,
             focus_linked_window,
             dispatch_linked_window_command,
@@ -145,10 +159,15 @@ pub fn run() {
             acknowledge_linked_action,
             stop_linked_action,
             stop_linked_member,
+            restart_linked_sessions,
             reveal_linked_problem,
             clear_native_close_guard,
             reset_linked_action,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) { process_supervisor::shutdown(); }
+        });
+    process_supervisor::shutdown();
 }

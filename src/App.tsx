@@ -31,7 +31,7 @@ async function openEntry(entry: WorkspaceEntry): Promise<void> {
       }
       await listenToBuildEvents();
       const { invoke } = await import("@tauri-apps/api/core");
-      const runtime = await invoke<{ status: string; output: string; activeId: number | null; debugging: boolean;
+      const runtime = await invoke<{ status: string; action: "build" | "run" | "debug" | null; output: string; activeId: number | null; debugging: boolean;
         file: string | null; line: number | null; frames: ReturnType<typeof useDebug.getState>["frames"];
         variables: ReturnType<typeof useDebug.getState>["variables"] } | null>("get_linked_runtime");
       if (runtime) {
@@ -42,7 +42,7 @@ async function openEntry(entry: WorkspaceEntry): Promise<void> {
         } else {
           const status = runtime.activeId !== null ? "running"
             : runtime.status === "success" ? "success" : runtime.status === "failed" ? "failed" : "idle";
-          useBuild.setState({ status, activeId: runtime.activeId, output: runtime.output,
+          useBuild.setState({ status, action: runtime.action, activeId: runtime.activeId, output: runtime.output,
             activeConfigName: runtime.activeId !== null ? entry.selectedConfigName ?? null : null });
         }
       }
@@ -69,6 +69,10 @@ function bootstrap() {
       if (entry) {
         try { await openEntry(entry); return { state, workspace: true, error: null }; }
         catch (error) {
+          if (entry.startHidden) {
+            try { await invoke("abort_initial_hidden_window"); }
+            catch (abortError) { console.error("[craidd] Could not close failed hidden duplicate:", abortError); }
+          }
           if (entry.restoredFromHidden) {
             try { await invoke("abort_parked_restore", { error: String(error) }); }
             catch (abortError) { console.error("[craidd] Could not park failed restore:", abortError); }

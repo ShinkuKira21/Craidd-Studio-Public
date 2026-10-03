@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,6 +42,8 @@ pub struct WorkspaceEntry {
     pub restored_active_file: Option<String>,
     #[serde(default)]
     pub restored_from_hidden: bool,
+    #[serde(default)]
+    pub start_hidden: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -60,7 +62,7 @@ impl Default for StartupState {
 }
 
 #[derive(Default)]
-pub struct WindowRequests(pub Mutex<HashMap<String, WorkspaceEntry>>);
+pub struct WindowRequests(pub Mutex<HashMap<String, WorkspaceEntry>>, pub Mutex<HashSet<String>>);
 
 fn recent_path() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
@@ -89,6 +91,19 @@ pub fn get_startup_state() -> Result<StartupState, String> {
     let previous = rotate_session(&path)?;
     let _ = PREVIOUS_SESSION.set(previous.clone());
     Ok(previous)
+}
+
+fn chromeos_guest_markers(sommelier: Option<&str>, gtk_ime: Option<&str>, shared_mount: bool) -> bool {
+    sommelier.is_some_and(|value| !value.is_empty())
+        || gtk_ime.is_some_and(|value| value.eq_ignore_ascii_case("cros"))
+        || shared_mount
+}
+
+#[tauri::command]
+pub fn is_chromeos_guest() -> bool {
+    let sommelier = std::env::var("SOMMELIER_VERSION").ok();
+    let gtk_ime = std::env::var("GTK_IM_MODULE").ok();
+    chromeos_guest_markers(sommelier.as_deref(), gtk_ime.as_deref(), Path::new("/mnt/chromeos").is_dir())
 }
 
 fn rotate_session(path: &Path) -> Result<StartupState, String> {
@@ -131,7 +146,7 @@ pub fn record_workspace_open(
         selected_config_name,
         selected_profile_name,
         selection_name,
-        restored_tabs: vec![], restored_active_file: None, restored_from_hidden: false,
+        restored_tabs: vec![], restored_active_file: None, restored_from_hidden: false, start_hidden: false,
     };
     if entry.kind == "folder" { let _ = window.set_title(&format!("{} - Craidd Studio", entry.name)); }
     let _guard = RECENT_LOCK.lock().map_err(|e| e.to_string())?;
@@ -173,9 +188,19 @@ pub fn take_window_open_request(window: WebviewWindow, requests: tauri::State<'_
 }
 
 #[tauri::command]
-pub fn open_workspace_window(app: AppHandle, requests: tauri::State<'_, WindowRequests>, entry: WorkspaceEntry) -> Result<(), String> {
+pub fn open_workspace_window(app: AppHandle, requests: tauri::State<'_, WindowRequests>, entry: WorkspaceEntry) -> Result<String, String> {
     let label = format!("workspace-{}", NEXT_WINDOW.fetch_add(1, Ordering::Relaxed));
-    create_workspace_window(&app, &requests, &label, entry)
+    create_workspace_window(&app, &requests, &label, entry)?;
+    Ok(label)
+}
+
+#[tauri::command]
+pub fn abort_initial_hidden_window(window: WebviewWindow, requests: tauri::State<'_, WindowRequests>) -> Result<(), String> {
+    if !requests.1.lock().map_err(|e| e.to_string())?.remove(window.label()) {
+        return Err("This window was not opened as a hidden duplicate".into());
+    }
+    requests.0.lock().map_err(|e| e.to_string())?.remove(window.label());
+    window.destroy().map_err(|e| e.to_string())
 }
 
 pub fn create_workspace_window(app: &AppHandle, requests: &WindowRequests, label: &str, entry: WorkspaceEntry) -> Result<(), String> {
@@ -185,6 +210,10 @@ pub fn create_workspace_window(app: &AppHandle, requests: &WindowRequests, label
     }
     if entry.kind != "solution" && entry.kind != "folder" { return Err("Unsupported workspace kind".into()); }
     requests.0.lock().map_err(|e| e.to_string())?.insert(label.into(), entry.clone());
+    {
+        let mut hidden = requests.1.lock().map_err(|e| e.to_string())?;
+        if entry.start_hidden { hidden.insert(label.into()); } else { hidden.remove(label); }
+    }
     let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title(format!("{} — Craidd Studio", entry.name)).background_color(tauri::window::Color(9, 9, 11, 255))
         .inner_size(entry.width.unwrap_or(1280) as f64, entry.height.unwrap_or(800) as f64)
@@ -192,6 +221,7 @@ pub fn create_workspace_window(app: &AppHandle, requests: &WindowRequests, label
     if let (Some(x), Some(y)) = (entry.x, entry.y) { builder = builder.position(x as f64, y as f64); }
     if let Err(error) = builder.build() {
         requests.0.lock().map_err(|e| e.to_string())?.remove(label);
+        requests.1.lock().map_err(|e| e.to_string())?.remove(label);
         return Err(error.to_string());
     }
     Ok(())
@@ -225,6 +255,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chromeos_notice_requires_a_guest_marker() {
+        assert!(!chromeos_guest_markers(None, Some("ibus"), false));
+        assert!(chromeos_guest_markers(Some("0.20"), None, false));
+        assert!(chromeos_guest_markers(None, Some("cros"), false));
+        assert!(chromeos_guest_markers(None, None, true));
+    }
+
+    #[test]
     fn recent_state_round_trips() {
         let path = std::env::temp_dir().join(format!("craidd-recent-{}.toml", std::process::id()));
         let state = StartupState { session_format: SESSION_FORMAT, recent_solutions: vec![], last_session: vec![] };
@@ -241,13 +279,14 @@ mod tests {
             window_label: "workspace-1".into(), instance_id: Some("instance-a".into()), x: None, y: None, width: None, height: None,
             selected_config_name: Some("API: Local".into()), selected_profile_name: None,
             selection_name: Some("API".into()),
-            restored_tabs: vec![], restored_active_file: None, restored_from_hidden: false,
+            restored_tabs: vec![], restored_active_file: None, restored_from_hidden: false, start_hidden: false,
         };
         let state = StartupState { session_format: SESSION_FORMAT, recent_solutions: vec![entry.clone()], last_session: vec![entry] };
         write_state(&path, &state).unwrap();
         let previous = rotate_session(&path).unwrap();
         assert_eq!(previous.last_session.len(), 1);
         assert_eq!(previous.last_session[0].selection_name.as_deref(), Some("API"));
+        assert!(!previous.last_session[0].start_hidden);
         let current = read_state(&path).unwrap();
         assert!(current.last_session.is_empty());
         assert_eq!(current.recent_solutions.len(), 1);

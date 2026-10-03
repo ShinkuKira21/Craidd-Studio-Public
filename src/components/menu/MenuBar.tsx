@@ -5,15 +5,18 @@ import { saveActiveFile, saveActiveFileAs } from "../../lib/fileActions";
 import { choicesForConfig, useBuild } from "../../store/buildStore";
 import { startViewedAction, stopViewedAction } from "../../lib/viewedActions";
 import { useDebug } from "../../store/debugStore";
-import { useLinkedWindows } from "../../store/linkedWindowsStore";
+import { useLinkedWindows, waitForLinkedWindowSession } from "../../store/linkedWindowsStore";
+import type { LinkedMember } from "../../store/linkedWindowsStore";
+import { shouldShowDuplicate } from "../../lib/duplicateWindowPolicy";
 
-interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; }
+interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; submenu?: MenuItem[]; }
 interface MenuSeparator { separator: true; }
 type MenuEntry = MenuItem | MenuSeparator;
 interface Menu { label: string; items: MenuEntry[]; }
 
 export default function MenuBar({ openCommandPalette, openPreferences }: { openCommandPalette: () => void; openPreferences: () => void }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
   const activeFileId = useSolution((s) => s.activeFileId);
@@ -47,13 +50,25 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     if (!clnPath) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("open_workspace_window", { entry: {
+      const { duplicateWindowMode, duplicateWindowLimit } = usePreferences.getState();
+      const visibleCount = duplicateWindowMode === "limit"
+        ? (await invoke<LinkedMember[]>("get_application_windows")).filter((item) => item.visible).length
+        : 0;
+      const show = shouldShowDuplicate(duplicateWindowMode, visibleCount, duplicateWindowLimit);
+      const label = await invoke<string>("open_workspace_window", { entry: {
         path: clnPath, kind: "solution", name: clnPath.split("/").filter(Boolean).pop() ?? clnPath,
         windowLabel: "", selectedConfigName: viewed?.selectedConfigName ?? selectedConfigName,
         selectedProfileName: viewed?.selectedProfileName ?? selectedProfileName,
+        startHidden: !show,
       } });
+      if (!show) {
+        await waitForLinkedWindowSession(label);
+        await useLinkedWindows.getState().selectWindow(label);
+      }
     } catch (error) { alert(`Could not duplicate window: ${String(error)}`); }
   };
+  const exitScope = (scope: "window" | "solution" | "ide") =>
+    window.dispatchEvent(new CustomEvent("craidd:exit-scope", { detail: scope }));
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -112,7 +127,11 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         { separator: true },
         { label: "Preferences…", shortcut: "Ctrl+,", action: openPreferences },
         { separator: true },
-        { label: "Exit", shortcut: "Ctrl+Q", disabled: true },
+        { label: "Exit", submenu: [
+          { label: "This Window", shortcut: "Ctrl+Q", action: () => exitScope("window") },
+          { label: "This Solution", shortcut: "Ctrl+Shift+Q", disabled: !clnPath, action: () => exitScope("solution") },
+          { label: "This Application", shortcut: "Ctrl+Alt+Q", action: () => exitScope("ide") },
+        ] },
       ],
     },
     {
@@ -172,7 +191,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         return (
           <div key={menu.label} className="relative">
             <button
-              onClick={() => setOpenMenu(isOpen ? null : menu.label)}
+              onClick={() => { setOpenMenu(isOpen ? null : menu.label); setOpenSubmenu(null); }}
               onMouseEnter={() => openMenu && setOpenMenu(menu.label)}
               className={"px-2.5 py-1 rounded transition-colors " + (isOpen ? "bg-zinc-800 text-zinc-100" : "text-zinc-300 hover:bg-zinc-800")}
             >
@@ -182,6 +201,21 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
               <div className="absolute top-full left-0 mt-0.5 min-w-[260px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 z-50">
                 {menu.items.map((item, i) => {
                   if (isSeparator(item)) return <div key={i} className="my-1 h-px bg-zinc-800" />;
+                  if (item.submenu) return <div key={i} className="relative"
+                    onMouseEnter={() => setOpenSubmenu(item.label)} onMouseLeave={() => setOpenSubmenu(null)}>
+                    <button type="button" onClick={() => setOpenSubmenu(openSubmenu === item.label ? null : item.label)}
+                      className="w-full flex items-center justify-between gap-8 px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white">
+                      <span>{item.label}</span><span aria-hidden="true">▸</span>
+                    </button>
+                    {openSubmenu === item.label && <div className="absolute left-full top-0 min-w-[260px] rounded border border-zinc-700 bg-zinc-900 shadow-2xl py-1 z-[60]">
+                      {item.submenu.map((child) => <button key={child.label} type="button" disabled={child.disabled}
+                        onClick={() => { child.action?.(); setOpenSubmenu(null); setOpenMenu(null); }}
+                        className={"w-full flex items-center justify-between gap-8 px-3 py-1 text-left " +
+                          (child.disabled ? "text-zinc-600 cursor-default" : "text-zinc-200 hover:bg-blue-700 hover:text-white")}>
+                        <span>{child.label}</span><span className="text-[10px] text-zinc-500">{child.shortcut}</span>
+                      </button>)}
+                    </div>}
+                  </div>;
                   const disabled = isDisabled(item);
                   return (
                     <button

@@ -115,14 +115,30 @@ internal sealed class MainWindow : Window
         if (!TryNumbers(out int left, out int right)) return;
         /* TEST 1 — put blue on the next call, with NO native red breakpoint.
            Expected: Gold LDI opens B at the top of demo_add in scalar.cpp.
+           
+           /* Archived
+           Actual: Works! (UI/UX issue? When Viewing: C++ Unmanaged... CS2 it focuses on MainWindow.cs (because Blue Breakpoint was held first in Window A) --- Project CS1 should only show in CS1, Project CS2 should only show in CS2 (if the pause is triggered), but if user wants to contaminate it, by opening another project, then let them) -- But let's be organised.
+           UI/UX Friction: View Hidden Preview (is good, but doesn't show the shared breakpoint (red), unless they edit), and it's kinda annoying to press, "edit", if they want to edit straightaway.
+           UI/UX Friction: If user edits the file, and saves during LDI Debugging, or any kind of debugging, shouldn't we do "Save and Re-Run Debug | Save and Run | Save" dialog?
+           UI/UX Friction: If user puts blue breakpoint in, then edits, a comment, and enters. The Blue Breakpoint now is no longer on the Native Function (tho shows the yellow ring warning which is good UI/UX, but all breakpoints should follow there placement?)
+           
+
+
+
            TEST 2 — keep blue, then add red on RED_ADD in scalar.cpp.
            Expected: B stops at the later red line instead of automatic entry.
-           Try a blue condition of left == 20 && right == 22: changing either
+           Actual: B stops at same behaviour of Test 1 | Continuing, goes to next red breakpoint tho!
+
+           TEST 2.1 - Try a blue condition of left == 20 && right == 22: changing either
            input should leave the call running normally without opening B.
+
+           Actual: 
+
            TEST 10 — while B is stopped, press B's White Stop: A should make
            its original call and remain available for the next blue hit.
            TEST 11 — Gold Stop stops both linked debuggers. Red without blue
            must never launch B's LDI reproduction. */
+        
         int result = NativeScalar.Add(left, right); // BLUE_ADD
         addResult.Text = $"{left} + {right} = {result} (calculated by C++)";
         status.Text = "Add returned to C#. The GUI label changed after A executed its own native call.";

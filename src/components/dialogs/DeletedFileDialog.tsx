@@ -1,4 +1,5 @@
 import { useSolution } from "../../store/solutionStore";
+import { requestFileSave } from "../../lib/fileActions";
 
 export default function DeletedFileDialog({
   fileId,
@@ -8,7 +9,6 @@ export default function DeletedFileDialog({
   onClose: () => void;
 }) {
   const tabs = useSolution((s) => s.tabs);
-  const saveFile = useSolution((s) => s.saveFile);
   const saveFileAs = useSolution((s) => s.saveFileAs);
   const closeTab = useSolution((s) => s.closeTab);
   const tab = tabs.find((t) => t.fileId === fileId);
@@ -19,9 +19,8 @@ export default function DeletedFileDialog({
   }
 
   const handleSave = async () => {
-    const r = await saveFile(fileId, true);
-    onClose();
-    if (r === "saved") closeTab(fileId);
+    try { await requestFileSave(fileId, true, () => closeTab(fileId)); onClose(); }
+    catch (error) { alert(`Save failed: ${String(error)}`); }
   };
 
   const handleSaveAs = async () => {

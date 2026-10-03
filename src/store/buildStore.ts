@@ -375,6 +375,13 @@ export const useBuild = create<BuildState>((set, get) => ({
         return;
       }
     }
+    // A sibling window may have saved shared source during this session.
+    // Refresh clean copies before rebuilding so the editor shows the source
+    // corresponding to the new executable; dirty copies were checked above.
+    await useSolution.getState().refreshDiskStates();
+    for (const tab of useSolution.getState().tabs.filter((tab) => !tab.dirty && tab.diskState === "newer")) {
+      await useSolution.getState().reloadTabFromDisk(tab.fileId);
+    }
 
     const spec = resolveSpec(chosen, rootPath, solution, state.selectedProfileName, useSolution.getState().clnPath);
     if (!spec) {

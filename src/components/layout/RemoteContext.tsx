@@ -3,6 +3,7 @@ import type { LinkedMember } from "../../store/linkedWindowsStore";
 import { dispatchLinkedWindowCommand, useLinkedWindows } from "../../store/linkedWindowsStore";
 import { useBreakpoints } from "../../store/breakpointStore";
 import { useSolution } from "../../store/solutionStore";
+import { useLdi } from "../../store/ldiStore";
 import BreakpointMenu from "../editor/BreakpointMenu";
 
 const LINE_HEIGHT = 20;
@@ -11,19 +12,35 @@ const OVERSCAN = 16;
 // A remote window is a source preview. Reusing a second Monaco instance here
 // made context switches recreate WebKit editor surfaces on every selection.
 export function RemoteEditorPane({ context }: { context: LinkedMember }) {
+  const configName = context.selectedConfigName ?? context.projectName;
   const file = context.activeFile;
   const fileIsDirty = Boolean(file?.dirty || context.tabs.some((tab) => tab.path === file?.path && tab.dirty));
   const points = useBreakpoints((state) => state.points);
+  const ldiSession = useLdi((state) => state.session);
+  const solution = useSolution((state) => state.solution);
+  const rootPath = useSolution((state) => state.rootPath);
   const [breakpointMenu, setBreakpointMenu] = useState<{ x: number; y: number; line: number } | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(600);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const previewedLdiTokenRef = useRef<string | null>(null);
   const lines = useMemo(() => file?.content.split("\n") ?? [], [file?.content]);
   const markerLines = useMemo(() => {
     const lines = new Set<number>();
     for (const point of points.filter((item) => item.file === file?.path)) lines.add(point.line);
     return lines;
   }, [points, file?.path]);
+  const projectPoints = useMemo(() => {
+    const configs = [...(solution?.inferredConfigs ?? []), ...(solution?.configs ?? [])];
+    const selected = configs.find((item) => item.name === context.selectedConfigName);
+    const project = solution?.projects.find((item) => item.path === selected?.target);
+    if (!project || !rootPath) return [];
+    const base = project.folder.startsWith("/") ? project.folder.replace(/\/+$/, "")
+      : project.folder === "." || project.folder === "" ? rootPath.replace(/\/+$/, "")
+        : `${rootPath.replace(/\/+$/, "")}/${project.folder.replace(/^\/+|\/+$/g, "")}`;
+    return points.filter((point, index, all) => (point.file === base || point.file.startsWith(base + "/"))
+      && all.findIndex((other) => other.file === point.file && other.line === point.line) === index);
+  }, [points, solution, rootPath, context.selectedConfigName]);
 
   useEffect(() => {
     const node = scrollRef.current;
@@ -42,14 +59,29 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
     setScrollTop(top);
   }, [file?.path, context.pausedLine]);
 
+  // A new Blue hit identifies B's native source before B's debugger has
+  // stopped there. Hidden windows may still have an unrelated old tab open;
+  // show the selected native source once per call, then leave navigation to
+  // the developer (and to the debugger's later pause event).
+  useEffect(() => {
+    if (!ldiSession?.held || ldiSession.partnerLabel !== context.windowLabel
+      || !ldiSession.nativeFile || ["armed", "checking-stop", "stopped"].includes(ldiSession.phase)
+      || previewedLdiTokenRef.current === ldiSession.token) return;
+    previewedLdiTokenRef.current = ldiSession.token;
+    if (file?.path === ldiSession.nativeFile) return;
+    void dispatchLinkedWindowCommand(context.windowLabel, "reveal_file", JSON.stringify({
+      file: ldiSession.nativeFile, line: ldiSession.nativeLine,
+    })).catch((error) => console.warn("[LDI] Could not preview the native source:", error));
+  }, [context.windowLabel, file?.path, ldiSession]);
+
   const first = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN);
   const last = Math.min(lines.length, Math.ceil((scrollTop + height) / LINE_HEIGHT) + OVERSCAN);
   const visibleLines = lines.slice(first, last);
-  const editHere = async (path: string) => {
+  const editHere = async (path: string, line = 1) => {
     if ((file?.path === path && file.dirty) || context.tabs.some((tab) => tab.path === path && tab.dirty)) {
       throw new Error("Save this file in its owning window before editing it here.");
     }
-    await useSolution.getState().revealFile(path, context.pausedLine && file?.path === path ? context.pausedLine : 1, 1);
+    await useSolution.getState().revealFile(path, line === 1 && context.pausedLine && file?.path === path ? context.pausedLine : line, 1);
     if (useSolution.getState().tabs.some((tab) => tab.fileId === path)) {
       useLinkedWindows.getState().setRemoteEditing(true);
     }
@@ -57,7 +89,7 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
 
   return <div className="flex-1 flex flex-col min-h-0 editor-surface bg-editor-bg">
     <div className="h-7 shrink-0 flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 text-[11px]">
-      <span className="text-blue-300 truncate">Viewing {context.projectName}</span>
+      <span className="text-blue-300 truncate" title={context.projectName}>Viewing {configName}</span>
       <span className="text-zinc-500 shrink-0" title="Breakpoints are shared by every debug session in this solution">Shared breakpoints</span>
       {file ? <button type="button" onClick={() => void editHere(file.path).catch((error) => alert(`Could not open file: ${String(error)}`))}
         disabled={fileIsDirty}
@@ -66,6 +98,17 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
         {fileIsDirty ? "Unsaved in owning window" : "Edit here ↗"}
       </button> : <span className="ml-auto shrink-0 text-zinc-500">Choose a file in Solution Explorer to edit</span>}
     </div>
+    {projectPoints.length > 0 && <div className="shrink-0 flex items-center gap-1.5 overflow-x-auto border-b border-zinc-800 bg-zinc-900/60 px-3 py-1 text-[11px]">
+      <span className="shrink-0 text-zinc-500">Red in this project</span>
+      {projectPoints.slice(0, 8).map((point) => <button key={`${point.file}:${point.line}`} type="button"
+        title={`${point.file}:${point.line} · click to preview, double-click to edit here`}
+        onClick={() => void dispatchLinkedWindowCommand(context.windowLabel, "reveal_file", JSON.stringify({ file: point.file, line: point.line }))
+          .catch((error) => alert(`Could not preview breakpoint: ${String(error)}`))}
+        onDoubleClick={() => void editHere(point.file, point.line).catch((error) => alert(`Could not edit breakpoint: ${String(error)}`))}
+        className="shrink-0 rounded px-1.5 py-0.5 text-red-300 hover:bg-zinc-800">
+        ● {point.file.split("/").pop()}:{point.line}</button>)}
+      {projectPoints.length > 8 && <span className="shrink-0 text-zinc-500">+{projectPoints.length - 8} more in Debug</span>}
+    </div>}
     <div className="h-9 shrink-0 flex items-stretch overflow-x-auto border-b border-zinc-800 bg-zinc-900/70 text-xs">
       {context.tabs.map((tab) => <button key={tab.path} type="button"
         onClick={() => void dispatchLinkedWindowCommand(context.windowLabel, "select_tab", tab.path)}
@@ -84,7 +127,9 @@ export function RemoteEditorPane({ context }: { context: LinkedMember }) {
           const marker = markerLines.has(lineNumber);
           const paused = context.pausedLine === lineNumber;
           return <div key={lineNumber} style={{ top: (lineNumber - 1) * LINE_HEIGHT, height: LINE_HEIGHT }}
-            className={"absolute left-0 flex min-w-full whitespace-pre " + (paused ? "bg-amber-500/20" : "")}
+            onDoubleClick={() => void editHere(file.path, lineNumber).catch((error) => alert(`Could not edit file: ${String(error)}`))}
+            title="Double-click to edit this line here"
+            className={"absolute left-0 flex min-w-full whitespace-pre " + (paused ? "bg-amber-500/20" : marker ? "bg-red-950/20" : "")}
           >
             <button type="button" title={marker ? `Remove breakpoint at line ${lineNumber}`
               : `Add breakpoint at line ${lineNumber}`}
@@ -111,7 +156,7 @@ export function RemoteOutputPanel({ context }: { context: LinkedMember }) {
     [allProblems, context.windowLabel]);
   return <div className="h-full flex flex-col bg-zinc-950 border-t border-zinc-800 text-xs">
     <div className="h-8 shrink-0 flex items-center gap-3 px-3 border-b border-zinc-800 bg-zinc-900 text-zinc-400">
-      <span>Output · {context.projectName}</span><span>{context.status}</span>
+      <span title={context.projectName}>Output · {context.selectedConfigName ?? context.projectName}</span><span>{context.status}</span>
       {problems.length > 0 && <span className="text-red-400">{problems.length} problems</span>}
     </div>
     <pre className="flex-1 overflow-auto p-3 whitespace-pre-wrap font-mono text-zinc-300">{context.output || "No output yet."}</pre>

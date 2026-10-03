@@ -68,6 +68,11 @@ pub fn cancel(app: &AppHandle, label: &str) -> bool {
     false
 }
 
+pub fn has_active_order(app: &AppHandle, label: &str) -> bool {
+    app.try_state::<OrderManager>().is_some_and(|state|
+        state.0.lock().is_ok_and(|jobs| jobs.contains_key(label)))
+}
+
 fn load(request: &OrderRequest) -> Result<CraiddSolution, String> {
     let file = Path::new(&request.solution_path)
         .canonicalize()
@@ -341,8 +346,7 @@ fn command(
             }
         });
     }
-    let mut child = command
-        .spawn()
+    let mut child = crate::process_supervisor::spawn(&mut command)
         .map_err(|error| format!("Could not start {}: {error}", spec.program))?;
     let pgid = child.id() as i32;
     job.pgid.store(pgid, Ordering::SeqCst);

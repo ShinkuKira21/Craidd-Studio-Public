@@ -78,8 +78,14 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
     setIdeTheme: state.setIdeTheme,
     breakpointFocusMode: state.breakpointFocusMode,
     setBreakpointFocusMode: state.setBreakpointFocusMode,
+    ldiDuplicateMode: state.ldiDuplicateMode,
+    setLdiDuplicateMode: state.setLdiDuplicateMode,
+    duplicateWindowMode: state.duplicateWindowMode,
+    setDuplicateWindowMode: state.setDuplicateWindowMode,
+    duplicateWindowLimit: state.duplicateWindowLimit,
+    setDuplicateWindowLimit: state.setDuplicateWindowLimit,
   })));
-  const [area, setArea] = useState<"editor" | "ide" | "toolchains" | "debugging">(initialArea);
+  const [area, setArea] = useState<"editor" | "ide" | "behaviour" | "toolchains" | "debugging">(initialArea);
   const [language, setLanguage] = useState<string>(initialLanguage);
   const [snapshot, setSnapshot] = useState<ToolchainSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -149,13 +155,13 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
         </div>
         <div className="flex-1 min-h-0 flex">
           <nav aria-label="Preference sections" className="w-44 shrink-0 border-r border-zinc-800 py-3">
-            {(["editor", "ide", "toolchains", "debugging"] as const).map((item) => (
+            {(["editor", "ide", "behaviour", "toolchains", "debugging"] as const).map((item) => (
               <button key={item} onClick={() => setArea(item)} aria-current={area === item ? "page" : undefined}
                 className={"w-full text-left px-4 py-2 text-[12.5px] transition-colors border-l-2 " +
                   (area === item
                     ? "bg-zinc-800 text-zinc-100 border-l-blue-500"
                     : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200 border-l-transparent")}
-              >{item === "editor" ? "Text Editor" : item === "ide" ? "IDE Style" : item === "toolchains" ? "Toolchain" : "Debugging"}</button>
+              >{item === "editor" ? "Text Editor" : item === "ide" ? "IDE Style" : item === "behaviour" ? "IDE Behaviour" : item === "toolchains" ? "Toolchain" : "Debugging"}</button>
             ))}
           </nav>
 
@@ -214,12 +220,38 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                     selected={prefs.ideTheme === choice.value} onSelect={prefs.setIdeTheme} />)}
                 </div>
               </div>
+            </> : area === "behaviour" ? <>
+              <div className="px-6 py-4 border-b border-zinc-800 shrink-0">
+                <h2 className="text-[13px] text-zinc-100 font-medium">IDE Behaviour</h2>
+                <p className="text-[11px] text-zinc-500 mt-1">Choose how ordinary File → Duplicate Window opens a solution session.</p>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto scroll-thin px-6 py-5">
+                <h3 className="text-[10.5px] uppercase tracking-wider text-zinc-500 mb-3">Duplicate Window</h3>
+                <label htmlFor="duplicate-window-mode" className="block text-xs text-zinc-300 mb-2">What should happen when you click Duplicate Window?</label>
+                <select id="duplicate-window-mode" value={prefs.duplicateWindowMode}
+                  onChange={(event) => prefs.setDuplicateWindowMode(event.target.value as "show" | "hide-and-view" | "limit")}
+                  className="w-80 max-w-full bg-zinc-950 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-500">
+                  <option value="limit">Show while fewer than N windows are visible (default)</option>
+                  <option value="show">Always show the new window</option>
+                  <option value="hide-and-view">Always hide and view it in this window</option>
+                </select>
+                {prefs.duplicateWindowMode === "limit" && <label htmlFor="duplicate-window-limit" className="flex items-center gap-3 mt-4 text-xs text-zinc-300">
+                  Maximum visible IDE windows
+                  <input id="duplicate-window-limit" type="number" min={1} max={24} step={1}
+                    value={prefs.duplicateWindowLimit}
+                    onChange={(event) => prefs.setDuplicateWindowLimit(Number(event.target.value))}
+                    className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-500" />
+                </label>}
+                <p className="text-[11px] text-zinc-500 mt-4 max-w-md">
+                  The limit counts visible Craidd IDE windows across the application. Once reached, Duplicate Window creates a hidden session and displays it in your current window. It does not affect the yellow-ring Blue Breakpoint helper.
+                </p>
+              </div>
             </> : area === "debugging" ? <>
               <div className="px-6 py-4 border-b border-zinc-800 shrink-0">
                 <h2 className="text-[13px] text-zinc-100 font-medium">Debugging</h2>
                 <p className="text-[11px] text-zinc-500 mt-1">How Craidd responds when a debugger pauses in a linked window.</p>
               </div>
-              <div className="px-6 py-5">
+              <div className="flex-1 min-h-0 overflow-y-auto scroll-thin px-6 py-5">
                 <label htmlFor="breakpoint-focus" className="block text-xs text-zinc-300 mb-2">Focus follows breakpoint</label>
                 <select id="breakpoint-focus" value={prefs.breakpointFocusMode}
                   onChange={(event) => prefs.setBreakpointFocusMode(event.target.value as "always" | "idle" | "never")}
@@ -234,6 +266,19 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                 <p className="text-[11px] text-zinc-600 mt-3 max-w-md">
                   This takes effect when a debugger adapter reports a pause. Debugger integration is still in development.
                 </p>
+                <div className="mt-7 border-t border-zinc-800 pt-5">
+                  <h3 className="text-[10.5px] uppercase tracking-wider text-zinc-500 mb-3">LDI Debugging Features</h3>
+                  <label htmlFor="ldi-duplicate-mode" className="block text-xs text-zinc-300 mb-2">How should the yellow-ring Blue Breakpoint helper open a missing native partner?</label>
+                  <select id="ldi-duplicate-mode" value={prefs.ldiDuplicateMode}
+                    onChange={(event) => prefs.setLdiDuplicateMode(event.target.value as "open" | "hide")}
+                    className="w-64 max-w-full bg-zinc-950 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-500">
+                    <option value="open">Open a new window (default)</option>
+                    <option value="hide">Hide on duplicate</option>
+                  </select>
+                  <p className="text-[11px] text-zinc-500 mt-3 max-w-md">
+                    Only applies when you click a yellow-ring ghost Blue Breakpoint. Ordinary File → Duplicate Window uses IDE Behaviour instead. Hidden partners remain available through IDE Windows in this Session.
+                  </p>
+                </div>
               </div>
             </> : <>
               <div className="px-6 py-4 border-b border-zinc-800 shrink-0">

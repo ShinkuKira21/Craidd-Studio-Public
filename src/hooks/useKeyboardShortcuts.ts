@@ -4,6 +4,7 @@ import { useSolution } from "../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
 import { useLinkedWindows } from "../store/linkedWindowsStore";
 import { startViewedAction, stopViewedAction } from "../lib/viewedActions";
+import { useSessionFeedback } from "../store/sessionFeedbackStore";
 
 export function useKeyboardShortcuts(
   openCommandPalette: () => void,
@@ -11,7 +12,17 @@ export function useKeyboardShortcuts(
 ) {
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
+      if (useSessionFeedback.getState().savePrompt) return;
       const mod = e.ctrlKey || e.metaKey;
+
+      if (mod && e.key.toLowerCase() === "q") {
+        const scope = e.altKey && !e.shiftKey ? "ide" : e.shiftKey && !e.altKey ? "solution" : !e.altKey && !e.shiftKey ? "window" : null;
+        if (scope) {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent("craidd:exit-scope", { detail: scope }));
+          return;
+        }
+      }
 
       if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();

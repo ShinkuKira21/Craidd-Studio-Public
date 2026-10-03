@@ -47,10 +47,11 @@ struct Session {
     blue: Mutex<Vec<super::ldi::ManagedBlueBreakpoint>>,
     private_breakpoints: Vec<Breakpoint>,
     alive: Arc<AtomicBool>,
+    reaped: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
-pub struct DebugManager(Mutex<HashMap<String, Arc<Session>>>);
+pub struct DebugManager(Mutex<HashMap<String, Arc<Session>>>, Mutex<HashMap<String, Vec<Arc<AtomicBool>>>>);
 
 struct BuildJob {
     pgid: i32,
@@ -83,10 +84,11 @@ pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
     if let Some(status) = value["status"].as_str() {
         if matches!(status, "building" | "running" | "paused" | "terminated" | "error") {
             note_debug_state(app, label, status, value["file"].as_str(),
-                value["line"].as_u64().and_then(|line| u32::try_from(line).ok()), value["reason"].as_str());
+                value["line"].as_u64().and_then(|line| u32::try_from(line).ok()),
+                value["reason"].as_str().or_else(|| if status == "error" { value["text"].as_str() } else { None }));
         }
     }
-    if value["status"] == "output" {
+    if value["status"] == "output" || value["status"] == "error" {
         if let Some(text) = value["text"].as_str() { note_debug_output(app, label, text); }
     }
     if value["frames"].is_array() || value["variables"].is_array() {
@@ -98,6 +100,16 @@ pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
 pub fn has_debug_session(app: &AppHandle, label: &str) -> bool {
     app.try_state::<DebugManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
         || app.try_state::<DebugBuildManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
+}
+
+/// Disconnect removes the control slot before the reader has reaped the
+/// adapter and released its Tauri frontend lease. Restart waits for both.
+pub fn debug_processes_stopped(app: &AppHandle, label: &str) -> bool {
+    let Some(manager) = app.try_state::<DebugManager>() else { return true; };
+    let Ok(mut drains) = manager.1.lock() else { return false; };
+    let Some(active) = drains.get_mut(label) else { return true; };
+    active.retain(|reaped| !reaped.load(Ordering::Acquire));
+    active.is_empty()
 }
 
 pub fn update_solution_breakpoints(app: &AppHandle, solution_path: &str, points: &[Breakpoint]) {
@@ -218,7 +230,7 @@ pub(crate) fn run_build_with_cancel(
     command.current_dir(cwd).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
     emit(app, label, json!({"status":"output", "text":format!("$ {} {}", executable.display(), args.join(" "))}));
-    let mut child = command.spawn().map_err(|e| format!("Could not {description}: {e}"))?;
+    let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not {description}: {e}"))?;
     let pgid = child.id() as i32;
     app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?
         .insert(label.into(), BuildJob { pgid, cancelled: cancelled.clone() });
@@ -251,7 +263,7 @@ fn executable_from_cargo(app: &AppHandle, label: &str, cwd: &Path, release: bool
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if release && !cargo_args.iter().any(|arg| arg == "--release") { command.arg("--release"); }
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
-    let mut child = command.spawn().map_err(|e| format!("Could not run cargo build: {e}"))?;
+    let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not run cargo build: {e}"))?;
     let pgid = child.id() as i32;
     let cancelled = Arc::new(AtomicBool::new(false));
     app.state::<DebugBuildManager>().0.lock().map_err(|e| e.to_string())?
@@ -531,8 +543,38 @@ pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str, locations: &[(Strin
     Ok(())
 }
 
-fn dap_ready_for_configuration(initialized_event: bool, launch_succeeded: bool, configured: bool) -> bool {
-    initialized_event && launch_succeeded && !configured
+#[derive(Default)]
+struct DapStartup {
+    configuration_sent: bool,
+    configuration_succeeded: bool,
+    launch_succeeded: bool,
+    running_announced: bool,
+}
+
+impl DapStartup {
+    fn on_initialized(&mut self) -> bool {
+        if self.configuration_sent { return false; }
+        self.configuration_sent = true;
+        true
+    }
+
+    fn on_launch_response(&mut self) -> bool {
+        self.launch_succeeded = true;
+        self.ready_to_announce()
+    }
+
+    fn on_configuration_response(&mut self) -> bool {
+        self.configuration_succeeded = true;
+        self.ready_to_announce()
+    }
+
+    fn ready_to_announce(&mut self) -> bool {
+        if !self.configuration_succeeded || !self.launch_succeeded || self.running_announced {
+            return false;
+        }
+        self.running_announced = true;
+        true
+    }
 }
 
 pub fn adapter_available_for_language(language: &str) -> bool {
@@ -672,7 +714,7 @@ pub(crate) fn launch_prepared(
     if language == "csharp" { command.arg("--interpreter=vscode"); }
     command.current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
-    let mut child = command.spawn().map_err(|e| format!("Could not start {adapter_name}: {e}"))?;
+    let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not start {adapter_name}: {e}"))?;
     let pgid = child.id() as i32;
     let session = Arc::new(Session {
         writer: Mutex::new(child.stdin.take().ok_or("Debugger input unavailable")?),
@@ -686,6 +728,7 @@ pub(crate) fn launch_prepared(
             breakpoints.iter().filter(|point| point.scope == "ldi-auto-entry").cloned().collect()
         } else { vec![] },
         alive: Arc::new(AtomicBool::new(true)),
+        reaped: Arc::new(AtomicBool::new(false)),
     });
     let stdout = child.stdout.take().ok_or("Debugger output unavailable")?;
     let stderr = child.stderr.take().ok_or("Debugger errors unavailable")?;
@@ -696,6 +739,11 @@ pub(crate) fn launch_prepared(
         let _ = child.wait();
         if let Ok(mut sessions) = app.state::<DebugManager>().0.lock() { sessions.remove(&label); }
         return Err(error);
+    }
+    if let Ok(mut drains) = app.state::<DebugManager>().1.lock() {
+        let active = drains.entry(label.clone()).or_default();
+        active.retain(|reaped| !reaped.load(Ordering::Acquire));
+        active.push(session.reaped.clone());
     }
     let app_reader = app.clone();
     let label_reader = label.clone();
@@ -708,9 +756,7 @@ pub(crate) fn launch_prepared(
         let _dev_lease = dev_lease;
         let mut reader = BufReader::new(stdout);
         let mut pending: HashMap<u64, String> = HashMap::new();
-        let mut initialized_event = false;
-        let mut launch_succeeded = false;
-        let mut configured = false;
+        let mut startup = DapStartup::default();
         let mut stopped_variables = Vec::new();
         let mut variable_requests = 0usize;
         let mut terminated_emitted = false;
@@ -735,14 +781,14 @@ pub(crate) fn launch_prepared(
             if message["type"] == "event" {
                 match message["event"].as_str().unwrap_or("") {
                     "initialized" => {
-                        initialized_event = true;
-                        if dap_ready_for_configuration(initialized_event, launch_succeeded, configured) {
+                        // DAP adapters may withhold the launch response until
+                        // configurationDone; waiting for launch here deadlocks LLDB.
+                        if startup.on_initialized() {
                             if let Err(error) = initialize_breakpoints(&session, &breakpoints) {
                                 emit(&app_reader, &label_reader, json!({"status":"output",
                                     "text":format!("Could not apply breakpoints: {error}")}));
                             }
                             let _ = request(&session, "configurationDone", json!({}));
-                            configured = true;
                         }
                     }
                     "stopped" => {
@@ -857,20 +903,20 @@ pub(crate) fn launch_prepared(
                         if let Ok(seq) = request(&session, "launch", launch.clone()) { pending.insert(seq, "launch".into()); }
                     }
                     "launch" => {
-                        launch_succeeded = true;
-                        if dap_ready_for_configuration(initialized_event, launch_succeeded, configured) {
-                            if let Err(error) = initialize_breakpoints(&session, &breakpoints) {
-                                emit(&app_reader, &label_reader, json!({"status":"output",
-                                    "text":format!("Could not apply breakpoints: {error}")}));
+                        if startup.on_launch_response() {
+                            if !ready_reader.swap(true, Ordering::AcqRel) {
+                                emit(&app_reader, &label_reader, json!({"status":"running"}));
                             }
-                            let _ = request(&session, "configurationDone", json!({}));
-                            configured = true;
+                            if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
                         }
                     }
                     "configurationDone" => {
-                        ready_reader.store(true, Ordering::Release);
-                        emit(&app_reader, &label_reader, json!({"status":"running"}));
-                        if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
+                        if startup.on_configuration_response() {
+                            if !ready_reader.swap(true, Ordering::AcqRel) {
+                                emit(&app_reader, &label_reader, json!({"status":"running"}));
+                            }
+                            if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
+                        }
                     }
                     "threads" => {
                         if let Some(id) = message["body"]["threads"].as_array()
@@ -951,6 +997,8 @@ pub(crate) fn launch_prepared(
             if active.get(&label_reader).is_some_and(|session| session.pgid == pgid) { active.remove(&label_reader); }
         }
         if !terminated_emitted && !replacement { emit(&app_reader, &label_reader, json!({"status":"terminated"})); }
+        drop(_dev_lease);
+        session.reaped.store(true, Ordering::Release);
     });
     let app_stderr = app.clone();
     let stderr_label = label.clone();
@@ -1246,11 +1294,19 @@ mod tests {
     }
 
     #[test]
-    fn dap_configuration_waits_for_initialized_event_and_launch_response() {
-        assert!(!dap_ready_for_configuration(true, false, false));
-        assert!(!dap_ready_for_configuration(false, true, false));
-        assert!(dap_ready_for_configuration(true, true, false));
-        assert!(!dap_ready_for_configuration(true, true, true));
+    fn dap_configuration_does_not_wait_for_launch_response() {
+        let mut startup = DapStartup::default();
+        assert!(startup.on_initialized());
+        assert!(!startup.on_initialized());
+        assert!(!startup.on_configuration_response());
+        assert!(startup.on_launch_response());
+        assert!(!startup.on_launch_response());
+
+        let mut early_launch = DapStartup::default();
+        assert!(!early_launch.on_launch_response());
+        assert!(early_launch.on_initialized());
+        assert!(early_launch.on_configuration_response());
+        assert!(!early_launch.on_configuration_response());
     }
 
     #[test]

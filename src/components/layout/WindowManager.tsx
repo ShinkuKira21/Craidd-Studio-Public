@@ -1,21 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useLinkedWindows,
   setLinkedWindowVisible,
   focusLinkedWindow,
+  isChromeOsGuest,
   prepareLinkedWindow,
+  prepareApplicationWindow,
   waitForLinkedWindowReady,
 } from "../../store/linkedWindowsStore";
 import type { LinkedMember } from "../../store/linkedWindowsStore";
+import { windowAttention } from "../../lib/windowAttention";
 
 /**
  * The tray + close flow. Rules:
  *   - Native OS chrome stays. X always works.
- *   - OS X in linked mode (2+ windows): scope dialog first.
- *       Close this Window / Close the Solution / Exit the IDE
- *     Then, in CS order, per-window Save All / Manual Intervention prompts.
- *   - OS X on a single-window solution: no scope dialog; just the dirty
- *     prompt if needed.
+ *   - File → Exit chooses Window / Solution / Application explicitly.
+ *     Then, in solution/CS order, prompt for unsaved files before stopping
+ *     the requested scope. Native OS X remains window-local.
  *   - Tray Close: closes that window directly. Dirty prompt if needed.
  *   - Hidden + dirty windows are shown before their prompt appears.
  *   - Manual Intervention or Cancel anywhere halts the whole flow.
@@ -23,7 +24,7 @@ import type { LinkedMember } from "../../store/linkedWindowsStore";
  */
 
 function shortName(item: LinkedMember) {
-  return `${item.projectName}: CS${item.windowId}`;
+  return `${item.selectedConfigName ?? item.projectName}: CS${item.windowId}`;
 }
 
 function stateLabel(item: LinkedMember): string {
@@ -43,6 +44,7 @@ interface CloseFlow {
   phase: FlowPhase;
   queue: string[];                   // dirty-window labels, in CS order
   current: string | null;            // the window being prompted
+  targets: LinkedMember[];           // all windows in the chosen scope
 }
 
 export default function WindowManager() {
@@ -52,26 +54,20 @@ export default function WindowManager() {
   const select = useLinkedWindows((s) => s.selectWindow);
 
   const [open, setOpen] = useState(false);
-  const [pulseOn, setPulseOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focusNotice, setFocusNotice] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [flow, setFlow] = useState<CloseFlow | null>(null);
   const inFlow = useRef(false);
 
-  const pausedHidden = windows.filter((w) => !w.visible && !w.restoring && w.status === "paused");
-  const pausedKey = useMemo(() => pausedHidden.map((w) => w.windowLabel).sort().join("|"), [windows]);
+  const problems = useLinkedWindows((s) => s.problems);
+  const errorCount = windows.filter((item) => windowAttention(item, problems) === "error").length;
+  const pausedCount = windows.filter((item) => item.windowLabel !== viewed && windowAttention(item, problems) === "paused").length;
   const hidden = windows.filter((w) => !w.visible && !w.restoring).length;
   const visible = windows.filter((w) => w.visible && !w.restoring).length;
   const current = windows.find((w) => w.windowLabel === viewed);
 
-  useEffect(() => {
-    if (!pausedKey) return;
-    setPulseOn(true);
-    const t = window.setTimeout(() => setPulseOn(false), 1600);
-    return () => window.clearTimeout(t);
-  }, [pausedKey]);
-
-  // Native close: Rust deferred it. We own the flow now.
+  // Retain the deferred native-close listener for older window flows.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -89,14 +85,15 @@ export default function WindowManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [own]);
 
-  if (windows.length < 2 && !flow && !error) return null;
-
-  const orderedWindows = (labels: string[]) =>
-    [...labels].sort((a, b) => {
-      const ai = windows.find((w) => w.windowLabel === a)?.windowId ?? 0;
-      const bi = windows.find((w) => w.windowLabel === b)?.windowId ?? 0;
-      return ai - bi;
-    });
+  useEffect(() => {
+    const onExit = (event: Event) => {
+      const scope = (event as CustomEvent<Scope>).detail;
+      if (scope === "window" || scope === "solution" || scope === "ide") void beginExitScope(scope);
+    };
+    window.addEventListener("craidd:exit-scope", onExit);
+    return () => window.removeEventListener("craidd:exit-scope", onExit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [own, windows, flow]);
 
   // Entry point for the OS X gesture. A linked solution asks scope first;
   // a single-window solution or a tray-initiated close goes straight in.
@@ -115,13 +112,13 @@ export default function WindowManager() {
           ? await prepareLinkedWindow(initiator, "inspect")
           : item?.dirtyCount ?? 0;
         if (dirty > 0) {
-          await promptNext({ initiator, scope: "window", phase: "dirty", queue: [initiator], current: null });
+          await promptNext({ initiator, scope: "window", phase: "dirty", queue: [initiator], current: null, targets: item ? [item] : [] });
         } else {
-          setFlow({ initiator, scope: "window", phase: "finalize", queue: [], current: null });
+          setFlow({ initiator, scope: "window", phase: "finalize", queue: [], current: null, targets: item ? [item] : [] });
         }
         return;
       }
-      setFlow({ initiator, scope: "window", phase: "scope", queue: [], current: null });
+      setFlow({ initiator, scope: "window", phase: "scope", queue: [], current: null, targets: [] });
     } catch (cause) {
       setError(String(cause));
       await releaseGuard(initiator);
@@ -148,6 +145,7 @@ export default function WindowManager() {
         phase: "dirty",
         queue: [target],
         current: null,
+        targets: item ? [item] : [],
       });
     } catch (cause) {
       setError(String(cause));
@@ -157,24 +155,35 @@ export default function WindowManager() {
   };
 
   // Called when the scope dialog resolves.
-  const chooseScope = async (scope: Scope) => {
-    if (!flow) return;
-    const targets = scope === "window"
-      ? [flow.initiator]
-      : windows.map((w) => w.windowLabel);
-    // CS-order, dirty-check each one.
+  const inspectScope = async (initiator: string, scope: Scope) => {
     const queue: string[] = [];
     try {
-      for (const label of orderedWindows(targets)) {
-        const item = windows.find((w) => w.windowLabel === label);
-        if (!item || item.restoring) continue;
-        const dirty = item.visible ? await prepareLinkedWindow(label, "inspect") : item.dirtyCount;
-        if (dirty > 0) queue.push(label);
+      const targets = scope === "ide"
+        ? await import("@tauri-apps/api/core").then(({ invoke }) => invoke<LinkedMember[]>("get_application_windows"))
+        : scope === "solution" ? windows : windows.filter((item) => item.windowLabel === initiator);
+      const sorted = [...targets].sort((a, b) => a.solutionPath.localeCompare(b.solutionPath) || a.windowId - b.windowId);
+      for (const item of sorted) {
+        if (item.restoring) throw new Error(`Wait for ${shortName(item)} to finish opening before exiting.`);
+        const dirty = item.visible ? await prepareApplicationWindow(item.windowLabel, item.solutionPath, "inspect") : item.dirtyCount;
+        if (dirty > 0) queue.push(item.windowLabel);
       }
-      await promptNext({ ...flow, scope, phase: "dirty", queue, current: null });
+      await promptNext({ initiator, scope, phase: "dirty", queue, current: null, targets: sorted });
     } catch (cause) {
       setError(String(cause));
     }
+  };
+
+  const chooseScope = async (scope: Scope) => {
+    if (flow) await inspectScope(flow.initiator, scope);
+  };
+
+  const beginExitScope = async (scope: Scope) => {
+    if (!own || flow || inFlow.current) return;
+    if (scope === "window") { await beginTrayClose(own); return; }
+    inFlow.current = true;
+    setError(null);
+    try { await inspectScope(own, scope); }
+    finally { inFlow.current = false; }
   };
 
   // Called when a dirty prompt resolves.
@@ -184,9 +193,10 @@ export default function WindowManager() {
       setFlow({ ...f, phase: "finalize", current: null });
       return;
     }
-    const item = windows.find((w) => w.windowLabel === next);
+    const item = f.targets.find((w) => w.windowLabel === next);
     // If a hidden window has dirty tabs, show it before prompting.
     if (item && !item.visible && !item.restoring) {
+      if (!windows.some((window) => window.windowLabel === next)) throw new Error("A hidden window in another solution has unsaved files; show and save it before exiting");
       await setLinkedWindowVisible(next, true);
       await waitForLinkedWindowReady(next);
     }
@@ -204,7 +214,9 @@ export default function WindowManager() {
         if (flow.initiator === own) await releaseGuard(own);
         return;
       }
-      await prepareLinkedWindow(flow.current, "save");
+      const target = flow.targets.find((item) => item.windowLabel === flow.current);
+      if (!target) throw new Error("The window being saved is no longer available");
+      await prepareApplicationWindow(flow.current, target.solutionPath, "save");
       await promptNext(flow);
     } catch (cause) {
       setError(String(cause));
@@ -216,6 +228,8 @@ export default function WindowManager() {
 
   const finalize = async (args: { scope: Scope; initiator: string; targets: string[] }) => {
     const { invoke } = await import("@tauri-apps/api/core");
+    if (args.scope === "ide") { await invoke("exit_application"); return; }
+    if (args.scope === "solution") await invoke("stop_solution_sessions");
     // Keep one visible window if scope is "window" and it's the last visible.
     if (args.scope === "window" && args.targets.length === 1) {
       const only = args.targets[0];
@@ -252,9 +266,7 @@ export default function WindowManager() {
     setPreparing(true);
     setError(null);
     try {
-      const targets = flow.scope === "window"
-        ? [flow.initiator]
-        : windows.map((w) => w.windowLabel);
+      const targets = flow.targets.map((item) => item.windowLabel);
       await finalize({ scope: flow.scope, initiator: flow.initiator, targets });
     } catch (cause) {
       setError(String(cause));
@@ -278,7 +290,7 @@ export default function WindowManager() {
     } catch { /* harmless if it fails */ }
   };
 
-  const changeVisibility = async (label: string, show: boolean) => {
+  const changeVisibility = async (label: string, show: boolean): Promise<boolean> => {
     setError(null);
     try {
       if (!show) {
@@ -286,24 +298,47 @@ export default function WindowManager() {
         if (item?.visible) {
           const dirty = await prepareLinkedWindow(label, "inspect");
           if (dirty > 0) {
-            await promptNext({ initiator: label, scope: "window", phase: "dirty", queue: [label], current: null });
-            return;
+            setError(`Save ${shortName(item)} before hiding it.`);
+            return false;
           }
         }
       }
       await setLinkedWindowVisible(label, show);
+      return true;
     } catch (cause) {
       setError(String(cause));
+      return false;
     }
   };
 
   const onRowClick = async (item: LinkedMember) => {
     setError(null);
+    setFocusNotice(null);
     try {
+      if (item.visible && item.windowLabel !== own) {
+        await focusVisibleWindow(item);
+        return;
+      }
       await select(item.windowLabel);
       setOpen(false);
     } catch (cause) {
       setError(String(cause));
+    }
+  };
+
+  const focusVisibleWindow = async (item: LinkedMember) => {
+    setError(null);
+    setFocusNotice(null);
+    try {
+      if (await focusLinkedWindow(item.windowLabel)) {
+        setOpen(false);
+      } else if (await isChromeOsGuest()) {
+        setFocusNotice(`Focus was not confirmed for ${shortName(item)}. The ChromeOS host may prevent a Linux app from activating another window. Use Alt+Tab, the app bar/shelf, or Hide this window and then select it here to control it in one IDE window.`);
+      } else {
+        setOpen(false);
+      }
+    } catch (cause) {
+      setError(`Could not request focus for ${shortName(item)}: ${String(cause)}`);
     }
   };
 
@@ -312,28 +347,29 @@ export default function WindowManager() {
   // the initiator's tree renders the flow dialogs).
   const renderFlow = flow && flow.initiator === own;
 
-  const buttonPulse = pulseOn || pausedHidden.length > 0;
+  if (windows.length < 2 && !flow && !error) return null;
 
   return (
     <div className="relative shrink-0 flex items-center gap-1">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title={`${windows.length} linked IDE windows, ${hidden} hidden${pausedHidden.length ? `, ${pausedHidden.length} paused` : ""}`}
+        title={`${windows.length} linked IDE windows, ${hidden} hidden${pausedCount ? `, ${pausedCount} need debugging attention` : ""}${errorCount ? `, ${errorCount} failed` : ""}`}
         className={
           "h-8 px-2.5 rounded border flex items-center gap-2 text-[11px] transition-colors " +
-          (buttonPulse
-            ? "border-amber-400 bg-amber-900/30 text-amber-200 animate-pulse-soft"
+          (errorCount > 0
+            ? "border-red-500 bg-red-950/50 text-red-200 craidd-attention-error"
+            : pausedCount > 0
+            ? "border-amber-400 bg-amber-900/30 text-amber-200 craidd-attention-warning"
             : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800")
         }
       >
-        <span className="truncate max-w-36">
+        <span className="truncate max-w-56" title={current ? shortName(current) : "This window"}>
           Viewing: {current ? shortName(current) : "This window"}
         </span>
         <span className="text-zinc-500">{windows.length} windows · {hidden} hidden</span>
-        {pausedHidden.length > 0 && (
-          <span className="text-amber-400 font-semibold">{pausedHidden.length} paused</span>
-        )}
+        {errorCount > 0 && <span className="text-red-300 font-semibold">{errorCount} error{errorCount === 1 ? "" : "s"}</span>}
+        {pausedCount > 0 && <span className="text-amber-300 font-semibold">{pausedCount} paused</span>}
         <span className="text-zinc-500">▾</span>
       </button>
 
@@ -345,22 +381,26 @@ export default function WindowManager() {
             className="fixed inset-0 z-40 cursor-default"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute right-0 top-full mt-1 z-50 w-[24rem] rounded border border-zinc-700 bg-zinc-900 shadow-2xl p-1.5">
+          <div className="absolute right-0 top-full mt-1 z-50 w-[min(30rem,calc(100vw-1rem))] rounded border border-zinc-700 bg-zinc-900 shadow-2xl p-1.5">
             <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-zinc-500">
               IDE windows in this solution
             </div>
             {windows.map((item) => {
               const selected = item.windowLabel === viewed;
               const canHide = visible > 1 || !item.visible;
-              const isPausedHidden = !item.visible && !item.restoring && item.status === "paused";
+              const attention = windowAttention(item, problems);
+              const failed = attention === "error";
+              const paused = attention === "paused";
               const primary = item.visible && item.windowLabel !== own ? "Focus" : item.visible ? null : "Adopt";
               return (
                 <div
                   key={item.windowLabel}
                   className={
                     "flex items-center gap-1 rounded px-1 py-1 " +
-                    (isPausedHidden
-                      ? "bg-amber-900/20 animate-pulse-soft"
+                    (failed
+                      ? "border border-red-700/60 bg-red-950/30 craidd-attention-error"
+                      : paused
+                      ? "border border-amber-600/50 bg-amber-950/25 craidd-attention-warning"
                       : selected
                       ? "bg-blue-900/30"
                       : "hover:bg-zinc-800/70")
@@ -373,8 +413,10 @@ export default function WindowManager() {
                     title={item.failureMessage ?? `View ${shortName(item)} in this IDE window`}
                   >
                     <span className="flex items-center gap-1.5">
-                      <span className={isPausedHidden ? "text-amber-400" : item.visible ? (selected ? "text-blue-400" : "text-zinc-500") : "text-zinc-600"}>●</span>
+                      <span className={failed ? "text-red-400" : paused ? "text-amber-400" : item.visible ? (selected ? "text-blue-400" : "text-zinc-500") : "text-zinc-600"}>●</span>
                       <span className="truncate text-zinc-200">{shortName(item)}</span>
+                      {failed && <span className="text-[10px] text-red-300">Error</span>}
+                      {!failed && paused && <span className="text-[10px] text-amber-300">Paused</span>}
                       {item.windowLabel === own && <span className="text-[10px] text-zinc-500">this</span>}
                     </span>
                     <span className="block pl-4 text-[10px] text-zinc-500">{stateLabel(item)}</span>
@@ -383,7 +425,7 @@ export default function WindowManager() {
                   {primary === "Focus" && (
                     <button
                       type="button"
-                      onClick={() => void focusLinkedWindow(item.windowLabel).catch((c) => setError(String(c)))}
+                      onClick={() => void focusVisibleWindow(item)}
                       className="px-1.5 py-1 text-[10px] text-zinc-300 hover:text-white"
                       title={`Focus ${shortName(item)}'s IDE window`}
                     >
@@ -425,7 +467,8 @@ export default function WindowManager() {
                 </div>
               );
             })}
-            {error && <div className="px-2 py-1 text-[11px] text-red-400">{error}</div>}
+            {focusNotice && <div role="status" className="px-2 py-1.5 text-[11px] leading-relaxed text-amber-300">{focusNotice}</div>}
+            {error && <div role="alert" className="px-2 py-1 text-[11px] text-red-400">{error}</div>}
           </div>
         </>
       )}
@@ -467,14 +510,14 @@ export default function WindowManager() {
       {renderFlow && flow!.phase === "dirty" && flow!.current && (
         <Modal>
           <h2 className="text-base font-medium mb-2">
-            Unsaved changes — {shortName(windows.find((w) => w.windowLabel === flow!.current) ?? windows[0])}
+            Unsaved changes — {shortName(flow!.targets.find((w) => w.windowLabel === flow!.current) ?? windows[0])}
           </h2>
           <p className="text-zinc-400">
-            {windows.find((w) => w.windowLabel === flow!.current)?.dirtyCount ?? 0} file
-            {(windows.find((w) => w.windowLabel === flow!.current)?.dirtyCount ?? 0) === 1 ? "" : "s"} have unsaved changes.
+            {flow!.targets.find((w) => w.windowLabel === flow!.current)?.dirtyCount ?? 0} file
+            {(flow!.targets.find((w) => w.windowLabel === flow!.current)?.dirtyCount ?? 0) === 1 ? "" : "s"} have unsaved changes.
           </p>
           <div className="mt-2 max-h-40 overflow-auto text-xs text-zinc-500">
-            {(windows.find((w) => w.windowLabel === flow!.current)?.tabs ?? [])
+            {(flow!.targets.find((w) => w.windowLabel === flow!.current)?.tabs ?? [])
               .filter((t) => t.dirty)
               .map((t) => (
                 <div key={t.path} className="truncate pl-1" title={t.path}>• {t.name}</div>
