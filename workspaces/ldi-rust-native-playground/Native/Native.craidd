@@ -1,0 +1,5 @@
+[project]
+name = "Native Scalar"
+language = "cpp"
+root = "."
+kind = "library"

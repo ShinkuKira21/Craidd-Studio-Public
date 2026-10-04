@@ -1,5 +1,6 @@
 import type { ConfigEntry, ConfigKind, CraiddProject, Profile } from "../../../types/project";
-import { choicesForConfig } from "../../../store/buildStore";
+import { useEffect, useState } from "react";
+import { choicesForConfig, resolveSpec } from "../../../store/buildStore";
 import type { CraiddSolution } from "../../../types/project";
 import BuildOrderEditor from "./BuildOrderEditor";
 
@@ -16,6 +17,8 @@ const inputClass = "w-full min-w-0 rounded border border-zinc-700 bg-zinc-950 px
 const kinds: ConfigKind[] = ["run", "build", "debug", "test"];
 const methods = ["cargo", "npm", "shell", "dotnet", "cmake", "python", "plan"];
 
+interface DebugPrerequisite { configPath: string; command: string; cwd: string; url: string }
+
 export default function ConfigurationForm({ config, projects, allConfigs, solution, editable, onChange }: Props) {
   const isComposition = !!config.slots || config.bestFit === true;
   const inferredSlots = config.bestFit ? choicesForConfig(solution, config) : null;
@@ -23,6 +26,20 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
   const set = (patch: Partial<ConfigEntry>) => onChange({ ...config, ...patch });
   const profiles = config.profiles ?? [];
   const linked = config.linked ?? { priority: 50, timeoutMs: 30_000 };
+  const debugConfig = isComposition ? allConfigs.find((item) => item.name === slots?.debug) : config;
+  const debugCwd = debugConfig?.kind === "debug" && debugConfig.method === "cargo"
+    ? resolveSpec(debugConfig, solution.root, solution, null)?.cwd : undefined;
+  const [prerequisite, setPrerequisite] = useState<{ cwd: string; value?: DebugPrerequisite | null; error?: string } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (debugCwd) {
+      import("@tauri-apps/api/core").then(({ invoke }) => invoke<DebugPrerequisite | null>("describe_debug_prerequisites", { cwd: debugCwd }))
+        .then((value) => { if (!cancelled) setPrerequisite({ cwd: debugCwd, value }); })
+        .catch((error) => { if (!cancelled) setPrerequisite({ cwd: debugCwd, error: String(error) }); });
+    }
+    return () => { cancelled = true; };
+  }, [debugCwd]);
+  const preview = prerequisite?.cwd === debugCwd ? prerequisite : null;
   const updateProfile = (index: number, patch: Partial<Profile>) => {
     const next = profiles.map((profile, i) => i === index ? { ...profile, ...patch } : profile);
     set({ profiles: next });
@@ -61,7 +78,7 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
             <Field label="Working directory"><input className={inputClass + " font-mono"} value={config.cwd ?? ""} disabled={!editable} placeholder="Project folder when empty" onChange={(e) => set({ cwd: e.target.value || undefined })} /></Field>
             <Field label="Before this action"><select className={inputClass} disabled={!editable} value={config.order?.before ?? ""}
               onChange={(event) => set({ order: event.target.value ? { before: event.target.value, steps: [] } : undefined })}>
-              <option value="">No preparation</option>{allConfigs.filter((item) => item.origin === "user" && item.kind === "build" && !item.slots && item.name !== config.name)
+              <option value="">No declared preparation</option>{allConfigs.filter((item) => item.origin === "user" && item.kind === "build" && !item.slots && item.name !== config.name)
                 .map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
             </select></Field>
             {config.order?.before && <p className="text-[11px] text-blue-300">Wait for {config.order.before} to succeed before this action. Applies to individual and linked launches.</p>}
@@ -89,6 +106,19 @@ export default function ConfigurationForm({ config, projects, allConfigs, soluti
             </div>
           </>
         )}
+        {debugCwd && <section className="rounded border border-blue-900 bg-blue-950/20 p-3 text-[11px] space-y-2" aria-label="Effective debug startup">
+          <h3 className="text-blue-300 font-medium">Effective Debug startup · {debugConfig?.name}</h3>
+          {debugConfig?.order?.before && <p>Preparation: wait for {debugConfig.order.before} to succeed.</p>}
+          <p>Build a debuggable Rust executable, then launch it under LLDB. Debugger connection does not mean the application GUI is ready.</p>
+          {!preview ? <p className="text-zinc-500">Checking declared framework prerequisites…</p>
+            : preview.error ? <p className="text-amber-300">Could not read prerequisites: {preview.error}</p>
+            : preview.value ? <>
+              <p className="text-zinc-400 break-all">Automatic prerequisite from {preview.value.configPath}:</p>
+              <p className="font-mono break-all">{preview.value.command} · in {preview.value.cwd}</p>
+              <p>Start or reuse the shared frontend and wait for HTTP success at {preview.value.url} before launching LLDB.</p>
+              <p className="text-zinc-500">No declared preparation does not disable this framework prerequisite. The frontend is shared until the last client stops.</p>
+            </> : <p className="text-zinc-500">No automatic Tauri frontend prerequisite declared for this working directory.</p>}
+        </section>}
       </div>
     </div>
   );

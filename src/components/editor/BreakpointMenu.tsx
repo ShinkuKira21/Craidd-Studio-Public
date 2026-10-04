@@ -44,17 +44,17 @@ export default function BreakpointMenu({ file, line, x, y, callSite, onClose }: 
         onClick={() => { void removeLdiBlue(file, line).then(onClose).catch((error) => setMenuError(String(error))); }}>
         Remove Blue Breakpoint</button>
         : partners.map((partner) => <button key={partner.windowLabel} role="menuitem"
-          title={`Gold Linked Debug · ${callSite?.entryPoint ?? "native call"}`}
+          title={`${file.endsWith(".rs") ? "Rust White Debug · Live Native" : "Gold Linked Debug"} · ${callSite?.entryPoint ?? "native call"}`}
           className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
           onClick={() => { void setLdiBlue(file, line, partner.windowLabel).then(onClose).catch((error) => setMenuError(String(error))); }}>
-          Set Blue Breakpoint → CS{partner.windowId}: {partner.selectedConfigName ?? partner.projectName}</button>)}
+          Set Native Debugging Breakpoint → CS{partner.windowId}: {partner.selectedConfigName ?? partner.projectName}</button>)}
       {!blue && (callSite?.configNames ?? []).filter((name) => !partners.some((partner) => partner.selectedConfigName === name))
         .map((name) => <button key={name} role="menuitem"
           title={`Open Native Power Config ${name} and set Blue`}
           className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
           onClick={() => { void setupLdiBlue(file, line, name, !red && partners.length === 0).then(onClose).catch((error) => setMenuError(String(error))); }}>
           Set Blue Breakpoint → Open {name}</button>)}
-      {blue && <button role="menuitem" className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
+      {blue && blue.mode !== "live-native" && <button role="menuitem" className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
         onClick={() => { setCondition(blue.condition ?? ""); setEditingCondition("blue"); }}>
         {blue.condition ? "Edit blue condition…" : "Set blue condition…"}</button>}
       {editingCondition && <div className="px-3 py-2 space-y-2 text-zinc-200">
@@ -63,7 +63,7 @@ export default function BreakpointMenu({ file, line, x, y, callSite, onClose }: 
           onChange={(event) => setCondition(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") saveCondition(); if (event.key === "Escape") onClose(); }}
           className="w-full rounded border border-zinc-600 bg-zinc-950 px-2 py-1 text-zinc-100" />
-        {red && blue && <p className="max-w-64 text-amber-300">Blue owns this line during Gold Debug; red's condition applies in White Debug.</p>}
+        {red && blue && <p className="max-w-64 text-amber-300">{blue.mode === "live-native" ? "Red remains an ordinary Rust call-site breakpoint; Native blue inspects the same process in C++." : "Blue owns this line during Gold Debug; red's condition applies in White Debug."}</p>}
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="px-2 py-1">Cancel</button>
           <button onClick={saveCondition} className="rounded bg-blue-700 px-2 py-1">Save</button>

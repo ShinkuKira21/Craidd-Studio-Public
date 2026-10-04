@@ -1,10 +1,11 @@
 import { create } from "zustand";
+import { revealDebugSource } from "../lib/debugSource";
 import { useBreakpoints } from "./breakpointStore";
 import { useSolution } from "./solutionStore";
 import type { OrderRequest } from "../types/project";
 import { appendOutput } from "../lib/outputPresentation";
 
-type DebugStatus = "idle" | "building" | "running" | "paused" | "terminated" | "error";
+type DebugStatus = "idle" | "building" | "starting" | "running" | "paused" | "terminated" | "error";
 export interface DebugFrame { id: number; name: string; line: number; source?: { path?: string; name?: string } }
 export interface DebugVariable { name: string; value: string; type?: string; variablesReference: number }
 interface DebugEvent {
@@ -15,6 +16,7 @@ interface DebugEvent {
   line?: number;
   frames?: DebugFrame[];
   variables?: DebugVariable[];
+  nativeRouted?: boolean;
 }
 
 interface DebugState {
@@ -32,7 +34,7 @@ interface DebugState {
 export const useDebug = create<DebugState>((set, get) => ({
   status: "idle", output: "", reason: null, file: null, line: null, frames: [], variables: [],
   start: async (method, cwd, profile, commandArgs = [], env = {}, order) => {
-    if (["building", "running", "paused"].includes(get().status)) return;
+    if (["building", "starting", "running", "paused"].includes(get().status)) return;
     const language = method === "cargo" ? "Rust" : method === "dotnet" ? "C#" : "C++";
     set({ status: "building", output: `Building a debuggable ${language} executable…\n`, frames: [], variables: [], file: null, line: null });
     try {
@@ -56,7 +58,9 @@ export const useDebug = create<DebugState>((set, get) => ({
 
 export async function listenToDebug(): Promise<() => void> {
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  return getCurrentWebviewWindow().listen<DebugEvent>("craidd:debug-state", (event) => {
+  let disposed = false;
+  let stopSerial = 0;
+  const unlisten = await getCurrentWebviewWindow().listen<DebugEvent>("craidd:debug-state", (event) => {
     const message = event.payload;
     if (message.status === "output") {
       useDebug.setState((state) => ({ output: appendOutput(state.output, message.text ?? "") }));
@@ -68,17 +72,19 @@ export async function listenToDebug(): Promise<() => void> {
       return;
     }
     const active = message.status === "paused";
+    const serial = ++stopSerial;
     useDebug.setState((state) => ({
       status: message.status as DebugStatus,
-      reason: active ? message.reason ?? state.reason : null,
+      reason: active ? message.nativeRouted ? "Paused in native code · inspect the paired Native window" : message.reason ?? state.reason : null,
       file: active ? message.file ?? state.file : null,
       line: active ? message.line ?? state.line : null,
       frames: active ? message.frames ?? state.frames : [],
       variables: active ? state.variables : [],
       output: message.text ? appendOutput(state.output, message.text) : state.output,
     }));
-    if (message.status === "paused" && message.file && message.line) {
-      void useSolution.getState().revealFile(message.file, message.line, 1);
+    if (message.status === "paused" && message.file && message.line && !message.nativeRouted) {
+      void revealDebugSource(message.file, message.line, 1, () => !disposed && serial === stopSerial);
     }
   });
+  return () => { disposed = true; unlisten(); };
 }

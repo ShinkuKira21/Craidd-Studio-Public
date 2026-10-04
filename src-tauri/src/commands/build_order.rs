@@ -652,6 +652,7 @@ pub async fn prepare(
         }
         jobs.insert(label.clone(), job.clone());
     }
+    let app_guard = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         // Avoid concurrent preparation jobs writing the same tool output.
         // This small proof deliberately serializes preparation; tools still
@@ -669,6 +670,15 @@ pub async fn prepare(
             }
         };
         let solution = load(&request)?;
+        // Do not replace a library mapped by a live Rust process, including
+        // when another application's preparation reaches the same CMake step.
+        for step in plan(&solution, &request.configuration)? {
+            let OrderStep::Build { configuration: name } = step else { continue; };
+            let config = configuration(&solution, &name)?;
+            if config.method.as_deref() == Some("cmake") {
+                super::native_debug::check_cmake_build(&app_guard, &spec(&solution, config, request.profile.as_deref())?.cwd)?;
+            }
+        }
         execute(&solution, &request, &job, &report)
     })
     .await
@@ -701,6 +711,40 @@ mod tests {
             profile: None,
         };
         (load(&request).unwrap(), request)
+    }
+
+    #[test]
+    fn rust_native_playground_prepares_native_before_cargo_without_install_or_driver() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("workspaces/ldi-rust-native-playground");
+        let request = OrderRequest {
+            solution_path: root.join("ldi-rust-native-playground.cln").to_string_lossy().into_owned(),
+            configuration: "Rust · Debug".into(), profile: None,
+        };
+        let solution = load(&request).unwrap();
+        assert_eq!(solution.projects.len(), 2);
+        assert!(solution.projects.iter().any(|project|
+            project.language.as_deref() == Some("rust") && project.kind == "application"));
+        assert!(solution.projects.iter().any(|project|
+            project.language.as_deref() == Some("cpp") && project.kind == "library"));
+        // The debugger builds Cargo itself; its preparation must not duplicate
+        // that build or use the CMake→.NET artifact installation path.
+        assert_eq!(describe(&solution, "Rust · Debug").unwrap(),
+            vec!["Build Native · Build → wait for success"]);
+        assert_eq!(describe(&solution, "Rust · Run").unwrap(), vec![
+            "Build Native · Build → wait for success", "Build Rust · Build → wait for success"]);
+        assert_eq!(describe(&solution, "Prepare Native").unwrap(),
+            vec!["Build Native · Build → wait for success"]);
+        let native = configuration(&solution, "Native · Scalar").unwrap().slots.as_ref().unwrap();
+        assert_eq!(native.build.as_deref(), Some("Native · Scalar Build"));
+        let native_power = spec(&solution, configuration(&solution, native.build.as_deref().unwrap()).unwrap(), None).unwrap();
+        assert_eq!(native_power.program, "cmake", "live-native pairing needs a direct CMake Build Power slot");
+        assert_eq!(describe(&solution, "Native · Scalar Build").unwrap(),
+            vec!["Build Native · Build → wait for success"], "Native White Build prepares a clean tree before its incremental target build");
+        assert!(native.debug.is_none() && native.run.is_none(), "a library must not invent a process");
+        let build = spec(&solution, configuration(&solution, "Rust · Build").unwrap(), None).unwrap();
+        assert_eq!(build.cwd, root.join("Rust").canonicalize().unwrap());
+        assert!(build.args.contains(&"--offline".into()));
     }
 
     #[test]

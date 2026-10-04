@@ -169,6 +169,10 @@ pub async fn start_config(
 }
 
 pub async fn start_config_for_label(app: AppHandle, label: String, mut spec: RunSpec) -> Result<u64, String> {
+    super::native_debug::check_window_launch(&app, &label)?;
+    if super::debug::normalize_debug_method(&spec.program) == Some("cmake") {
+        super::native_debug::check_cmake_build(&app, Path::new(&spec.cwd))?;
+    }
     if !Path::new(&spec.cwd).is_dir() {
         return Err(format!("Working directory does not exist: {}", spec.cwd));
     }

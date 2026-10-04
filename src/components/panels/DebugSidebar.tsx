@@ -3,12 +3,16 @@ import { useBreakpoints } from "../../store/breakpointStore";
 import { useSolution } from "../../store/solutionStore";
 import { useLinkedWindows, dispatchLinkedWindowCommand } from "../../store/linkedWindowsStore";
 import LdiSessionCard from "./LdiSessionCard";
+import { useNativeDebug } from "../../store/nativeDebugStore";
+import { revealDebugSource } from "../../lib/debugSource";
 
 export default function DebugSidebar() {
   const debug = useDebug();
   const points = useBreakpoints((state) => state.points);
   const windows = useLinkedWindows((state) => state.windows);
   const remote = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.viewedWindowLabel && item.windowLabel !== state.ownWindowLabel));
+  const context = useNativeDebug((state) => state.context);
+  const native = !remote ? context : null;
   const reveal = useSolution((state) => state.revealFile);
   const revealBreakpoint = async (file: string, line: number) => {
     if (!remote) { await reveal(file, line, 1); return; }
@@ -19,13 +23,18 @@ export default function DebugSidebar() {
     }
   };
   const revealFrame = async (file: string, line: number) => {
-    if (!remote) { await reveal(file, line, 1); return; }
-    await dispatchLinkedWindowCommand(remote.windowLabel, "reveal_file", JSON.stringify({ file, line }));
+    if (native && file.endsWith(".rs")) {
+      await dispatchLinkedWindowCommand(native.originLabel, "reveal_debug_source", JSON.stringify({ file, line }));
+      await useLinkedWindows.getState().selectWindow(native.originLabel);
+      return;
+    }
+    if (!remote) { await revealDebugSource(file, line); return; }
+    await dispatchLinkedWindowCommand(remote.windowLabel, "reveal_debug_source", JSON.stringify({ file, line }));
     useLinkedWindows.getState().setRemoteEditing(false);
   };
-  const pausedLine = remote ? remote.pausedLine : debug.line;
-  const frames = remote?.debugFrames ?? debug.frames;
-  const variables = remote?.debugVariables ?? debug.variables;
+  const pausedLine = native?.line ?? (remote ? remote.pausedLine : debug.line);
+  const frames = native?.frames ?? remote?.debugFrames ?? debug.frames;
+  const variables = native?.variables ?? remote?.debugVariables ?? debug.variables;
   const listedPoints = points.filter((point, index, all) =>
     all.findIndex((item) => item.file === point.file && item.line === point.line) === index);
   const removeBreakpoint = async (file: string, line: number) => {
@@ -35,24 +44,30 @@ export default function DebugSidebar() {
     <div className="h-9 px-3 flex items-center border-b border-zinc-800 shrink-0 font-semibold text-zinc-300 uppercase tracking-wide">Debug</div>
     <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden scroll-thin overscroll-contain" tabIndex={0} aria-label="Debugger details">
       <LdiSessionCard />
+      {native && <section className="p-3 border-b border-blue-900 bg-blue-950/20">
+        <div className="text-blue-300 font-semibold">Native debugging · Live Rust FFI</div>
+        <div className="mt-1 font-mono">{native.nativeStop ? native.entryPoint : "Linked to the Rust debugger"}</div>
+        <div className="mt-1 text-zinc-400">One Rust process and LLDB session. {native.nativeStop ? "Continue and Step operate that process. Step Out returns to Rust." : "Stop is available here throughout the session; native stepping appears at a verified C++ stop."}</div>
+        <div className="mt-1 text-amber-300">Stop ends the owning Rust debug session; closing this window only detaches the view.</div>
+      </section>}
       <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Session</div>
         <div className={remote?.status === "paused" || (!remote && debug.status === "paused") ? "text-amber-300" : "text-zinc-300"}>
-          {remote ? `${remote.selectedConfigName ?? remote.projectName} · ${remote.debugging ? remote.status : "not debugging"}` : debug.status}
+          {native ? `Rust-owned native inspection · ${native.status}` : remote ? `${remote.selectedConfigName ?? remote.projectName} · ${remote.debugging ? remote.status : "not debugging"}` : debug.status}
         </div>
         {pausedLine && <div className="mt-1 text-zinc-400 truncate" title={remote?.activeFile?.path ?? debug.file ?? ""}>
-          {(remote?.activeFile?.name ?? debug.file?.split("/").pop()) || "Source"}:{pausedLine}
+          {(native?.file?.split("/").pop() ?? remote?.activeFile?.name ?? debug.file?.split("/").pop()) || "Source"}:{pausedLine}
         </div>}
         {(remote?.pauseReason ?? (!remote ? debug.reason : null)) &&
           <div className="mt-1 text-zinc-500">{remote?.pauseReason ?? debug.reason}</div>}
         {remote?.failureMessage && <div role="alert" className="mt-2 text-red-300 break-words">{remote.failureMessage}</div>}
       </section>
       {windows.length > 1 && <section className="p-3 border-b border-zinc-800">
-        <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Linked debug sessions</div>
+        <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Solution windows · debug ownership</div>
         {windows.map((item) => <div key={item.windowLabel} className="flex gap-2 py-0.5 text-zinc-400">
           <span className="min-w-0 flex-1 truncate" title={item.projectName}>{item.selectedConfigName ?? item.projectName} · CS{item.windowId}</span>
           <span className={item.debugging && item.status === "paused" ? "text-amber-300" : "text-zinc-500"}>
-            {item.debugging ? item.status : "not debugging"}
+            {native?.partnerLabel === item.windowLabel ? `Rust link · ${native.status}` : item.debugging ? item.status : item.ldiRole === "native-library" ? "library · no process" : "not debugging"}
           </span>
         </div>)}
       </section>}

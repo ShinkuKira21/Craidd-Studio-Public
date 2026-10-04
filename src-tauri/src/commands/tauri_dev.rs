@@ -15,7 +15,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -50,6 +49,37 @@ impl Drop for TauriDevServers {
 pub struct DevLease {
     app: AppHandle,
     key: String,
+    reused: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugPrerequisite {
+    config_path: String,
+    command: String,
+    cwd: String,
+    url: String,
+}
+
+fn debug_prerequisite(cwd: &Path) -> Result<Option<DebugPrerequisite>, String> {
+    let Some((config, root)) = locate_tauri_config(cwd) else { return Ok(None); };
+    if config.parent() != Some(cwd) { return Ok(None); }
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&config).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    let Some(url) = value.pointer("/build/devUrl").and_then(|value| value.as_str()) else { return Ok(None); };
+    let command = value.pointer("/build/beforeDevCommand").and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty()).ok_or("Tauri Debug needs a string build.beforeDevCommand")?;
+    Ok(Some(DebugPrerequisite { config_path: config.to_string_lossy().into_owned(),
+        command: command.into(), cwd: root.to_string_lossy().into_owned(), url: url.into() }))
+}
+
+/// Read-only preview; never starts a frontend or writes project configuration.
+#[tauri::command]
+pub async fn describe_debug_prerequisites(cwd: String) -> Result<Option<DebugPrerequisite>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cwd = fs::canonicalize(cwd).map_err(|error| error.to_string())?;
+        debug_prerequisite(&cwd)
+    }).await.map_err(|error| error.to_string())?
 }
 
 impl Drop for DevLease {
@@ -88,12 +118,6 @@ fn server_address(dev_url: &str) -> Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
-fn listening(host: &str, port: u16) -> bool {
-    let host = if host == "0.0.0.0" { "127.0.0.1" } else { host };
-    (host, port).to_socket_addrs().is_ok_and(|addresses| addresses
-        .into_iter().any(|address| TcpStream::connect_timeout(&address, Duration::from_millis(120)).is_ok()))
-}
-
 fn drain<R: Read + Send + 'static>(reader: R, tail: Arc<Mutex<VecDeque<String>>>) {
     thread::spawn(move || {
         for line in BufReader::new(reader).lines() {
@@ -106,9 +130,9 @@ fn drain<R: Read + Send + 'static>(reader: R, tail: Arc<Mutex<VecDeque<String>>>
     });
 }
 
-fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap<String, String>, cancelled: Option<&AtomicBool>) -> Result<Server, String> {
+fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap<String, String>, cancelled: Option<&AtomicBool>, dev_url: &str) -> Result<Server, String> {
     if cancelled.is_some_and(|token| token.load(Ordering::Acquire)) { return Err("Debug build cancelled".into()); }
-    if listening(host, port) {
+    if super::linked_windows::http_ready(dev_url).unwrap_or(false) {
         return Ok(Server { pgid: 0, clients: 1, alive: Arc::new(AtomicBool::new(true)), env: env.clone() });
     }
     let mut process = Command::new("sh");
@@ -133,7 +157,7 @@ fn start_server(cwd: &Path, command: &str, host: &str, port: u16, env: &BTreeMap
             let _ = child.wait();
             return Err("Debug build cancelled".into());
         }
-        if listening(host, port) { break; }
+        if super::linked_windows::http_ready(dev_url).unwrap_or(false) { break; }
         if let Ok(Some(status)) = child.try_wait() {
             let lines = tail.lock().ok().map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
             terminate(pgid);
@@ -218,36 +242,43 @@ fn acquire_frontend(app: AppHandle, config_path: &Path, project_root: &Path,
     let (host, port) = server_address(dev_url)?;
     let key = fs::canonicalize(project_root).map_err(|error| error.to_string())?.to_string_lossy().into_owned();
     let manager = app.state::<TauriDevServers>();
+    let mut reused = false;
     {
         let mut servers = manager.0.lock().map_err(|error| error.to_string())?;
         if let Some(server) = servers.get_mut(&key) {
-            if server.alive.load(Ordering::SeqCst) && listening(&host, port) {
+            if server.alive.load(Ordering::SeqCst) && super::linked_windows::http_ready(dev_url).unwrap_or(false) {
                 if &server.env != env {
                     return Err("Tauri clients sharing one frontend port need the same profile environment".into());
                 }
                 server.clients += 1;
+                reused = true;
             } else {
                 servers.remove(&key);
-                servers.insert(key.clone(), start_server(project_root, before_dev, &host, port, env, cancelled)?);
+                servers.insert(key.clone(), start_server(project_root, before_dev, &host, port, env, cancelled, dev_url)?);
             }
         } else {
-            servers.insert(key.clone(), start_server(project_root, before_dev, &host, port, env, cancelled)?);
+            reused = super::linked_windows::http_ready(dev_url).unwrap_or(false);
+            servers.insert(key.clone(), start_server(project_root, before_dev, &host, port, env, cancelled, dev_url)?);
         }
     }
 
-    Ok(DevLease { app, key })
+    Ok(DevLease { app, key, reused })
 }
 
 /// Native Tauri Debug needs the same frontend prerequisite as tauri dev.
 /// Ordinary Cargo projects are unchanged. The lease survives for the
 /// debugger's entire lifetime, including while its viewport is hidden.
-pub async fn prepare_debug(app: AppHandle, cwd: PathBuf, env: BTreeMap<String, String>, cancelled: Arc<AtomicBool>) -> Result<Option<DevLease>, String> {
+pub async fn prepare_debug(app: AppHandle, cwd: PathBuf, env: BTreeMap<String, String>, cancelled: Arc<AtomicBool>, label: String) -> Result<Option<DevLease>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let Some((config, root)) = locate_tauri_config(&cwd) else { return Ok(None); };
-        if config.parent() != Some(cwd.as_path()) { return Ok(None); }
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(&config).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
-        if value.pointer("/build/devUrl").is_none() { return Ok(None); }
-        acquire_frontend(app, &config, &root, &env, Some(&cancelled)).map(Some)
+        let Some(prerequisite) = debug_prerequisite(&cwd)? else { return Ok(None); };
+        super::debug::emit(&app, &label, serde_json::json!({"status":"output", "text":format!(
+            "Automatic frontend prerequisite from {}: {} (in {}). Start/reuse and wait for HTTP success at {}.",
+            prerequisite.config_path, prerequisite.command, prerequisite.cwd, prerequisite.url)}));
+        let lease = acquire_frontend(app.clone(), Path::new(&prerequisite.config_path), Path::new(&prerequisite.cwd), &env, Some(&cancelled))?;
+        super::debug::emit(&app, &label, serde_json::json!({"status":"output", "text":format!(
+            "{} frontend; HTTP success at {}. The frontend is shared until the last client stops.",
+            if lease.reused { "Reusing" } else { "Started" }, prerequisite.url)}));
+        Ok(Some(lease))
     }).await.map_err(|error| error.to_string())?
 }
 
@@ -266,6 +297,19 @@ pub async fn prepare_run(app: AppHandle, spec: RunSpec) -> Result<(RunSpec, Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_preview_reads_the_declared_frontend_without_starting_it() {
+        let native = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("workspaces/build-order-lab/Client/src-tauri");
+        let prerequisite = debug_prerequisite(&native).unwrap().unwrap();
+        assert_eq!(prerequisite.command, "npm run dev");
+        assert_eq!(prerequisite.url, "http://127.0.0.1:1545");
+        assert_eq!(Path::new(&prerequisite.cwd), native.parent().unwrap());
+        // The frontend folder is not the Cargo debug working directory.
+        assert!(debug_prerequisite(native.parent().unwrap()).unwrap().is_none());
+        let rust = native.parent().unwrap().parent().unwrap().parent().unwrap().join("ldi-rust-native-playground/Rust");
+        assert!(debug_prerequisite(&rust).unwrap().is_none());
+    }
 
     #[test]
     fn detects_tauri_dev_without_matching_other_commands() {
@@ -295,7 +339,7 @@ mod tests {
     #[test]
     fn cancelled_debug_does_not_start_a_frontend() {
         let cancelled = AtomicBool::new(true);
-        let error = start_server(Path::new("."), "not-a-command", "127.0.0.1", 1, &BTreeMap::new(), Some(&cancelled)).err().unwrap();
+        let error = start_server(Path::new("."), "not-a-command", "127.0.0.1", 1, &BTreeMap::new(), Some(&cancelled), "http://127.0.0.1:1").err().unwrap();
         assert_eq!(error, "Debug build cancelled");
     }
 }

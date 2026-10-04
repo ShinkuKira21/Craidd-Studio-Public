@@ -33,7 +33,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     .find((item) => item.name === viewed.selectedConfigName) : null;
   const remoteChoices = remoteConfig && solution ? choicesForConfig(solution, remoteConfig) : null;
   const busy = viewed ? ["starting", "building", "running", "paused"].includes(viewed.status)
-    : ["starting", "building", "running", "paused"].includes(buildStatus) || ["building", "running", "paused"].includes(debugStatus);
+    : ["starting", "building", "running", "paused"].includes(buildStatus) || ["building", "starting", "running", "paused"].includes(debugStatus);
   const canRun = (kind: "build" | "run" | "debug") => Boolean(viewed ? remoteChoices?.[kind] : mainChoices[kind]);
   const runViewed = (kind: "build" | "run" | "debug") => void startViewedAction(kind)
     .catch((error) => alert(`${kind} failed: ${String(error)}`));

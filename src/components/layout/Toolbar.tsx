@@ -10,6 +10,7 @@ import { detectLinkedStartupSuggestions } from "../../lib/linkedStartup";
 import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
 import WindowManager from "./WindowManager";
 import { useDebug } from "../../store/debugStore";
+import { useNativeDebug } from "../../store/nativeDebugStore";
 
 type Kind = "build" | "run" | "debug";
 
@@ -25,7 +26,9 @@ function Toolbar() {
 
   const linked = useLinkedWindows();
   const ldi = useLdi((state) => state.session);
+  const blues = useLdi((state) => state.blues);
   const debugStatus = useDebug((s) => s.status);
+  const nativeContext = useNativeDebug((s) => s.context);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [startupSetupRequested, setStartupSetupRequested] = useState(false);
   const [previewName, setPreviewName] = useState<string | null>(null);
@@ -44,7 +47,13 @@ function Toolbar() {
   const remote = linked.windows.find((item) => item.windowLabel === linked.viewedWindowLabel
     && item.windowLabel !== linked.ownWindowLabel);
   const heldByLdi = Boolean(ldi?.held && ldi.phase !== "stopped" && ldi.originLabel === (remote?.windowLabel ?? linked.ownWindowLabel));
-  const viewedStatus = remote?.status ?? (["building", "running", "paused"].includes(debugStatus) ? debugStatus : status);
+  const native = !remote ? nativeContext : null;
+  const showGold = linked.windows.length > 1 || linked.linked || Boolean(linked.activeAction);
+  const liveOwner = !remote && blues.some((blue) => blue.mode === "live-native"
+    && blue.originLabel === linked.ownWindowLabel && !blue.warning)
+    && ["building", "starting", "running", "paused"].includes(debugStatus);
+  const liveLinked = Boolean(native) || liveOwner;
+  const viewedStatus = native?.status ?? remote?.status ?? (["building", "starting", "running", "paused"].includes(debugStatus) ? debugStatus : status);
   const running = ["waiting", "starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
   const viewedProfileName = remote ? remote.selectedProfileName : selectedProfileName;
@@ -64,7 +73,7 @@ function Toolbar() {
   return (
     <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-1.5 shrink-0 text-xs">
       <KindButton kind="build" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices ? previewChoices.build : remote ? remoteChoices?.build ?? null : undefined} onFire={(name) => fire("build", name)} />
-      {(linked.linked || linked.activeAction) && <GoldButton kind="build" linked={linked} />}
+      {showGold && <GoldButton kind="build" linked={linked} />}
 
       <ConfigChip
         hasSolution={!!solution}
@@ -90,10 +99,10 @@ function Toolbar() {
       )}
 
       <KindButton kind="run" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices ? previewChoices.run : remote ? remoteChoices?.run ?? null : undefined} onFire={(name) => fire("run", name)} />
-      {(linked.linked || linked.activeAction) && <GoldButton kind="run" linked={linked} />}
+      {showGold && <GoldButton kind="run" linked={linked} />}
 
       <button
-        title={running ? "Stop (Shift+F5)" : "Nothing is running"}
+        title={native ? "Stop owning Rust debugger (Shift+F5)" : running ? "Stop (Shift+F5)" : "Nothing is running"}
         disabled={!running}
         onClick={stopViewed}
         className={
@@ -104,18 +113,26 @@ function Toolbar() {
       >⏹</button>
 
       <KindButton kind="debug" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices ? previewChoices.debug : remote ? remoteChoices?.debug ?? null : undefined} onFire={(name) => fire("debug", name)} />
-      {(linked.linked || linked.activeAction) && <GoldButton kind="debug" linked={linked} />}
-      {(remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running")) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
+      {liveLinked ? <button type="button" onClick={stopViewed} aria-label="Stop linked Rust debugger"
+        title="2 linked windows · one Rust process and LLDB session. Stop the Rust debugger; Native is an inspector, not a second process."
+        className="relative w-8 h-8 rounded text-amber-400 hover:bg-amber-900/30 flex items-center justify-center">
+        <GoldActionIcon kind="debug" stop />
+        <sup className="absolute top-0 right-0 text-[9px]">2</sup>
+      </button> : showGold && <GoldButton kind="debug" linked={linked} />}
+      {(native || (remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {viewedStatus === "paused" ? <>
-          <DebugTransport disabled={heldByLdi} label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
-          <DebugTransport disabled={heldByLdi} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
-          <DebugTransport disabled={heldByLdi} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
-          <DebugTransport disabled={heldByLdi} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
+          {(!native || native.nativeStop) ? <>
+            <DebugTransport disabled={heldByLdi} label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
+            <DebugTransport disabled={heldByLdi} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
+            <DebugTransport disabled={heldByLdi} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
+            <DebugTransport disabled={heldByLdi} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
+          </> : <button type="button" className="px-2 text-blue-300 hover:text-blue-200"
+            onClick={() => void linked.selectWindow(native.originLabel).catch((error) => alert(String(error)))}>Paused in Rust · show owner</button>}
         </> : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
       </div>}
 
       <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[220px]">
-        {running && (remote ? remote.selectedConfigName : activeConfigName) ? (
+        {native ? <span className="text-blue-300" title="Controls operate the owning Rust process; your Native Power Config is unchanged">Native view · Rust · {native.status}</span> : running && (remote ? remote.selectedConfigName : activeConfigName) ? (
           <>
             <span className="text-zinc-500">White{remote ? ` CS${remote.windowId}` : ""} · </span><span className="text-zinc-400">{remote ? remote.selectedConfigName : activeConfigName}</span>
             <span className="text-zinc-600"> · </span>
@@ -173,7 +190,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     } finally { setLaunching(false); }
   };
   const projects = linked.members.map((member) => member.projectName).join(" + ");
-  const count = linked.members.length;
+  const count = linked.members.length || linked.windows.length;
   const activeCount = linked.activeCount;
   const missingDebug = linked.members.filter((member) => !member.canDebug && member.ldiRole !== "native-library");
   const debugBlockers = [
@@ -181,6 +198,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     !linked.debugAdapterAvailable ? "Install/select the required lldb-dap or netcoredbg adapter in Preferences → Toolchain, then rescan" : null,
   ].filter(Boolean).join("; ");
   const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
+    : !linked.linked ? `${count} solution windows; no eligible linked ${kind} group. Libraries have no Run/Debug process. Use White Run/Debug in the caller; Native shows its live inspector and Stop.`
     : kind === "debug" && !linked.canDebug ? `Cannot debug ${count} linked windows: ${debugBlockers}`
     : !available ? `Cannot ${kind} all ${count} linked instances: a configuration is missing`
     : linked.busy ? "A linked action is active"

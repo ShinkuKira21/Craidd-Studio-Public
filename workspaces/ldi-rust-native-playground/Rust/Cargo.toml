@@ -1,0 +1,13 @@
+[package]
+name = "rust-native-playground"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[profile.dev]
+opt-level = 0
+debug = 2
+
+[profile.test]
+opt-level = 0
+debug = 2

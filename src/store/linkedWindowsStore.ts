@@ -33,7 +33,7 @@ export interface LinkedMember {
   windowId: number;
   instanceId: string;
   solutionPath: string;
-  ldiRole: "managed" | "native-library" | null;
+  ldiRole: "managed" | "live-native" | "native-library" | null;
   projectName: string;
   status: string;
   visible: boolean;
@@ -161,10 +161,10 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     canBuild: Boolean(build.mainChoices.build),
     canRun: Boolean(build.mainChoices.run),
     canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""),
-    debugging: ["building", "running", "paused"].includes(debug.status),
-    activeAction: ["building", "running", "paused"].includes(debug.status) ? "debug"
+    debugging: ["building", "starting", "running", "paused"].includes(debug.status),
+    activeAction: ["building", "starting", "running", "paused"].includes(debug.status) ? "debug"
       : ["starting", "running"].includes(build.status) ? build.action : null,
-    status: ["building", "running", "paused"].includes(debug.status) ? debug.status : build.status,
+    status: ["building", "starting", "running", "paused"].includes(debug.status) ? debug.status : build.status,
     selectedConfigName: build.selectedConfigName,
     selectedProfileName: build.selectedProfileName,
     activeFile: activeTab ? { path: activeTab.fileId, name: activeTab.name,
@@ -210,7 +210,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   const unlistenTitle = await currentWindow.listen<{ title: string }>("craidd:linked-title", (event) => {
     void currentWindow.setTitle(event.payload.title).catch(() => { /* best effort */ });
   });
-  const stopLocalAction = () => ["building", "running", "paused"].includes(useDebug.getState().status)
+  const stopLocalAction = () => ["building", "starting", "running", "paused"].includes(useDebug.getState().status)
     ? useDebug.getState().control("stop") : useBuild.getState().stop();
   const unlistenCommand = await currentWindow.listen<{ kind: "start" | "stop" | "cancel_member"; action: Action | null; actionId: number }>(
     "craidd:linked-command", (event) => {
@@ -259,7 +259,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   const unlistenTarget = await currentWindow.listen<{ kind: string; value: string | null }>(
     "craidd:linked-target-command", (event) => {
       const { kind, value } = event.payload;
-      if (kind === "stop") void (["building", "running", "paused"].includes(useDebug.getState().status)
+      if (kind === "stop") void (["building", "starting", "running", "paused"].includes(useDebug.getState().status)
         ? useDebug.getState().control("stop") : useBuild.getState().stop());
       else if (kind === "debug_control" && value && ["continue", "pause", "stepOver", "stepInto", "stepOut", "stop"].includes(value))
         void useDebug.getState().control(value as "continue" | "pause" | "stepOver" | "stepInto" | "stepOut" | "stop");
@@ -267,11 +267,13 @@ export async function listenToLinkedWindows(): Promise<() => void> {
         const solution = useSolution.getState().solution;
         if (solution) selectConfiguration(solution, value);
       } else if (kind === "select_profile") useBuild.getState().setSelectedProfile(value);
-      else if (kind === "reveal_file" && value) {
+      else if ((kind === "reveal_file" || kind === "reveal_debug_source") && value) {
         try {
           const location = JSON.parse(value) as { file: string; line: number };
           if (typeof location.file === "string" && Number.isInteger(location.line) && location.line > 0) {
-            void useSolution.getState().revealFile(location.file, location.line, 1);
+            if (kind === "reveal_debug_source") {
+              void import("../lib/debugSource").then(({ revealDebugSource }) => revealDebugSource(location.file, location.line));
+            } else void useSolution.getState().revealFile(location.file, location.line, 1);
           }
         } catch { /* Stale navigation request. */ }
       }
