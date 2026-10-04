@@ -356,6 +356,11 @@ overwrite either version. If any required save fails or is cancelled,
 do not start any member of the linked action. Successful saves commit
 pending breakpoint positions before the debugger receives them.
 
+The proposed interaction for resolving these files from one control window,
+optionally reviewing diffs or opening each owning editor, is specified in
+[Unsaved changes before linked launch](design-linked-launch-unsaved-review.md).
+It adds an actionable review stage, not a new executable-membership rule.
+
 The current execution location is different from a breakpoint: it is
 transient and owned by one debugger instance. Render its stopped line
 with a consistent debug highlight and an instance label. A red circle

@@ -4,6 +4,11 @@ The save dialog makes process restart explicit. It applies to Ctrl+S, File →
 Save, Save As, and user saves from tab-close and disk-conflict prompts. Internal
 save-before-launch and save-before-exit preparation does not open this dialog.
 
+Resolving unsaved files before a new Gold launch is a separate interaction:
+[Unsaved changes before linked launch](design-linked-launch-unsaved-review.md).
+It offers review, owner-routed Save/Discard and manual editor intervention;
+those preparation saves must not open this save-and-restart dialog again.
+
 The dialog offers **Save**, **Save and [restart scope]**, and **Cancel**. Save
 keeps the session running. A debugger keeps its loaded binary and its original
 Blue bindings. Restart rebuilds using the current saved files and configured

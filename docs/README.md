@@ -5,7 +5,8 @@ Start here for the project model and working conventions:
 - [Working protocol](working-protocol.md) — how the user and assistant collaborate.
 - [`.craidd` and `.cln` model](craidd-cln-model.md) — the project and solution contract.
 - [Current place](roadmaps/Roadmap-Current_Place_Roadmap-v0.0.2A.md) — a map of the codebase.
-- [Current roadmap](roadmaps/Roadmap-v0.0.2A.md) — phase ordering and status.
+- [Current roadmap](roadmaps/Roadmap-v0.0.3A.md) — present estimate and next gates.
+- [Playground direction](roadmaps/playground/Playground-direction.md) — real linked-debugging acceptance.
 
 The rest of the docs are grouped by purpose:
 
