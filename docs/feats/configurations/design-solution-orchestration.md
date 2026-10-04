@@ -9,6 +9,8 @@ schema. Named `[[config]]` entries, Power slots, ordered build/install steps,
 and linked startup dependencies now have a focused working prototype. See
 [Declarative build order](design-declarative-build-order.md) and the
 [Build Order Lab](../../../workspaces/build-order-lab/README.md) for supported syntax.
+See [debug startup and shutdown](design-debug-startup-and-shutdown.md) for the
+accepted visibility contract for automatic framework prerequisites and LLDB.
 
 ---
 

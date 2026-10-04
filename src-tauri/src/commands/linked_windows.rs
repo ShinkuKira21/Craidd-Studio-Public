@@ -742,7 +742,7 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
     let Ok(mut registry) = state.0.lock() else { return; };
     let Some(item) = registry.windows.get_mut(label) else { return; };
     item.status = status.into();
-    item.debugging = matches!(status, "building" | "running" | "paused");
+    item.debugging = matches!(status, "building" | "starting" | "running" | "paused");
     if item.debugging { item.active_action = Some("debug".into()); }
     item.paused_line = if status == "paused" { line } else { None };
     if status == "paused" {
@@ -751,7 +751,7 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
         item.pause_reason = None;
     }
     if status == "error" { item.failure_message = Some(reason.unwrap_or("Debug session failed").to_owned()); }
-    else if matches!(status, "building" | "running" | "paused") { item.failure_message = None; }
+    else if matches!(status, "building" | "starting" | "running" | "paused") { item.failure_message = None; }
     let hidden_source = if status == "paused" && !item.visible { paused_source.clone() } else { None };
     if let Some(source) = paused_source {
         if !item.active_file.as_ref().is_some_and(|active| active.path == source.path && active.dirty) {
@@ -760,7 +760,7 @@ pub fn note_debug_state(app: &AppHandle, label: &str, status: &str, file: Option
     }
     if let Some(source) = hidden_source { parked_select_file(&mut registry, label, source); }
     if matches!(status, "terminated" | "error") { finish_group_member(&mut registry, label); }
-    else if matches!(status, "building" | "running" | "paused") {
+    else if matches!(status, "building" | "starting" | "running" | "paused") {
         for group in registry.actions.values_mut().filter(|group| !group.cancelled && !group.skipped.contains(label)
             && group.members.iter().any(|member| member == label)) {
             group.unfinished.insert(label.into());
@@ -1210,12 +1210,21 @@ pub fn focus_linked_window(
 }
 
 #[tauri::command]
-pub fn close_linked_window(
+pub async fn close_linked_window(
     window: WebviewWindow,
     app: AppHandle,
-    state: tauri::State<'_, LinkedWindowRegistry>,
     target_label: String,
 ) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || close_linked_window_inner(window, app, target_label))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn close_linked_window_inner(
+    window: WebviewWindow,
+    app: AppHandle,
+    target_label: String,
+) -> Result<(), String> {
+    let state = app.state::<LinkedWindowRegistry>();
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     let source = registry.windows.get(window.label()).ok_or("No solution is open")?;
     let target = registry.windows.get(&target_label).ok_or("Window is no longer open")?;
@@ -1378,7 +1387,7 @@ fn parse_http_ready_url(url: &str) -> Result<(String, u16, String), String> {
     Ok((host.into(), port, path))
 }
 
-fn http_ready(url: &str) -> Result<bool, String> {
+pub(crate) fn http_ready(url: &str) -> Result<bool, String> {
     let (host, port, path) = parse_http_ready_url(url)?;
     let addresses = (host.as_str(), port).to_socket_addrs().map_err(|error| error.to_string())?;
     let mut stream = None;
@@ -1916,11 +1925,19 @@ pub fn stop_linked_member(
 }
 
 #[tauri::command]
-pub fn stop_linked_action(
+pub async fn stop_linked_action(
     window: WebviewWindow,
     app: AppHandle,
-    state: tauri::State<'_, LinkedWindowRegistry>,
 ) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || stop_linked_action_inner(window, app))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn stop_linked_action_inner(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<LinkedWindowRegistry>();
     let mut registry = state.0.lock().map_err(|e| e.to_string())?;
     let participant = registry.windows.get(window.label()).ok_or("This window has no linked solution")?;
     let solution_path = participant.solution_path.clone();
@@ -2040,7 +2057,7 @@ fn validate_restart(registry: &Registry, source: &str, request: &RestartRequest,
 async fn restart_sessions_inner(window: WebviewWindow, app: AppHandle, request: RestartRequest) -> Result<(), String> {
     let state = app.state::<LinkedWindowRegistry>();
     if request.scope == "gold" {
-        stop_linked_action(window.clone(), app.clone(), app.state())?;
+        stop_linked_action(window.clone(), app.clone()).await?;
     } else {
         for target in &request.targets {
             let in_group = state.0.lock().map_err(|error| error.to_string())?.actions.values()

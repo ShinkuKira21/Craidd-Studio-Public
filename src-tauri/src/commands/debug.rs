@@ -1,11 +1,11 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -36,11 +36,13 @@ pub struct DebugRequest {
 }
 
 struct Session {
-    writer: Mutex<ChildStdin>,
+    writer: super::debug_transport::DapWriter,
     next_seq: AtomicU64,
     thread_id: AtomicI64,
     transport_busy: AtomicBool,
     pgid: i32,
+    birth: u64,
+    stopping: AtomicBool,
     breakpoint_files: Mutex<HashSet<String>>,
     breakpoints_ready: AtomicBool,
     solution_path: String,
@@ -82,7 +84,7 @@ impl Drop for DebugManager {
 
 pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
     if let Some(status) = value["status"].as_str() {
-        if matches!(status, "building" | "running" | "paused" | "terminated" | "error") {
+        if matches!(status, "building" | "starting" | "running" | "paused" | "terminated" | "error") {
             let native_routed = value["nativeRouted"] == true;
             note_debug_state(app, label, status, if native_routed { None } else { value["file"].as_str() },
                 if native_routed { None } else { value["line"].as_u64().and_then(|line| u32::try_from(line).ok()) },
@@ -129,10 +131,19 @@ pub fn update_solution_breakpoints(app: &AppHandle, solution_path: &str, points:
 fn request(session: &Session, command: &str, arguments: Value) -> Result<u64, String> {
     let seq = session.next_seq.fetch_add(1, Ordering::Relaxed);
     let body = json!({ "seq": seq, "type": "request", "command": command, "arguments": arguments }).to_string();
-    let mut writer = session.writer.lock().map_err(|e| e.to_string())?;
-    write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body).map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())?;
+    session.writer.send(&body)?;
     Ok(seq)
+}
+
+fn schedule_debug_stop(session: &Session) {
+    if session.stopping.swap(true, Ordering::AcqRel) { return; }
+    if let Some(cancel) = crate::process_supervisor::capture_cancel_tree(session.pgid, session.birth) {
+        thread::spawn(move || {
+            // Graceful DAP disconnect first; then identity-scoped TERM/KILL.
+            thread::sleep(Duration::from_millis(800));
+            cancel();
+        });
+    }
 }
 
 fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
@@ -150,6 +161,22 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
     let mut bytes = vec![0; length];
     reader.read_exact(&mut bytes).map_err(|e| e.to_string())?;
     serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string())
+}
+
+fn native_symbol_commands(download: bool) -> Vec<String> {
+    // Core LLDB setting works without its optional Python/debuginfod plugins.
+    // Executable/local debug files are still read. External symbol providers
+    // (including remote repositories) are opt-in, session-local settings.
+    let mut commands = vec![format!("settings set symbols.enable-external-lookup {download}")];
+    if download { commands.push("settings set plugin.symbol-locator.debuginfod.timeout 5".into()); }
+    commands
+}
+
+fn native_process_executing(pid: i64) -> bool {
+    if pid <= 1 { return false; }
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()
+        .and_then(|stat| stat.rfind(')').and_then(|end| stat.as_bytes().get(end + 2).copied()))
+        .is_some_and(|state| matches!(state, b'R' | b'S' | b'D' | b'I'))
 }
 
 fn split_cargo_debug_args(mut command_args: Vec<String>) -> (Vec<String>, Vec<String>) {
@@ -678,7 +705,7 @@ pub async fn start_debug_for_label(app: AppHandle, label: String, request_spec: 
         let cancelled = Arc::new(AtomicBool::new(false));
         app.state::<DebugBuildManager>().0.lock().map_err(|error| error.to_string())?
             .insert(label.clone(), BuildJob { pgid: 0, cancelled: cancelled.clone() });
-        let frontend = super::tauri_dev::prepare_debug(app.clone(), cwd.clone(), env.clone(), cancelled.clone()).await;
+        let frontend = super::tauri_dev::prepare_debug(app.clone(), cwd.clone(), env.clone(), cancelled.clone(), label.clone()).await;
         if let Ok(mut builds) = app.state::<DebugBuildManager>().0.lock() { builds.remove(&label); }
         if cancelled.load(Ordering::Acquire) {
             drop(frontend);
@@ -719,17 +746,35 @@ pub(crate) fn launch_prepared(
     if app.state::<DebugManager>().0.lock().map_err(|e| e.to_string())?.contains_key(&label) {
         return Err("This IDE window already has a debug session".into());
     }
-    if dev_lease.is_some() { emit(&app, &label, json!({"status":"output", "text":"Tauri frontend is ready; launching native debugger."})); }
+    let download_symbols = if language != "csharp" {
+        let enabled = get_toolchain(language.into())?.download_debug_symbols;
+        emit(&app, &label, json!({"status":"output", "text":if enabled {
+            "LLDB symbols: local symbols enabled; remote downloads enabled (5-second request timeout)."
+        } else { "LLDB symbols: local symbols enabled; remote downloads disabled. Opt in via Preferences → Toolchain." }}));
+        enabled
+    } else { false };
+    emit(&app, &label, json!({"status":"starting", "text":if dev_lease.is_some() {
+        "Frontend is responding; starting the Tauri executable under LLDB. This is not GUI readiness."
+    } else { "Starting the executable under its debugger…" }}));
     let mut command = Command::new(&adapter);
     if language == "csharp" { command.arg("--interpreter=vscode"); }
     command.current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
     let mut child = crate::process_supervisor::spawn(&mut command).map_err(|e| format!("Could not start {adapter_name}: {e}"))?;
     let pgid = child.id() as i32;
+    let birth = crate::process_supervisor::process_birth(pgid).ok_or("Debugger process identity unavailable")?;
+    let input = child.stdin.take().ok_or("Debugger input unavailable")?;
+    let transport_app = app.clone();
+    let transport_label = label.clone();
+    let writer = super::debug_transport::DapWriter::spawn(input, move |error| {
+        eprintln!("[craidd-debug] {transport_label}: {error}");
+        if let Some(cancel) = crate::process_supervisor::capture_cancel_tree(pgid, birth) { cancel(); }
+        emit(&transport_app, &transport_label, json!({"status":"output", "text":error}));
+    });
     let session = Arc::new(Session {
-        writer: Mutex::new(child.stdin.take().ok_or("Debugger input unavailable")?),
+        writer,
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
-        transport_busy: AtomicBool::new(false), pgid,
+        transport_busy: AtomicBool::new(false), pgid, birth, stopping: AtomicBool::new(false),
         breakpoint_files: Mutex::new(HashSet::new()),
         breakpoints_ready: AtomicBool::new(false),
         solution_path,
@@ -770,7 +815,12 @@ pub(crate) fn launch_prepared(
     let initialized_reader = initialized.clone();
     let ready = Arc::new(AtomicBool::new(false));
     let ready_reader = ready.clone();
+    let launch_accepted = Arc::new(AtomicBool::new(false));
+    let launch_accepted_reader = launch_accepted.clone();
+    let process_id = Arc::new(AtomicI64::new(0));
+    let process_id_reader = process_id.clone();
     let watchdog_alive = session.alive.clone();
+    let watchdog_session = session.clone();
     thread::spawn(move || {
         let _dev_lease = dev_lease;
         let mut reader = BufReader::new(stdout);
@@ -790,7 +840,8 @@ pub(crate) fn launch_prepared(
         let launch = if language == "csharp" {
             json!({"program": executable, "cwd": cwd, "args": args, "env": env, "stopAtEntry": false, "console":"internalConsole"})
         } else {
-            json!({"program": executable, "cwd": cwd, "args": args, "env": env, "stopOnEntry": false})
+            json!({"program": executable, "cwd": cwd, "args": args, "env": env, "stopOnEntry": false,
+                "initCommands":native_symbol_commands(download_symbols)})
         };
         loop {
             let message = match read_message(&mut reader) {
@@ -800,6 +851,11 @@ pub(crate) fn launch_prepared(
             };
             if message["type"] == "event" {
                 match message["event"].as_str().unwrap_or("") {
+                    "process" => {
+                        if let Some(pid) = message["body"]["systemProcessId"].as_i64() {
+                            process_id_reader.store(pid, Ordering::Release);
+                        }
+                    }
                     "initialized" => {
                         // DAP adapters may withhold the launch response until
                         // configurationDone; waiting for launch here deadlocks LLDB.
@@ -928,16 +984,22 @@ pub(crate) fn launch_prepared(
                     }
                     "launch" => {
                         if startup.on_launch_response() {
-                            if !ready_reader.swap(true, Ordering::AcqRel) {
+                            launch_accepted_reader.store(true, Ordering::Release);
+                            if language == "csharp" && !ready_reader.swap(true, Ordering::AcqRel) {
                                 emit(&app_reader, &label_reader, json!({"status":"running"}));
+                            } else if language != "csharp" && !ready_reader.load(Ordering::Acquire) {
+                                emit(&app_reader, &label_reader, json!({"status":"starting", "text":"Debugger connected; waiting for native execution or a reported breakpoint stop…"}));
                             }
                             if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
                         }
                     }
                     "configurationDone" => {
                         if startup.on_configuration_response() {
-                            if !ready_reader.swap(true, Ordering::AcqRel) {
+                            launch_accepted_reader.store(true, Ordering::Release);
+                            if language == "csharp" && !ready_reader.swap(true, Ordering::AcqRel) {
                                 emit(&app_reader, &label_reader, json!({"status":"running"}));
+                            } else if language != "csharp" && !ready_reader.load(Ordering::Acquire) {
+                                emit(&app_reader, &label_reader, json!({"status":"starting", "text":"Debugger connected; waiting for native execution or a reported breakpoint stop…"}));
                             }
                             if let Ok(seq) = request(&session, "threads", json!({})) { pending.insert(seq, "threads".into()); }
                         }
@@ -946,6 +1008,15 @@ pub(crate) fn launch_prepared(
                         if let Some(id) = message["body"]["threads"].as_array()
                             .and_then(|threads| threads.first()).and_then(|thread| thread["id"].as_i64()) {
                             if session.thread_id.load(Ordering::Relaxed) == 0 { session.thread_id.store(id, Ordering::Relaxed); }
+                        }
+                        // launch/configurationDone may succeed while LLDB's
+                        // loader/symbol lookup still holds the process. Thread
+                        // enumeration alone is not a running signal either.
+                        if language != "csharp" && launch_accepted_reader.load(Ordering::Acquire)
+                            && !session.stopping.load(Ordering::Acquire)
+                            && native_process_executing(process_id_reader.load(Ordering::Acquire))
+                            && !ready_reader.swap(true, Ordering::AcqRel) {
+                            emit(&app_reader, &label_reader, json!({"status":"running", "text":"Native execution observed. Application readiness is separate from debugger startup."}));
                         }
                     }
                     "stackTrace" => {
@@ -1050,48 +1121,39 @@ pub(crate) fn launch_prepared(
     drop(active);
     let app_watchdog = app.clone();
     let label_watchdog = label.clone();
-    let watchdog_pgid = pgid;
     thread::spawn(move || {
-        thread::sleep(Duration::from_secs(15));
-        if !watchdog_alive.load(Ordering::Acquire) { return; }
-        if !initialized.load(Ordering::Acquire) {
-            if let Some(manager) = app_watchdog.try_state::<DebugManager>() {
-                if let Ok(active) = manager.0.lock() {
-                    if let Some(session) = active.get(&label_watchdog).filter(|session| session.pgid == watchdog_pgid) {
-                        if !initialized.load(Ordering::Acquire) {
-                            emit(&app_watchdog, &label_watchdog, json!({"status":"error",
-                                "text":format!("{adapter_name} did not respond to initialization within 15 seconds.")}));
-                            unsafe { libc::killpg(session.pgid, libc::SIGTERM); }
-                        }
-                    }
-                }
+        let began = Instant::now();
+        let mut initialized_at = None;
+        let mut polled_at = Instant::now() - Duration::from_secs(1);
+        loop {
+            if !watchdog_alive.load(Ordering::Acquire) || ready.load(Ordering::Acquire)
+                || watchdog_session.stopping.load(Ordering::Acquire) { return; }
+            if initialized.load(Ordering::Acquire) { initialized_at.get_or_insert_with(Instant::now); }
+            let timed_out = initialized_at.map_or(began.elapsed() >= Duration::from_secs(15),
+                |at| at.elapsed() >= Duration::from_secs(30));
+            if timed_out {
+                emit(&app_watchdog, &label_watchdog, json!({"status":"error", "text":if initialized_at.is_none() {
+                    format!("{adapter_name} did not respond to initialization within 15 seconds.")
+                } else if language == "csharp" { format!("{adapter_name} did not complete managed launch/configuration within 30 seconds.") }
+                else { format!("{adapter_name} connected but native execution or a breakpoint stop was not observed within 30 seconds. Check LLDB symbol downloads in Preferences → Toolchain; the application has not been marked ready.") }}));
+                schedule_debug_stop(&watchdog_session);
+                let _ = request(&watchdog_session, "disconnect", json!({"terminateDebuggee":true}));
+                return;
             }
-            return;
-        }
-        thread::sleep(Duration::from_secs(30));
-        if !watchdog_alive.load(Ordering::Acquire) { return; }
-        if ready.load(Ordering::Acquire) { return; }
-        if let Some(manager) = app_watchdog.try_state::<DebugManager>() {
-            if let Ok(active) = manager.0.lock() {
-                if let Some(session) = active.get(&label_watchdog).filter(|session| session.pgid == watchdog_pgid) {
-                    if !ready.load(Ordering::Acquire) {
-                        emit(&app_watchdog, &label_watchdog, json!({"status":"error",
-                            "text":format!("{adapter_name} did not launch the {language} executable within 30 seconds.")}));
-                        unsafe { libc::killpg(session.pgid, libc::SIGTERM); }
-                    }
-                }
+            if language != "csharp" && launch_accepted.load(Ordering::Acquire) && polled_at.elapsed() >= Duration::from_millis(500) {
+                let _ = request(&watchdog_session, "threads", json!({}));
+                polled_at = Instant::now();
             }
+            thread::sleep(Duration::from_millis(100));
         }
     });
     Ok(())
 }
 
 #[tauri::command]
-pub fn debug_control(window: WebviewWindow, state: tauri::State<'_, DebugManager>, builds: tauri::State<'_, DebugBuildManager>, action: String) -> Result<(), String> {
-    super::ldi::with_control(window.app_handle(), window.label(), &action, || {
-        if action == "stop" && super::build_order::cancel(window.app_handle(), window.label()) { return Ok(()); }
-        control_debug(window.label(), &state, &builds, &action)
-    })
+pub async fn debug_control(window: WebviewWindow, app: AppHandle, action: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || control_debug_by_label(&app, window.label(), &action))
+        .await.map_err(|error| error.to_string())?
 }
 
 pub fn control_debug_by_label(app: &AppHandle, label: &str, action: &str) -> Result<(), String> {
@@ -1107,19 +1169,18 @@ pub fn control_debug_by_label(app: &AppHandle, label: &str, action: &str) -> Res
 pub(crate) fn control_live_native(app: &AppHandle, label: &str, pgid: i32, action: &str) -> Result<(), String> {
     let manager = app.state::<DebugManager>();
     let active = manager.0.lock().map_err(|e| e.to_string())?;
-    let session = active.get(label).filter(|session|session.pgid == pgid && session.alive.load(Ordering::Acquire))
+    let session = active.get(label).filter(|session|session.pgid == pgid && session.alive.load(Ordering::Acquire)).cloned()
         .ok_or("The owning Rust debugger ended or restarted")?;
+    drop(active);
+    if action != "stop" && session.stopping.load(Ordering::Acquire) { return Err("The Rust debugger is stopping".into()); }
     let command = match action {
         "continue" => "continue", "pause" => "pause", "stepOver" => "next",
         "stepInto" => "stepIn", "stepOut" => "stepOut", "stop" => "disconnect",
         _ => return Err("Unsupported native debug control".into()),
     };
     if action == "stop" {
-        request(session, command, json!({"terminateDebuggee":true}))?;
-        let alive=session.alive.clone();
-        thread::spawn(move || { thread::sleep(Duration::from_millis(800));
-            if alive.load(Ordering::Acquire) { unsafe { libc::killpg(pgid,libc::SIGTERM); } }
-        });
+        schedule_debug_stop(&session);
+        let _ = request(&session, command, json!({"terminateDebuggee":true}));
         return Ok(());
     }
     let thread = session.thread_id.load(Ordering::Acquire);
@@ -1127,7 +1188,7 @@ pub(crate) fn control_live_native(app: &AppHandle, label: &str, pgid: i32, actio
     if session.transport_busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
         return Err("A debugger control is already in progress".into());
     }
-    if let Err(error)=request(session,command,json!({"threadId":thread})) {session.transport_busy.store(false,Ordering::Release); return Err(error);}
+    if let Err(error)=request(&session,command,json!({"threadId":thread})) {session.transport_busy.store(false,Ordering::Release); return Err(error);}
     Ok(())
 }
 
@@ -1147,6 +1208,7 @@ pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Re
     let state = app.state::<DebugManager>();
     let active = state.0.lock().map_err(|e| e.to_string())?;
     let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
+    if session.stopping.load(Ordering::Acquire) { return Err("Origin debugger is stopping".into()); }
     let thread_id = session.thread_id.load(Ordering::Acquire);
     if thread_id <= 0 { return Err("Origin thread is unavailable".into()); }
     if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
@@ -1170,7 +1232,7 @@ pub(crate) fn ldi_origin_thread_id(app: &AppHandle, label: &str, pgid: i32) -> R
 /// Finish only the verified generated-driver handoff. A remains held until
 /// B reports a successful exit and the driver records an actual native return.
 fn continue_ldi_partner_after_return(session: &Session) -> Result<(), String> {
-    if !session.alive.load(Ordering::Acquire) {
+    if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
         return Err("Native debugger ended before completion".into());
     }
     let thread_id = session.thread_id.load(Ordering::Acquire);
@@ -1201,19 +1263,17 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
         }
     }
     let active = state.0.lock().map_err(|e| e.to_string())?;
-    let Some(session) = active.get(label) else {
+    let Some(session) = active.get(label).cloned() else {
         return if action == "stop" { Ok(()) } else { Err("No debug session is active".into()) };
     };
+    drop(active);
+    if action != "stop" && session.stopping.load(Ordering::Acquire) { return Err("Debugger is stopping".into()); }
     let command = match action {
         "continue" => "continue", "pause" => "pause", "stepOver" => "next",
         "stepInto" => "stepIn", "stepOut" => "stepOut",
         "stop" => {
-            let _ = request(session, "disconnect", json!({"terminateDebuggee":true}));
-            let pgid = session.pgid;
-            let alive = session.alive.clone();
-            thread::spawn(move || { thread::sleep(std::time::Duration::from_millis(800));
-                if alive.load(Ordering::Acquire) { unsafe { libc::killpg(pgid, libc::SIGTERM); } }
-            });
+            schedule_debug_stop(&session);
+            let _ = request(&session, "disconnect", json!({"terminateDebuggee":true}));
             return Ok(());
         }
         _ => return Err("Unsupported debug control".into()),
@@ -1223,7 +1283,7 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
     if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return Err("A debugger step or pause command is already in progress".into());
     }
-    match request(session, command, json!({"threadId":thread_id})) {
+    match request(&session, command, json!({"threadId":thread_id})) {
         Ok(_) => Ok(()),
         Err(error) => { session.transport_busy.store(false, Ordering::Release); Err(error) }
     }
@@ -1236,6 +1296,17 @@ pub fn cancel_window_debug(window: &tauri::Window) {
 pub fn cancel_debug_by_label(app: &AppHandle, label: &str) {
     super::ldi::cancel(app, label);
     cancel_debug_session_only(app, label);
+}
+
+/// LDI invalidates its holds before calling this, and never holds its mutex
+/// across debugger teardown. Removed sessions already have a stop scheduled.
+pub(crate) fn stop_cancelled_ldi_adapter(app: &AppHandle, label: &str, pgid: i32) {
+    let session = app.state::<DebugManager>().0.lock().ok()
+        .and_then(|active| active.get(label).filter(|session| session.pgid == pgid).cloned());
+    if let Some(session) = session {
+        schedule_debug_stop(&session);
+        let _ = request(&session, "disconnect", json!({"terminateDebuggee":true}));
+    }
 }
 
 /// Closing B detaches LDI; it is not Gold Stop and must not kill A.
@@ -1263,15 +1334,10 @@ fn cancel_debug_session_only(app: &AppHandle, label: &str) {
         }
     }
     if let Some(manager) = app.try_state::<DebugManager>() {
-        if let Ok(mut active) = manager.0.lock() {
-            if let Some(session) = active.remove(label) {
-                let _ = request(&session, "disconnect", json!({"terminateDebuggee":true}));
-                let pgid = session.pgid;
-                let alive = session.alive.clone();
-                thread::spawn(move || { thread::sleep(std::time::Duration::from_millis(800));
-                    if alive.load(Ordering::Acquire) { unsafe { libc::killpg(pgid, libc::SIGTERM); } }
-                });
-            }
+        let session = manager.0.lock().ok().and_then(|mut active| active.remove(label));
+        if let Some(session) = session {
+            schedule_debug_stop(&session);
+            let _ = request(&session, "disconnect", json!({"terminateDebuggee":true}));
         }
     }
 }
@@ -1279,6 +1345,15 @@ fn cancel_debug_session_only(app: &AppHandle, label: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_remote_symbol_policy_is_explicit_and_session_local() {
+        assert_eq!(native_symbol_commands(false), vec!["settings set symbols.enable-external-lookup false"]);
+        assert_eq!(native_symbol_commands(true), vec!["settings set symbols.enable-external-lookup true", "settings set plugin.symbol-locator.debuginfod.timeout 5"]);
+        assert!(!native_process_executing(0));
+        assert!(!native_process_executing(-1));
+        assert!(native_process_executing(std::process::id().into()));
+    }
 
     #[test]
     fn separates_cargo_and_program_args_for_debug_launch() {

@@ -47,6 +47,7 @@ interface ToolchainSnapshot {
   tools: ToolEntry[];
   defaults: Record<string, string>;
   preferencesPath: string;
+  downloadDebugSymbols: boolean;
 }
 
 const languages = ["rust", "typescript", "javascript", "cpp", "csharp", "python", "config"] as const;
@@ -137,6 +138,15 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
       const path = await open({ multiple: false });
       if (typeof path === "string") await setDefault(role, path);
     } catch (err) { setError(String(err)); }
+  };
+
+  const setSymbolDownloads = async (enabled: boolean) => {
+    setBusy(true); setError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      setSnapshot(await invoke<ToolchainSnapshot>("set_debug_symbol_downloads", { language, enabled }));
+    } catch (err) { setError(String(err)); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -327,6 +337,14 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                     </div>;
                   })}
                   {language === "config" && <p className="text-xs text-zinc-500 py-4">Config projects do not need a toolchain.</p>}
+                  {(language === "rust" || language === "cpp") && <div className="mt-5 border-t border-zinc-800 pt-4">
+                    <label className="flex items-center gap-2 text-xs text-zinc-300">
+                      <input type="checkbox" checked={snapshot?.downloadDebugSymbols ?? false} disabled={busy || !snapshot}
+                        onChange={(event) => void setSymbolDownloads(event.target.checked)} />
+                      Download remote system debug symbols (LLDB)
+                    </label>
+                    <p className="text-[11px] text-zinc-500 mt-2">Off by default to keep startup and Stop responsive. Your local application symbols remain enabled. When enabled, remote requests have a 5-second timeout. Applies to new debugger sessions only.</p>
+                  </div>}
                   {snapshot && <p className="text-[10.5px] text-zinc-600 break-all mt-5">Saved in {snapshot.preferencesPath}</p>}
                   {error && <div role="alert" className="text-xs text-red-400 mt-4">{error}</div>}
                 </div>

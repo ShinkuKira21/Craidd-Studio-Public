@@ -9,7 +9,7 @@ use tauri::Manager;
 use commands::fs::{read_dir_tree, read_dir_children, read_dir_tree_filtered, read_file, write_file, create_folder, stat_files, overwrite_file, delete_path, rename_path};
 use commands::search::search_in_path;
 use commands::toolchain::{get_toolchain, scan_toolchain, ensure_project_toolchain, set_tool_default, preferences_file_path, read_project_tool_override, write_project_tool_override};
-use commands::build::{BuildManager, start_cargo, stop_cargo, cancel_window_build};
+use commands::build::{BuildManager, start_cargo, stop_cargo};
 use commands::solution::{
     create_project_folder, find_ancestor_solution, load_solution, load_solution_named,
     save_project, save_solution, save_solution_configs, scan_craidd_files, remove_project, delete_project,
@@ -25,11 +25,11 @@ use commands::solution::{
 use commands::manifests::read_manifests;
 use commands::infer::infer_configs;
 use commands::window::{WindowRequests, get_startup_state, is_chromeos_guest, record_workspace_open, take_window_open_request, open_workspace_window, open_welcome_window, apply_window_geometry, capture_window_geometry};
-use commands::runner::{RunnerManager, start_config, stop_config, cancel_window_run};
+use commands::runner::{RunnerManager, start_config, stop_config};
 use commands::linked_windows::{LinkedWindowRegistry, update_linked_window, set_linked_window_visible, update_parked_window_configuration, close_linked_window, get_application_windows, exit_application, stop_solution_sessions, view_linked_window, focus_linked_window, dispatch_linked_window_command, start_linked_action, acknowledge_linked_action, stop_linked_action, stop_linked_member, reveal_linked_problem, remove_linked_window, prepare_native_close, note_window_shown, get_linked_runtime, mark_linked_window_ready, abort_parked_restore, clear_native_close_guard, reset_linked_action, preview_linked_action, probe_linked_readiness};
 use commands::breakpoints::{load_breakpoints, save_breakpoints};
 use commands::linked_windows::restart_linked_sessions;
-use commands::debug::{DebugBuildManager, DebugManager, start_debug, debug_control, cancel_window_debug};
+use commands::debug::{DebugBuildManager, DebugManager, start_debug, debug_control};
 
 #[tauri::command]
 fn show_main_window(w: tauri::WebviewWindow, requests: tauri::State<'_, WindowRequests>) -> Result<(), String> {
@@ -71,9 +71,13 @@ pub fn run() {
                     return;
                 }
                 capture_window_geometry(window);
-                cancel_window_build(window);
-                cancel_window_run(window);
-                cancel_window_debug(window);
+                let closing_window = window.clone();
+                // Never wait for LDI/DAP teardown from the native event loop.
+                std::thread::spawn(move || {
+                    commands::build::cancel_window_build(&closing_window);
+                    commands::runner::cancel_window_run(&closing_window);
+                    commands::debug::cancel_window_debug(&closing_window);
+                });
                 remove_linked_window(window);
             }
         })
@@ -128,6 +132,7 @@ pub fn run() {
             scan_toolchain,
             ensure_project_toolchain,
             set_tool_default,
+            commands::toolchain::set_debug_symbol_downloads,
             preferences_file_path,
             read_project_tool_override,
             write_project_tool_override,
@@ -155,6 +160,7 @@ pub fn run() {
             load_breakpoints,
             save_breakpoints,
             start_debug,
+            commands::tauri_dev::describe_debug_prerequisites,
             debug_control,
             start_linked_action,
             preview_linked_action,

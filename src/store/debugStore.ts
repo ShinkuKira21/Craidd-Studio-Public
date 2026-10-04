@@ -5,7 +5,7 @@ import { useSolution } from "./solutionStore";
 import type { OrderRequest } from "../types/project";
 import { appendOutput } from "../lib/outputPresentation";
 
-type DebugStatus = "idle" | "building" | "running" | "paused" | "terminated" | "error";
+type DebugStatus = "idle" | "building" | "starting" | "running" | "paused" | "terminated" | "error";
 export interface DebugFrame { id: number; name: string; line: number; source?: { path?: string; name?: string } }
 export interface DebugVariable { name: string; value: string; type?: string; variablesReference: number }
 interface DebugEvent {
@@ -34,7 +34,7 @@ interface DebugState {
 export const useDebug = create<DebugState>((set, get) => ({
   status: "idle", output: "", reason: null, file: null, line: null, frames: [], variables: [],
   start: async (method, cwd, profile, commandArgs = [], env = {}, order) => {
-    if (["building", "running", "paused"].includes(get().status)) return;
+    if (["building", "starting", "running", "paused"].includes(get().status)) return;
     const language = method === "cargo" ? "Rust" : method === "dotnet" ? "C#" : "C++";
     set({ status: "building", output: `Building a debuggable ${language} executable…\n`, frames: [], variables: [], file: null, line: null });
     try {

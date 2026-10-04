@@ -63,7 +63,7 @@ export async function stopViewedAction(): Promise<void> {
   }
   const remote = viewedHiddenWindow();
   if (remote) { await dispatchLinkedWindowCommand(remote.windowLabel, "stop"); return; }
-  if (["building", "running", "paused"].includes(useDebug.getState().status)) {
+  if (["building", "starting", "running", "paused"].includes(useDebug.getState().status)) {
     await useDebug.getState().control("stop");
   } else {
     await useBuild.getState().stop();

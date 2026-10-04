@@ -122,6 +122,17 @@ fn processes() -> HashMap<i32, Process> {
         .filter_map(process).map(|item| (item.pid, item)).collect()
 }
 
+pub(crate) fn process_birth(pid: i32) -> Option<u64> { process(pid).map(|item| item.birth) }
+
+/// Capture only this adapter's identity-checked tree before disconnect can
+/// orphan descendants. Never signal a PID that belongs to a replacement.
+pub(crate) fn capture_cancel_tree(pid: i32, birth: u64) -> Option<impl FnOnce() + Send> {
+    let root = process(pid).filter(|item| item.birth == birth && item.group == pid)?;
+    let mut tree = Tree { roots: HashMap::from([(pid, root.birth)]), known: HashMap::from([(pid, root.birth)]) };
+    tree.refresh(&processes());
+    Some(move || tree.cleanup())
+}
+
 #[derive(Default)]
 struct Tree { roots: HashMap<i32, u64>, known: HashMap<i32, u64> }
 impl Tree {
@@ -215,6 +226,36 @@ fn supervise() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_cancel_escalates_for_a_held_tree_and_preserves_manual_processes() {
+        use std::io::{BufRead, BufReader};
+        let mut command = Command::new("sh");
+        command.args(["-c", "trap '' TERM; setsid sh -c 'trap \"\" TERM; echo $$; kill -STOP $$; exec sleep 60' & echo $$; kill -STOP $$; wait"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        unsafe { command.pre_exec(|| { if libc::setsid() == -1 { return Err(io::Error::last_os_error()); } Ok(()) }); }
+        let mut root = command.spawn().unwrap();
+        let pids = BufReader::new(root.stdout.take().unwrap()).lines().take(2)
+            .map(|line| line.unwrap().parse::<i32>().unwrap()).collect::<Vec<_>>();
+        let mut manual = Command::new("sleep").arg("60").spawn().unwrap();
+        let pid = root.id() as i32;
+        let birth = process_birth(pid).unwrap();
+        assert!(capture_cancel_tree(pid, birth + 1).is_none(), "changed generations must not be stopped");
+        let cancel = capture_cancel_tree(pid, birth).unwrap();
+        let began = Instant::now();
+        cancel();
+        root.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pids.iter().any(|pid| process(*pid).is_some_and(|item| !item.zombie)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let all_stopped = pids.iter().all(|pid| process(*pid).is_none_or(|item| item.zombie));
+        let manual_alive = manual.try_wait().unwrap().is_none();
+        let _ = manual.kill(); let _ = manual.wait();
+        assert!(all_stopped, "held/detached owned descendants survived escalation");
+        assert!(manual_alive, "unrelated manual command was stopped");
+        assert!(began.elapsed() < Duration::from_secs(3));
+    }
     #[test]
     fn stat_handles_parentheses_in_process_names() {
         let mut fields = vec!["0"; 20];

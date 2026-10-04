@@ -24,6 +24,7 @@ pub struct ToolchainSnapshot {
     pub tools: Vec<ToolEntry>,
     pub defaults: BTreeMap<String, String>,
     pub preferences_path: String,
+    pub download_debug_symbols: bool,
 }
 
 #[derive(Serialize)]
@@ -131,6 +132,8 @@ fn snapshot(language: &str, prefs: &toml::Value, path: &Path) -> ToolchainSnapsh
         language: language.into(),
         scanned: table.and_then(|t| t.get("scanned")).and_then(toml::Value::as_bool).unwrap_or(false),
         tools, defaults, preferences_path: path.to_string_lossy().into_owned(),
+        download_debug_symbols: table.and_then(|t| t.get("download_debug_symbols"))
+            .and_then(toml::Value::as_bool).unwrap_or(false),
     }
 }
 
@@ -216,6 +219,18 @@ pub fn set_tool_default(language: String, role: String, path: Option<String>) ->
     else { defaults.remove(&role); }
     save_prefs(&prefs_path, &prefs)?;
     Ok(snapshot(&language, &prefs, &prefs_path))
+}
+
+/// Adapter policy, not the environment of the debugged application.
+#[tauri::command]
+pub fn set_debug_symbol_downloads(language: String, enabled: bool) -> Result<ToolchainSnapshot, String> {
+    if !matches!(language.as_str(), "rust" | "cpp") { return Err("Remote symbols require a native LLDB debugger".into()); }
+    let _guard = PREFS_LOCK.lock().map_err(|e| e.to_string())?;
+    let path = prefs_path()?;
+    let mut prefs = read_prefs(&path)?;
+    language_table_mut(&mut prefs, &language).insert("download_debug_symbols".into(), toml::Value::Boolean(enabled));
+    save_prefs(&path, &prefs)?;
+    Ok(snapshot(&language, &prefs, &path))
 }
 
 pub fn resolve_tool(language: &str, role: &str) -> Result<PathBuf, String> {

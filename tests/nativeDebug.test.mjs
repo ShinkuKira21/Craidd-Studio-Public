@@ -99,6 +99,18 @@ beforeEach(() => {
   useSolution.setState({solution:null,rootPath:'/lab',tabs:[]});
 });
 
+test("native starting is active and Stop routes to the debugger, not the runner", async () => {
+  const cleanup = await listenToDebug();
+  emit("craidd:debug-state", { status: "starting", text: "Debugger connected; waiting for native execution" });
+  assert.equal(useDebug.getState().status, "starting");
+  assert.match(useDebug.getState().output, /waiting for native execution/);
+  await useDebug.getState().start("cargo", "/lab", "Debug");
+  assert.equal(mocks.calls.length, 0, "Starting must not permit a duplicate launch");
+  await actions.stopViewedAction();
+  assert.deepEqual(mocks.calls, [{ command: "debug_control", args: { action: "stop" } }]);
+  cleanup();
+});
+
 test("Native receives source, mixed stack and locals without adopting Rust Power Config", async () => {
   const cleanup = await native.listenToNativeDebug();
   emit("craidd:native-debug-context", context());

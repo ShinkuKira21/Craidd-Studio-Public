@@ -51,9 +51,9 @@ function Toolbar() {
   const showGold = linked.windows.length > 1 || linked.linked || Boolean(linked.activeAction);
   const liveOwner = !remote && blues.some((blue) => blue.mode === "live-native"
     && blue.originLabel === linked.ownWindowLabel && !blue.warning)
-    && ["building", "running", "paused"].includes(debugStatus);
+    && ["building", "starting", "running", "paused"].includes(debugStatus);
   const liveLinked = Boolean(native) || liveOwner;
-  const viewedStatus = native?.status ?? remote?.status ?? (["building", "running", "paused"].includes(debugStatus) ? debugStatus : status);
+  const viewedStatus = native?.status ?? remote?.status ?? (["building", "starting", "running", "paused"].includes(debugStatus) ? debugStatus : status);
   const running = ["waiting", "starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
   const viewedProfileName = remote ? remote.selectedProfileName : selectedProfileName;

@@ -37,7 +37,7 @@ export default function BottomPanel() {
   const errorKeys = JSON.stringify(shownProblems.filter((problem) => problem.severity === "error")
     .map((problem) => `${problem.windowLabel}:${problem.file}:${problem.line}:${problem.column}:${problem.message}`));
   const shownOutput = remote ? formatBuildOutput(remote.output || "No output yet.")
-    : cleanOutput((["building", "running", "paused", "error"].includes(debugStatus) && debugOutput) || output || debugOutput || "No output yet.");
+    : cleanOutput((["building", "starting", "running", "paused", "error"].includes(debugStatus) && debugOutput) || output || debugOutput || "No output yet.");
   const outputSource = remote?.windowLabel ?? "own";
   const activeId = useBuild((state) => state.activeId);
   const changeFollow = (enabled: boolean) => { followRef.current = enabled; setFollowing(enabled); };

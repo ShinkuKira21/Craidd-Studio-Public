@@ -161,10 +161,10 @@ export async function publishLinkedWindow(solution: CraiddSolution | null, clnPa
     canBuild: Boolean(build.mainChoices.build),
     canRun: Boolean(build.mainChoices.run),
     canDebug: debugChoice?.kind === "debug" && ["cargo", "dotnet", "cmake"].includes(debugChoice.method ?? ""),
-    debugging: ["building", "running", "paused"].includes(debug.status),
-    activeAction: ["building", "running", "paused"].includes(debug.status) ? "debug"
+    debugging: ["building", "starting", "running", "paused"].includes(debug.status),
+    activeAction: ["building", "starting", "running", "paused"].includes(debug.status) ? "debug"
       : ["starting", "running"].includes(build.status) ? build.action : null,
-    status: ["building", "running", "paused"].includes(debug.status) ? debug.status : build.status,
+    status: ["building", "starting", "running", "paused"].includes(debug.status) ? debug.status : build.status,
     selectedConfigName: build.selectedConfigName,
     selectedProfileName: build.selectedProfileName,
     activeFile: activeTab ? { path: activeTab.fileId, name: activeTab.name,
@@ -210,7 +210,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   const unlistenTitle = await currentWindow.listen<{ title: string }>("craidd:linked-title", (event) => {
     void currentWindow.setTitle(event.payload.title).catch(() => { /* best effort */ });
   });
-  const stopLocalAction = () => ["building", "running", "paused"].includes(useDebug.getState().status)
+  const stopLocalAction = () => ["building", "starting", "running", "paused"].includes(useDebug.getState().status)
     ? useDebug.getState().control("stop") : useBuild.getState().stop();
   const unlistenCommand = await currentWindow.listen<{ kind: "start" | "stop" | "cancel_member"; action: Action | null; actionId: number }>(
     "craidd:linked-command", (event) => {
@@ -259,7 +259,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   const unlistenTarget = await currentWindow.listen<{ kind: string; value: string | null }>(
     "craidd:linked-target-command", (event) => {
       const { kind, value } = event.payload;
-      if (kind === "stop") void (["building", "running", "paused"].includes(useDebug.getState().status)
+      if (kind === "stop") void (["building", "starting", "running", "paused"].includes(useDebug.getState().status)
         ? useDebug.getState().control("stop") : useBuild.getState().stop());
       else if (kind === "debug_control" && value && ["continue", "pause", "stepOver", "stepInto", "stepOut", "stop"].includes(value))
         void useDebug.getState().control(value as "continue" | "pause" | "stepOver" | "stepInto" | "stepOut" | "stop");

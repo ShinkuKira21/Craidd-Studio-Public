@@ -2173,6 +2173,7 @@ pub(crate) fn on_adapter_end(app: &AppHandle, label: &str, pgid: i32) {
 
 pub(crate) fn cancel(app: &AppHandle, label: &str) {
     let manager = app.state::<LdiManager>();
+    let mut adapters = Vec::new();
     if let Ok(mut state) = manager.0.lock() {
         for (origin, pair) in &mut state.pairs {
             if origin == label || pair.binding.blue.partner_label == label {
@@ -2181,18 +2182,20 @@ pub(crate) fn cancel(app: &AppHandle, label: &str) {
                 pair.phase = "stopped".into();
                 notify(app, pair);
                 if pair.origin_pgid > 0 {
-                    unsafe {
-                        libc::killpg(pair.origin_pgid, libc::SIGTERM);
-                    }
+                    adapters.push((origin.clone(), pair.origin_pgid));
                 }
                 if let Some(pgid) = pair.partner_pgid {
-                    unsafe {
-                        libc::killpg(pgid, libc::SIGTERM);
-                    }
+                    adapters.push((pair.binding.blue.partner_label.clone(), pgid));
                 }
             }
         }
     };
+    // Pair cancellation is committed before any debugger can exit. A raced
+    // native completion must not release A. Teardown is bounded and captures
+    // owned descendants before disconnect can orphan them.
+    for (owner, pgid) in adapters {
+        super::debug::stop_cancelled_ldi_adapter(app, &owner, pgid);
+    }
 }
 
 #[tauri::command]
