@@ -8,6 +8,33 @@ flow still needs manual acceptance. This is not a claim that all gates below pas
 
 This develops [the LDI philosophy](../../philosophies/philosophy-ldi-debugging.md) and
 [the mixed-debugging philosophy](../../philosophies/philosophy-mixed-debugging.md).
+
+## The general shape
+
+Boundary debugging — debugging across a language or process boundary —
+has five concerns:
+
+1. **Identify the boundary** (process, language, ABI).
+2. **Capture or expose the arguments.**
+3. **Trigger via user intent** (a breakpoint at the call site).
+4. **Debug the target** (directly, or via a reproduction).
+5. **Coordinate the view** (linked windows).
+
+**Two instantiations:**
+
+**Managed → native (C# → C++)** crosses a *process* boundary in spirit —
+`netcoredbg` owns the CLR process, `lldb-dap` cannot attach. All five
+concerns apply: interposer captures arguments, blue breakpoint triggers,
+driver reproduces, linked windows coordinate.
+
+**Native → native (Rust → C++)** crosses a *language* boundary within one
+process. `lldb-dap` sees both sides. Concerns 1–3 still apply, but the
+interposer and driver are unnecessary — the arguments are already
+visible, the reproduction is already the real call, one adapter
+suffices.
+
+*Same shape. Different parameters.*
+
 The goal is a **light mockup environment, not a general-purpose debugging bridge**.
 
 **Authoritative interaction:** blue selects the live call; B reproduces it;
