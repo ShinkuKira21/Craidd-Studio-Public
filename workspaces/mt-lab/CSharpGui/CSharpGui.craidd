@@ -1,0 +1,5 @@
+[project]
+name = "C# MT GUI"
+language = "csharp"
+root = "."
+kind = "application"

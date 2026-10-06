@@ -1,0 +1,5 @@
+[project]
+name = "C# Thread Lab"
+language = "csharp"
+root = "."
+kind = "application"

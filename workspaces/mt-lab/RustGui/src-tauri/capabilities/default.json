@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Allow the lab window to receive worker status events.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:allow-listen"]
+}

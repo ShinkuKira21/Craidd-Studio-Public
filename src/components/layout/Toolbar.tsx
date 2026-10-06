@@ -11,6 +11,7 @@ import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
 import WindowManager from "./WindowManager";
 import { useDebug } from "../../store/debugStore";
 import { useNativeDebug } from "../../store/nativeDebugStore";
+import ThreadDropdown from "./ThreadDropdown";
 
 type Kind = "build" | "run" | "debug";
 
@@ -28,6 +29,10 @@ function Toolbar() {
   const ldi = useLdi((state) => state.session);
   const blues = useLdi((state) => state.blues);
   const debugStatus = useDebug((s) => s.status);
+  const debugFrames = useDebug((s) => s.frames);
+  const debugInspectionError = useDebug((s) => s.inspectionError);
+  const selectedThreadId = useDebug((s) => s.selectedThreadId);
+  const threadSessionKey = useDebug((s) => s.threadSessionKey);
   const nativeContext = useNativeDebug((s) => s.context);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [startupSetupRequested, setStartupSetupRequested] = useState(false);
@@ -54,6 +59,13 @@ function Toolbar() {
     && ["building", "starting", "running", "paused"].includes(debugStatus);
   const liveLinked = Boolean(native) || liveOwner;
   const viewedStatus = native?.status ?? remote?.status ?? (["building", "starting", "running", "paused"].includes(debugStatus) ? debugStatus : status);
+  const localStepUnavailable = !remote && !native && threadSessionKey && viewedStatus === "paused"
+    && (selectedThreadId == null || !debugFrames[0]?.source?.path || !debugFrames[0]?.line);
+  const localStepReason = selectedThreadId == null
+    ? "Select a paused thread before stepping"
+    : debugFrames.length === 0
+      ? debugInspectionError ? "The selected thread's stack could not be inspected; choose another paused thread" : "Waiting for the selected thread's stack"
+    : "This thread has no source line at its current instruction. Inspect it or select a thread stopped in code; Continue remains available.";
   const running = ["waiting", "starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
   const viewedProfileName = remote ? remote.selectedProfileName : selectedProfileName;
@@ -120,15 +132,18 @@ function Toolbar() {
         <sup className="absolute top-0 right-0 text-[9px]">2</sup>
       </button> : showGold && <GoldButton kind="debug" linked={linked} />}
       {(native || (remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
-        {viewedStatus === "paused" ? <>
-          {(!native || native.nativeStop) ? <>
-            <DebugTransport disabled={heldByLdi} label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
-            <DebugTransport disabled={heldByLdi} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
-            <DebugTransport disabled={heldByLdi} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
-            <DebugTransport disabled={heldByLdi} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
-          </> : <button type="button" className="px-2 text-blue-300 hover:text-blue-200"
-            onClick={() => void linked.selectWindow(native.originLabel).catch((error) => alert(String(error)))}>Paused in Rust · show owner</button>}
-        </> : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
+        {viewedStatus === "paused"
+          ? (!native || native.nativeStop)
+            ? <DebugTransport disabled={heldByLdi} label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
+            : <button type="button" className="px-2 text-blue-300 hover:text-blue-200"
+              onClick={() => void linked.selectWindow(native.originLabel).catch((error) => alert(String(error)))}>Paused in Rust · show owner</button>
+          : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
+        {!remote && !native && threadSessionKey && <ThreadDropdown />}
+        {viewedStatus === "paused" && (!native || native.nativeStop) && <>
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
+        </>}
       </div>}
 
       <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[220px]">
@@ -152,9 +167,12 @@ function Toolbar() {
   );
 }
 
-function DebugTransport({ label, icon, onClick, disabled = false }: { label: string; icon: string; onClick: () => void; disabled?: boolean }) {
-  return <button type="button" disabled={disabled} title={disabled ? "A is held by LDI; finish B to release it" : label} aria-label={label} onClick={onClick}
-    className="w-7 h-7 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 disabled:opacity-30 text-sm">{icon}</button>;
+function DebugTransport({ label, icon, onClick, disabled = false, disabledReason }: { label: string; icon: string; onClick: () => void; disabled?: boolean; disabledReason?: string }) {
+  const title = disabled ? disabledReason ?? "A is held by LDI; finish B to release it" : label;
+  return <span className="inline-flex" title={title}>
+    <button type="button" disabled={disabled} aria-label={title} onClick={onClick}
+      className="w-7 h-7 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 disabled:opacity-30 disabled:pointer-events-none text-sm">{icon}</button>
+  </span>;
 }
 
 function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {

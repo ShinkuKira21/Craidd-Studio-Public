@@ -1,0 +1,66 @@
+# Multi-Thread Lab
+
+Open [mt-lab.cln](mt-lab.cln) in Craidd. This solution collects small, repeatable programs for exercising thread discovery, selection, stop scope, stepping, and completion in C#, Rust, and C++. It extends the earlier [C# debugging lab](../mt-debugging-lab/README.md); it does not replace that lab's focused regression scenario.
+
+## Scenarios
+
+| Target | Variant 1: basic | Variant 2: burst | Variant 3: handoff or boundary |
+| --- | --- | --- | --- |
+| C# console | Two named workers run for about 12 seconds | Ten short named workers overlap and exit | Named producer and consumer exchange twelve jobs |
+| Rust console | Same shape with named Rust threads | Same shape with ten short threads | Producer and consumer through a channel |
+| C++ console | Same shape with named `std::thread`s | Same shape with ten short threads | Producer and consumer through a guarded queue |
+| C# Avalonia GUI | Start two waiting workers, then release them | Click to launch six short workers | A named C# worker calls the single-threaded C++ `mt_native` library |
+| Rust Tauri GUI | Start two waiting workers, then release them | Click to launch six short workers | Named Rust producer and consumer exchange jobs |
+| C++ GTK4 GUI | Start two waiting workers, then release them | Click to launch six short workers | Named C++ producer and consumer exchange jobs |
+
+The GUI main thread stays responsive while workers run. Every button can be used again to create another cohort. Source comments beginning with `BREAK_` identify useful breakpoint lines. The names are intentionally short enough to remain legible in a debugger. C++ sets Linux thread names through `pthread_setname_np`; other platforms may display generic names.
+
+## Run the console programs
+
+Select **C# Console · Basic**, **Rust Console · Basic**, or **C++ Console · Basic** in Craidd and use the Build, Run, or Debug toolbar controls. The solution also contains separate Debug Burst and Debug Handoff configurations for each language. For direct command-line runs:
+
+```sh
+(cd CSharpConsole && dotnet run -- basic)    # also: burst, handoff
+(cd RustConsole && cargo run -- basic)       # also: burst, handoff
+(cd CppConsole && cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build)
+(cd CppConsole && ./build/mt_cpp_console basic)
+```
+
+Run each command from the solution directory. Place a breakpoint on `BREAK_CS_BASIC`, `BREAK_RS_BASIC`, or `BREAK_CPP_BASIC`, respectively. A source stop should show the worker's own local `marker` and its distinct thread identity. Burst tests recently completed rows; handoff tests producer and consumer wait/work stacks. While one worker is stopped, expect the adapter's reported stop scope to decide whether the other workers run. A selected thread does not guarantee isolated stepping.
+
+### C# thread names and step scope
+
+The C# basic variant constructs each worker with `new Thread(() => { ... }) { Name = $"cs worker {number}" }`. `Name` is the .NET [`System.Threading.Thread.Name` property](https://learn.microsoft.com/en-us/dotnet/api/system.threading.thread.name?view=net-10.0), set by the application through a C# object initializer. `number` comes from `Enumerable.Range(1, 2)`, and `$"...{number}"` makes the distinct display string. `.ToArray()` materializes the sequence of threads. Craidd has no special `Name` variable or naming API: it displays the name supplied by the debugger adapter. Naming workers is optional, but it makes them easier to distinguish; the numeric debugger thread ID can change between runs. Craidd remembers the last descriptive name reported for a thread until that thread completes, even if a later adapter refresh says `<No name>`.
+
+Selecting a thread chooses the stack and locals to inspect and sends its ID with Step. It does **not** promise that the other threads stay frozen. In a direct probe of `netcoredbg` 3.2.0-1 with this basic variant, Step Over on `cs worker 1` emitted `continued { allThreadsContinued: true }`, then `cs worker 2` hit the shared breakpoint and emitted `stopped { allThreadsStopped: true }`. The adapter did not advertise `supportsSingleThreadExecutionRequests`; adding `singleThread: true` to the probe produced the same all-thread continuation. This means another worker can reach a breakpoint before the selected worker completes its step and become the new stop focus. To inspect worker 2, select it while paused; its source marker appears only if its current top frame has a source line. A thread stopped in `Thread.Join`, `Thread.Sleep`, or another runtime wait can have a stack without a usable source marker or source-level Step. Put a breakpoint on worker 2's code path and Continue to reach a source stop.
+
+### Rust and C++ thread names
+
+Rust has a standard-library naming API: `thread::Builder::new().name(format!("rs worker {number}")).spawn(move || { ... })`. The builder assigns the name when it creates the thread; `thread::spawn` alone uses the default configuration. See [Rust's `std::thread::Builder`](https://doc.rust-lang.org/std/thread/struct.Builder.html). The Rust console and GUI variants in this lab already use `Builder::name`.
+
+The C++17 `std::thread` API used by this lab has no `Name` property. On Linux, this lab names each worker inside its thread function with `pthread_setname_np(pthread_self(), name.c_str())`. Linux limits that name to 15 bytes plus the terminating null byte, so the lab shortens names before passing them; the function is nonportable and should have its return value checked in production code. See the [Linux `pthread_setname_np` manual](https://man7.org/linux/man-pages/man3/pthread_setname_np.3.html). On Windows, the analogous OS API is [`SetThreadDescription`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setthreaddescription). Craidd displays the thread name reported by LLDB-DAP; these are application/runtime APIs, not Craidd APIs.
+
+In a direct probe with LLDB-DAP 23.1.1, the Rust and C++ basic variants both reported the named workers and their source stacks. An immediate first `threads` reply after the breakpoint sometimes listed only the main thread; the next reply included both workers. Craidd retries once before removing the stopped worker from its list. LLDB-DAP did not advertise single-thread execution in this probe, and Step Over reported `allThreadsContinued: true`, so the same stepping caveat applies.
+
+## Run the GUI programs
+
+- **C# GUI · MT:** Build or Debug the Avalonia app. Click variant 1, inspect the waiting workers, release them, and stop at `BREAK_GUI_BASIC`. Variant 2 creates six short workers at `BREAK_GUI_BURST`.
+- **C# GUI · MT + LDI:** This separate configuration builds and installs `libmt_native.so` into the C# output. Click variant 3. The managed worker reaches `BREAK_GUI_LDI` and calls `mt_add` at `BREAK_CPP_LDI`. The native library does not create threads. This is a later combined MT + LDI acceptance case; first establish single-language thread behavior.
+- **Rust GUI · MT:** The Tauri frontend is in `RustGui/` and the Rust app is in `RustGui/src-tauri/`. Install frontend packages with `npm install` in `RustGui/`, then use the solution's Run/Debug configuration or `npm run tauri dev`. Breakpoint markers are `BREAK_RS_GUI_BASIC`, `BREAK_RS_GUI_BURST`, and `BREAK_RS_GUI_HANDOFF`.
+- **C++ GUI · MT:** Requires GTK4 development files discoverable by `pkg-config`. Build or Debug the GTK4 app; breakpoint markers are `BREAK_CPP_GUI_BASIC`, `BREAK_CPP_GUI_BURST`, and `BREAK_CPP_GUI_HANDOFF`. The choice of GTK4 keeps the thread experiment independent of graphics rendering; OpenGL is not required for the requested thread scenarios.
+
+The C# GUI catches a missing native library and reports it in its window. Build **C# GUI · MT + LDI** before exercising variant 3. The ordinary **C# GUI · MT** configuration intentionally concentrates on variants 1 and 2.
+
+## Acceptance checklist
+
+1. In each target, select a stopped named worker and verify that its stack and local `marker` belong to that worker. Switch to another stopped worker and verify that frames and locals change together.
+2. With an all-thread stop, inspect the main/UI thread and a worker. If a thread has no source line, keep its stack available and continue safely; stepping may be unavailable there. Check the adapter's actual `allThreadsStopped` and `allThreadsContinued` values before claiming isolated behavior.
+3. Run burst repeatedly. Active thread count should follow the adapter's current list. At most the latest three completed workers should appear in the collapsed **Recently completed** section. A **ran for** duration totals debugger-observed running intervals and excludes reported pauses; it is not CPU time.
+4. Restart and verify that old thread IDs, elapsed timers, selections, and completed rows disappear. Repeat with a source breakpoint in the new run.
+5. After single-language checks pass, run the C# GUI native-call variant. Verify the managed worker remains the origin for its native call and that selecting another C# thread does not change the LDI hold/release target.
+
+Current Craidd implementation has the thread dropdown for ordinary C#, Rust, and C++ debugging. Linked LDI and Rust-to-native inspection keep their existing routing; the combined C# MT + LDI case is a fixture for a later gate. Successful compilation or a direct adapter probe is a setup check, not proof of live Craidd UI behavior. Request debugging is a separate feature.
+
+## Prerequisites
+
+.NET 10 SDK; Rust/Cargo; CMake and a C++17 compiler; GTK4 development package for the C++ GUI; Node.js/npm and Tauri v2's Linux prerequisites for the Rust GUI; `netcoredbg` for C# and `lldb-dap` for Rust/C++. Avalonia packages and Rust crates require a first download unless already cached. The repo's root `node_modules` can satisfy the Rust GUI frontend during local development, but a standalone checkout should run `npm install` inside `RustGui/`.

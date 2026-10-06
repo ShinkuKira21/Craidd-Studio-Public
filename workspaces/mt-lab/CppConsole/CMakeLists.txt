@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+project(MtCppConsole LANGUAGES CXX)
+find_package(Threads REQUIRED)
+add_executable(mt_cpp_console main.cpp)
+target_compile_features(mt_cpp_console PRIVATE cxx_std_17)
+target_compile_options(mt_cpp_console PRIVATE -g -O0)
+target_link_libraries(mt_cpp_console PRIVATE Threads::Threads)

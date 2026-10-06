@@ -1,0 +1,39 @@
+[solution]
+name = "Multi-Thread Debugging Lab"
+version = "1.0"
+projects = ["App/App.craidd"]
+default_project = "App/App.craidd"
+default_config = "Threads · C#"
+
+[[config]]
+name = "Threads · C#"
+kind = "run"
+target = "App/App.craidd"
+[config.slots]
+build = "Threads · Build"
+run = "Threads · Run"
+debug = "Threads · Debug"
+
+[[config]]
+name = "Threads · Build"
+kind = "build"
+target = "App/App.craidd"
+method = "dotnet"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "Threads · Run"
+kind = "run"
+target = "App/App.craidd"
+method = "dotnet"
+command = "dotnet run --project ThreadLab.csproj --no-launch-profile"
+
+[[config]]
+name = "Threads · Debug"
+kind = "debug"
+target = "App/App.craidd"
+method = "dotnet"
+command = "dotnet run --project ThreadLab.csproj --no-launch-profile"

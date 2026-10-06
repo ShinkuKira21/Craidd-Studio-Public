@@ -4,6 +4,10 @@
 thread-selector behavior is distinguished from code present in the checkout.
 No runtime or interactive IDE acceptance was performed for this document.
 
+**UI scope update:** [The window-local implementation contract](../mt-debugging/design-multi-thread-debugging-implementation.md)
+supersedes this document's combined linked-window selector proposal. The
+session/stop/LDI safety analysis here still applies.
+
 **Companion:** [Thread scope](design-thread-scope.md),
 [Managed LDI](design-ldi-debugging.md),
 [Rust native debugging](design-ldi-debugging-rust.md), and

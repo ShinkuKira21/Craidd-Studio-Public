@@ -1,0 +1,5 @@
+[project]
+name = "Rust MT GUI"
+language = "rust"
+root = "."
+kind = "application"

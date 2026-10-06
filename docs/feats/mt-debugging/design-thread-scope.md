@@ -1,6 +1,9 @@
 # Design: Multi-Thread Debugging in Linked Windows
 
 **Status:** Design. Recorded 3 October 2026.
+**UI scope update:** The combined cross-window dropdown below is superseded by
+[the window-local implementation contract](design-multi-thread-debugging-implementation.md)
+(4 October 2026). This file remains background for the original pair model.
 **Applies to:** Phase 3.x onward (after LDI's Rust FFI path lands).
 **Companion:** [LDI debugging](../ldi-debugging/design-ldi-debugging.md),
 [Linked solution windows](../linked-windows/design-linked-solution-windows.md),
