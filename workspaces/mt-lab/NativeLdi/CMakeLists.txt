@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(MtNative LANGUAGES CXX)
+find_package(Threads REQUIRED)
 add_library(mt_native SHARED math.cpp)
 target_compile_features(mt_native PRIVATE cxx_std_17)
 target_compile_options(mt_native PRIVATE -g -O0)
+target_link_libraries(mt_native PRIVATE Threads::Threads)
 install(TARGETS mt_native LIBRARY DESTINATION ".")

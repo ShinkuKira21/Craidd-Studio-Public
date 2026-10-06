@@ -2,6 +2,12 @@
 
 **Status:** Active implementation, 6 October 2026. The ordinary C#, Rust, and
 C++ selector is in source and compiles; interactive IDE acceptance is still pending.
+The `codex/ldi-linked-thread-preview` branch adds a bounded managed-LDI
+preview: A's dropdown retains A's thread list and, during a held call, shows
+B's reproduction status and a separate B thread section. Selecting a paused
+B row routes inspection to B and focuses/views B; it does not retarget A's
+frozen origin. The seven-worker `mt-lab` variant and real LLDB-DAP probe cover
+native thread discovery. Cross-window desktop acceptance remains pending.
 **Supersedes for UI scope:** The combined cross-window dropdown in
 [design-thread-scope.md](design-thread-scope.md). The session identity, stop
 scope, and LDI safety corrections in

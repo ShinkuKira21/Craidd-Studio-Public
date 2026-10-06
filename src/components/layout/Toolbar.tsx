@@ -138,7 +138,7 @@ function Toolbar() {
             : <button type="button" className="px-2 text-blue-300 hover:text-blue-200"
               onClick={() => void linked.selectWindow(native.originLabel).catch((error) => alert(String(error)))}>Paused in Rust · show owner</button>
           : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
-        {!remote && !native && threadSessionKey && <ThreadDropdown />}
+        {!remote && !native && (threadSessionKey || (ldi?.held && ldi.originLabel === linked.ownWindowLabel)) && <ThreadDropdown />}
         {viewedStatus === "paused" && (!native || native.nativeStop) && <>
           <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
           <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />

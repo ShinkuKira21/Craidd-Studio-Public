@@ -27,7 +27,8 @@ internal sealed class MainWindow : Window
                 MakeButton("1 · Release workers", ReleaseBasic),
                 MakeButton("2 · Launch short worker burst", StartBurst),
                 MakeButton("3 · Worker calls C++ library (LDI gate)", StartNativeCall),
-                new TextBlock { Text = "Variant 3 is the later MT + LDI acceptance gate. The C++ library itself creates no threads.", TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                MakeButton("4 · Worker calls C++ library with seven workers", StartNativeWorkers),
+                new TextBlock { Text = "Variant 3 keeps the C++ library single threaded. Variant 4 creates seven native workers for the linked thread preview.", TextWrapping = Avalonia.Media.TextWrapping.Wrap },
                 status,
             },
         }};
@@ -111,10 +112,34 @@ internal sealed class MainWindow : Window
         worker.Start();
         Report($"Run {run}: native-call worker started.");
     }
+
+    private void StartNativeWorkers()
+    {
+        int run = Interlocked.Increment(ref runNumber);
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                int left = 20;
+                int right = 22;
+                int result = NativeMath.AddWorkers(left, right); // BREAK_GUI_LDI_WORKERS
+                Report($"Run {run}: seven C++ workers returned {result}.");
+            }
+            catch (Exception error)
+            {
+                Report($"Native worker call failed: {error.Message}");
+            }
+        }) { IsBackground = true, Name = $"cs native 7-{run}" };
+        worker.Start();
+        Report($"Run {run}: seven-worker native call started.");
+    }
 }
 
 internal static class NativeMath
 {
     [DllImport("mt_native", EntryPoint = "mt_add", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int Add(int left, int right);
+
+    [DllImport("mt_native", EntryPoint = "mt_add_workers", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int AddWorkers(int left, int right);
 }

@@ -39,6 +39,7 @@ struct Session {
     writer: super::debug_transport::DapWriter,
     next_seq: AtomicU64,
     thread_id: AtomicI64,
+    ldi_token: Option<u64>,
     multi_thread: bool,
     threads: Mutex<ThreadBook>,
     inspection_requests: Mutex<HashMap<u64, SelectionRequest>>,
@@ -990,7 +991,8 @@ pub(crate) fn launch_prepared(
     let session = Arc::new(Session {
         writer,
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
-        multi_thread: ldi_token.is_none() && !live_native,
+        ldi_token,
+        multi_thread: !live_native,
         threads: Mutex::new(ThreadBook::default()),
         inspection_requests: Mutex::new(HashMap::new()),
         transport_busy: AtomicBool::new(false), pgid, birth, stopping: AtomicBool::new(false),
@@ -1092,11 +1094,11 @@ pub(crate) fn launch_prepared(
                         stop_generation += 1;
                         stop_reason = message["body"]["reason"].as_str().unwrap_or("").into();
                         super::native_debug::stopping(&app_reader, &label_reader, pgid, stop_generation);
-                        super::ldi::on_stop(&app_reader, &label_reader, pgid);
+                        let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
+                        super::ldi::on_stop(&app_reader, &label_reader, pgid, thread_id);
                         stopped_variables.clear();
                         variable_requests = 0;
                         ready_reader.store(true, Ordering::Release);
-                        let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
                         session.thread_id.store(thread_id, Ordering::Relaxed);
                         if session.multi_thread {
                             if let Ok(mut book) = session.threads.lock() {
@@ -1506,29 +1508,71 @@ pub async fn debug_control(window: WebviewWindow, app: AppHandle, action: String
 
 #[tauri::command]
 pub async fn debug_select_thread(window: WebviewWindow, app: AppHandle, thread_id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || select_thread_by_label(&app, window.label(), thread_id))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn select_thread_by_label(app: &AppHandle, label: &str, thread_id: i64) -> Result<(), String> {
+    super::ldi::thread_inspection_ready(app, label)?;
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(label).cloned().ok_or("No debug session is active")?;
+    if !session.multi_thread { return Err("Thread selection is unavailable for this linked debugging session".into()); }
+    if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+        return Err("Debugger session ended".into());
+    }
+    let selection = {
+        let mut book = session.threads.lock().map_err(|error| error.to_string())?;
+        let row = book.rows.get(&thread_id).ok_or("Thread is no longer reported by the debugger")?;
+        if row.state != "paused" { return Err("Pause this thread before inspecting its stack".into()); }
+        let incarnation = row.incarnation;
+        book.selected_id = Some(thread_id);
+        book.selection_epoch += 1;
+        SelectionRequest { stop_epoch: book.stop_epoch, selection_epoch: book.selection_epoch,
+            thread_id, incarnation, stage: "stackTrace" }
+    };
+    emit_current_session(app, label, &session, json!({"status":"threadSelected", "threadId":thread_id,
+        "selectionEpoch":selection.selection_epoch,
+        "sessionKey":format!("{}:{}", session.pgid, session.birth)}));
+    request_selection(&session, "stackTrace",
+        json!({"threadId":thread_id, "startFrame":0, "levels":20}), selection)
+}
+
+#[tauri::command]
+pub async fn debug_ldi_partner_threads(
+    window: WebviewWindow, app: AppHandle, token: String,
+) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let label = window.label();
+        let (partner, pair_token, pgid) = super::ldi::active_partner_for_origin(&app, window.label(), &token)?;
         let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
-            .get(label).cloned().ok_or("No debug session is active")?;
-        if !session.multi_thread { return Err("Thread selection is unavailable for this linked debugging session".into()); }
+            .get(&partner).filter(|session| session.pgid == pgid && session.ldi_token == Some(pair_token))
+            .cloned().ok_or("The native driver session has changed")?;
         if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
-            return Err("Debugger session ended".into());
+            return Err("The native driver is ending".into());
         }
-        let selection = {
-            let mut book = session.threads.lock().map_err(|error| error.to_string())?;
-            let row = book.rows.get(&thread_id).ok_or("Thread is no longer reported by the debugger")?;
-            if row.state != "paused" { return Err("Pause this thread before inspecting its stack".into()); }
-            let incarnation = row.incarnation;
-            book.selected_id = Some(thread_id);
-            book.selection_epoch += 1;
-            SelectionRequest { stop_epoch: book.stop_epoch, selection_epoch: book.selection_epoch,
-                thread_id, incarnation, stage: "stackTrace" }
-        };
-        emit_current_session(&app, label, &session, json!({"status":"threadSelected", "threadId":thread_id,
-            "selectionEpoch":selection.selection_epoch,
-            "sessionKey":format!("{}:{}", session.pgid, session.birth)}));
-        request_selection(&session, "stackTrace",
-            json!({"threadId":thread_id, "startFrame":0, "levels":20}), selection)
+        let _ = request(&session, "threads", json!({}));
+        let book = session.threads.lock().map_err(|error| error.to_string())?;
+        let mut snapshot = book.snapshot(&session);
+        snapshot["selectedThreadId"] = json!(book.selected_id);
+        snapshot["partnerLabel"] = json!(partner);
+        Ok(snapshot)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn debug_select_ldi_partner_thread(
+    window: WebviewWindow, app: AppHandle, token: String, thread_id: i64,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (partner, pair_token, pgid) = super::ldi::active_partner_for_origin(&app, window.label(), &token)?;
+        {
+            let manager = app.state::<DebugManager>();
+            let active = manager.0.lock().map_err(|error| error.to_string())?;
+            let session = active.get(&partner).ok_or("The native driver session has changed")?;
+            if session.pgid != pgid || session.ldi_token != Some(pair_token) {
+                return Err("The native driver session has changed".into());
+            }
+        }
+        select_thread_by_label(&app, &partner, thread_id)
     }).await.map_err(|error| error.to_string())?
 }
 
@@ -1590,12 +1634,11 @@ pub(crate) fn detach_native_points(app: &AppHandle, label: &str, pgid: i32, poin
     Ok(())
 }
 
-pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Result<(), String> {
+pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32, thread_id: i64) -> Result<(), String> {
     let state = app.state::<DebugManager>();
     let active = state.0.lock().map_err(|e| e.to_string())?;
     let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
     if session.stopping.load(Ordering::Acquire) { return Err("Origin debugger is stopping".into()); }
-    let thread_id = session.thread_id.load(Ordering::Acquire);
     if thread_id <= 0 { return Err("Origin thread is unavailable".into()); }
     if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return Err("Origin debugger control is busy".into());
@@ -1607,11 +1650,11 @@ pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Re
     Ok(())
 }
 
-pub(crate) fn ldi_origin_thread_id(app: &AppHandle, label: &str, pgid: i32) -> Result<u32, String> {
+pub(crate) fn ldi_origin_thread_id(app: &AppHandle, label: &str, pgid: i32, thread_id: i64) -> Result<u32, String> {
     let state = app.state::<DebugManager>();
     let active = state.0.lock().map_err(|error| error.to_string())?;
-    let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
-    u32::try_from(session.thread_id.load(Ordering::Acquire)).ok().filter(|id| *id > 0)
+    active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
+    u32::try_from(thread_id).ok().filter(|id| *id > 0)
         .ok_or("Origin Linux thread ID is unavailable".into())
 }
 

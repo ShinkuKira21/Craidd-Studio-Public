@@ -45,11 +45,22 @@ In a direct probe with LLDB-DAP 23.1.1, the Rust and C++ basic variants both rep
 ## Run the GUI programs
 
 - **C# GUI · MT:** Build or Debug the Avalonia app. Click variant 1, inspect the waiting workers, release them, and stop at `BREAK_GUI_BASIC`. Variant 2 creates six short workers at `BREAK_GUI_BURST`.
-- **C# GUI · MT + LDI:** This separate configuration builds and installs `libmt_native.so` into the C# output. Click variant 3. The managed worker reaches `BREAK_GUI_LDI` and calls `mt_add` at `BREAK_CPP_LDI`. The native library does not create threads. This is a later combined MT + LDI acceptance case; first establish single-language thread behavior.
+- **C# GUI · MT + LDI:** This separate configuration builds and installs `libmt_native.so` into the C# output. Variant 3 keeps the native call single threaded: the managed worker reaches `BREAK_GUI_LDI` and calls `mt_add` at `BREAK_CPP_LDI`. Variant 4 reaches `BREAK_GUI_LDI_WORKERS` and calls `mt_add_workers`, which creates seven named native workers and joins them before returning. Put a native red breakpoint on `BREAK_CPP_LDI_WORKER` to inspect a worker in the reproduction.
 - **Rust GUI · MT:** The Tauri frontend is in `RustGui/` and the Rust app is in `RustGui/src-tauri/`. Install frontend packages with `npm install` in `RustGui/`, then use the solution's Run/Debug configuration or `npm run tauri dev`. Breakpoint markers are `BREAK_RS_GUI_BASIC`, `BREAK_RS_GUI_BURST`, and `BREAK_RS_GUI_HANDOFF`.
 - **C++ GUI · MT:** Requires GTK4 development files discoverable by `pkg-config`. Build or Debug the GTK4 app; breakpoint markers are `BREAK_CPP_GUI_BASIC`, `BREAK_CPP_GUI_BURST`, and `BREAK_CPP_GUI_HANDOFF`. The choice of GTK4 keeps the thread experiment independent of graphics rendering; OpenGL is not required for the requested thread scenarios.
 
-The C# GUI catches a missing native library and reports it in its window. Build **C# GUI · MT + LDI** before exercising variant 3. The ordinary **C# GUI · MT** configuration intentionally concentrates on variants 1 and 2.
+The C# GUI catches a missing native library and reports it in its window. Build **C# GUI · MT + LDI** before exercising variants 3 or 4. The ordinary **C# GUI · MT** configuration intentionally concentrates on variants 1 and 2.
+
+### Linked LDI thread preview
+
+1. Open this solution with the C# GUI in A and **Native · LDI** in B. Add a blue breakpoint on `BREAK_GUI_LDI_WORKERS`, targeting B, and a red breakpoint on `BREAK_CPP_LDI_WORKER`.
+2. Start Gold Debug, then click variant 4 in the C# GUI. A's named C# worker reaches blue. The native driver in B reproduces that call and starts seven named workers.
+3. Open **Threads** beside Continue in A. Its own C# threads remain in the list, with the held origin marked. The **LDI · native reproduction** section shows B's process status and reported threads. It updates while the dropdown is open.
+4. Click a paused B worker in that section. Craidd selects its stack in B and focuses or views B; A's held origin remains fixed. Continue B until the driver returns, then check that A's own native call returns `322`.
+
+The first worker to reach red can stop the whole B process. Other B workers may therefore show `paused` without each having hit red; the row's stop reason distinguishes the triggering worker where the adapter reports it. A `threads` list alone cannot establish stop scope. This preview is linked to the active LDI reproduction token, and only one reproduction is active per C# origin process. It does not inspect native threads in A's original process.
+
+The real-adapter probe checks the seven B worker names and the shared red line without opening the IDE: `python3 tests/fixtures/mt-debugging/ldi_worker_probe.py` from the repository root. The dropdown and cross-window selection still need a manual Craidd pass.
 
 ## Acceptance checklist
 

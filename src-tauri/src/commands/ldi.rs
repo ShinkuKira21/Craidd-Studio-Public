@@ -99,6 +99,7 @@ struct Pair {
     bindings: Vec<Binding>,
     prepared: HashMap<String, (PathBuf, Option<InterposerPrepared>)>,
     origin_pgid: i32,
+    origin_thread_id: i64,
     partner_pgid: Option<i32>,
     token: u64,
     held: bool,
@@ -769,6 +770,7 @@ pub(crate) fn prepare_pairs(
             bindings,
             prepared: HashMap::new(),
             origin_pgid: 0,
+            origin_thread_id: 0,
             partner_pgid: None,
             token,
             held: false,
@@ -883,13 +885,50 @@ fn notify(app: &AppHandle, pair: &Pair) {
         "nativeFile":pair.binding.native.file, "nativeLine":pair.binding.native.line,
         "entryPoint":pair.binding.call.entry_point, "landing":if pair.binding.automatic_entry { "automatic-entry" } else { "red" },
         "mode":pair.binding.blue.mode, "locals":pair.binding.call.locals, "values":pair.values,
-        "token":pair.token.to_string(), "held":pair.held, "phase":pair.phase, "error":pair.error});
+        "token":pair.token.to_string(), "held":pair.held, "phase":pair.phase, "error":pair.error,
+        "originThreadId":pair.origin_thread_id});
     for label in [
         &pair.binding.blue.origin_label,
         &pair.binding.blue.partner_label,
     ] {
         let _ = app.emit_to(label, "craidd:ldi-state", &value);
     }
+}
+
+/// Resolve only the driver belonging to this origin's current held call.
+/// A thread choice in B must never retarget or release the origin.
+pub(crate) fn active_partner_for_origin(
+    app: &AppHandle, origin_label: &str, token: &str,
+) -> Result<(String, u64, i32), String> {
+    let state = app.state::<LdiManager>();
+    let pairs = state.0.lock().map_err(|error| error.to_string())?;
+    let pair = pairs.pairs.get(origin_label).ok_or("No LDI call is paired with this window")?;
+    if !pair.held || pair.token.to_string() != token
+        || pair.cancelled.load(Ordering::Acquire)
+        || pair.partner_cancelled.load(Ordering::Acquire)
+    {
+        return Err("This LDI handoff has ended or changed".into());
+    }
+    if pair.phase != "native" {
+        return Err("The native debugger has not confirmed its current stop yet".into());
+    }
+    let pgid = pair.partner_pgid.ok_or("The native driver is not ready yet")?;
+    Ok((pair.binding.blue.partner_label.clone(), pair.token, pgid))
+}
+
+pub(crate) fn thread_inspection_ready(app: &AppHandle, label: &str) -> Result<(), String> {
+    let state = app.state::<LdiManager>();
+    let pairs = state.0.lock().map_err(|error| error.to_string())?;
+    for (origin, pair) in &pairs.pairs {
+        if !pair.held { continue; }
+        if origin == label && matches!(pair.phase.as_str(), "checking-stop" | "reading") {
+            return Err("Wait for the LDI origin frame to be confirmed".into());
+        }
+        if pair.binding.blue.partner_label == label && pair.partner_pgid.is_some() && pair.phase != "native" {
+            return Err("Wait for the native stop to be confirmed".into());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn check_launch(app: &AppHandle, label: &str, token: Option<u64>) -> Result<(), String> {
@@ -948,7 +987,7 @@ pub(crate) fn adapter_started(
     Ok(())
 }
 
-pub(crate) fn on_stop(app: &AppHandle, label: &str, pgid: i32) {
+pub(crate) fn on_stop(app: &AppHandle, label: &str, pgid: i32, thread_id: i64) {
     let manager = app.state::<LdiManager>();
     let Ok(mut state) = manager.0.lock() else {
         return;
@@ -962,6 +1001,7 @@ pub(crate) fn on_stop(app: &AppHandle, label: &str, pgid: i32) {
             return;
         }
         // Lock before exposing Paused to the renderer; frame verification follows.
+        pair.origin_thread_id = thread_id;
         pair.held = true;
         pair.phase = "checking-stop".into();
         notify(app, pair);
@@ -1032,6 +1072,7 @@ pub(crate) fn on_frame(
             pair.binding = binding;
         }
         pair.held = at_blue;
+        if !at_blue { pair.origin_thread_id = 0; }
         pair.phase = if at_blue { "reading" } else { "armed" }.into();
         if at_blue {
             pair.token = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -1150,7 +1191,8 @@ fn arm_interposer(
         .map_err(|_| "The LDI startup hook did not confirm the selected DllImport resolver")?
         .trim().parse::<u32>().map_err(|_| "LDI startup hook reported an invalid process ID")?;
     if origin_pid == 0 { return Err("LDI startup hook reported an invalid process ID".into()); }
-    let tid = super::debug::ldi_origin_thread_id(app, &pair.binding.blue.origin_label, pair.origin_pgid)?;
+    let tid = super::debug::ldi_origin_thread_id(app, &pair.binding.blue.origin_label,
+        pair.origin_pgid, pair.origin_thread_id)?;
     if !Path::new("/proc").join(origin_pid.to_string()).join("task").join(tid.to_string()).is_dir() {
         return Err("netcoredbg's stopped thread ID is not a Linux thread in the hooked process; refusing to resume blue".into());
     }
@@ -1174,7 +1216,8 @@ fn arm_interposer(
     pair.phase = "boundary-arming".into();
     pair.error = None;
     notify(app, pair);
-    if let Err(error) = super::debug::continue_ldi_origin(app, &pair.binding.blue.origin_label, pair.origin_pgid) {
+    if let Err(error) = super::debug::continue_ldi_origin(app, &pair.binding.blue.origin_label,
+        pair.origin_pgid, pair.origin_thread_id) {
         let _ = fs::remove_file(&prepared.arm);
         pair.capture = None;
         return Err(error);
@@ -2064,10 +2107,12 @@ fn release(app: &AppHandle, pair: &mut Pair) -> Result<(), String> {
             if pair.interposer.as_ref().is_some_and(|prepared| prepared.arm.exists()) {
                 return Err("An interposer arm is still present; Gold Stop is required before A can continue".into());
             }
-            super::debug::continue_ldi_origin(app, &pair.binding.blue.origin_label, pair.origin_pgid)?;
+            super::debug::continue_ldi_origin(app, &pair.binding.blue.origin_label,
+                pair.origin_pgid, pair.origin_thread_id)?;
         }
     } else {
-        super::debug::continue_ldi_origin(app, &pair.binding.blue.origin_label, pair.origin_pgid)?;
+        super::debug::continue_ldi_origin(app, &pair.binding.blue.origin_label,
+            pair.origin_pgid, pair.origin_thread_id)?;
     }
     pair.held = false;
     pair.phase = "released".into();
@@ -2253,6 +2298,17 @@ mod tests {
             .position(|line| line.contains("int result = left + right;"))
             .unwrap() as u32
             + 1;
+        assert!(native_contains(native, red, &call.entry_point, call.kind));
+    }
+    #[test]
+    fn mt_lab_worker_call_can_land_on_native_worker_red() {
+        let managed = include_str!("../../../workspaces/mt-lab/CSharpGui/MainWindow.cs");
+        let native = include_str!("../../../workspaces/mt-lab/NativeLdi/math.cpp");
+        let blue = managed.lines().position(|line| line.contains("// BREAK_GUI_LDI_WORKERS")).unwrap() as u32 + 1;
+        let red = native.lines().position(|line| line.contains("// BREAK_CPP_LDI_WORKER")).unwrap() as u32 + 1;
+        let call = managed_call(managed, blue).unwrap();
+        assert_eq!(call.entry_point, "mt_add_workers");
+        assert_eq!(call.locals, ["left", "right"]);
         assert!(native_contains(native, red, &call.entry_point, call.kind));
     }
     #[test]

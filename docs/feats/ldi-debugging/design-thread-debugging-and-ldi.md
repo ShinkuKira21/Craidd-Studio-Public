@@ -439,6 +439,14 @@ active reproduction per managed origin.
 
 ### Source reviewed on 3 October 2026
 
+The table below is the 3 October baseline. A 6 October prototype on
+`codex/ldi-linked-thread-preview` now retains the managed origin thread ID,
+enables per-session thread snapshots for managed LDI and its native driver,
+and exposes the active driver's threads inside A's toolbar dropdown. It
+checks the reproduction token and debugger process identity before remote
+inspection. The desktop handoff still needs interactive validation, and
+simultaneous blue hits remain unresolved.
+
 | Source | Present foundation | Missing or unverified for this proposal |
 | --- | --- | --- |
 | [`debug.rs`](../../../src-tauri/src/commands/debug.rs): `Session`, event reader, controls | One remembered thread ID; startup `threads` request; automatic stopped stack/scopes/variables; inspection stop generations | Complete thread list/state publication, arbitrary thread/frame selection, capability-aware execution scope, selection-response guards |
