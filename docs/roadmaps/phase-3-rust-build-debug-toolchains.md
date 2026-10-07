@@ -134,7 +134,7 @@ TypeScript/WebKit frontend debugging, build/debug execution for other languages,
 
 ## References
 
-- Local design: `docs/philosophies/philosophy-tool-discovery.md`, `docs/craidd-cln-model.md`, `docs/feats/configurations/design-solution-orchestration.md`, `docs/future/future-ide-considerations.md`.
+- Local design: `docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md`, `docs/craidd-cln-model.md`, `docs/feats/configurations/design-solution-orchestration.md`, `docs/future/future-ide-considerations.md`.
 - [Cargo JSON messages and compiler artifacts](https://doc.rust-lang.org/cargo/reference/external-tools.html).
 - [Cargo development and release profiles](https://doc.rust-lang.org/cargo/reference/profiles.html).
 - [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/) and [LLDB's `lldb-dap` guide](https://lldb.llvm.org/use/lldbdap.html).

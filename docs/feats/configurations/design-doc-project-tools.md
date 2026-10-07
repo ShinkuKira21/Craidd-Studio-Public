@@ -1,13 +1,13 @@
 # Design: Project Tools and dependency workflows
 
 **Status:** Proposed, 19 September 2026. Planning only; no UI or backend implementation in this document.
-**Companions:** [Configuration megamenu](design-configuration-megamenu.md), [project configurations and NuGet](design-project-configurations-and-nuget.md), [tool discovery philosophy](../../philosophies/philosophy-tool-discovery.md), [terminal design](../editor/design-terminal.md).
+**Companions:** [Configuration megamenu](design-configuration-megamenu.md), [project configurations and NuGet](design-project-configurations-and-nuget.md), [tool discovery philosophy](../../philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md), [terminal design](../editor/design-terminal.md).
 
 ## Goal
 
 Craidd should make a solution containing an ASP.NET API and a Tauri 2 app feel like one workspace while keeping each project's ecosystem intact. The toolbar configuration picker chooses the **default project and its action** for this window. The menu-bar label is **`{Project Name} Tools`**, derived from that default project. The menu, Command Palette, and Solution Explorer are three entrances to project actions.
 
-This design covers *project dependencies*, such as NuGet packages and Cargo crates. It does not install an SDK, compiler, global package, or Linux system package. Every dependency operation is an explicit user action through the project's installed tool. This distinction needs to be recorded in [tool discovery philosophy](../../philosophies/philosophy-tool-discovery.md) and the manifest ownership rules before implementation; their current absolute “never installs anything” wording also covers explicit project dependency operations.
+This design covers *project dependencies*, such as NuGet packages and Cargo crates. It does not install an SDK, compiler, global package, or Linux system package. Every dependency operation is an explicit user action through the project's installed tool. This distinction needs to be recorded in [tool discovery philosophy](../../philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md) and the manifest ownership rules before implementation; their current absolute “never installs anything” wording also covers explicit project dependency operations.
 
 ## Progressive project understanding
 

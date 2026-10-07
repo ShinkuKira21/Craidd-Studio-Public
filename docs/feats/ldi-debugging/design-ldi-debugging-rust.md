@@ -7,7 +7,7 @@ callbacks and richer Rust debugging remain proposals.
 **Applies to:** Phase 3.x onward (after the C# LDI path is manually accepted).
 **Companion:** [LDI debugging](design-ldi-debugging.md),
 [Linked solution windows](../linked-windows/design-linked-solution-windows.md),
-[Mixed debugging](../../philosophies/philosophy-mixed-debugging.md),
+[Mixed debugging](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md),
 [Shared native consumers](design-native-shared-consumers.md).
 **Governs:** Rust↔C++ live debugging, per-window Power Config ownership,
 and where Native Breakpoint pairing selects a live or reproduction provider.
@@ -186,7 +186,7 @@ that tracer in this workflow. The native debugger — lldb-dap
 native breakpoint in the C++ code that is running inside the managed
 process, because there is no way for it to reach that code.
 
-See [philosophy-mixed-debugging.md](../../philosophies/philosophy-mixed-debugging.md)
+See [philosophy-mixed-debugging.md](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md)
 for the full argument. This requires debugger/runtime integration;
 an IDE cannot solve it by simply attaching a second ptrace debugger
 to the same controlled threads.

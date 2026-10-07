@@ -3,7 +3,7 @@
 **Status:** Current direction as of 4 October 2026. Supersedes
 [v0.0.2A](Roadmap-v0.0.2A.md) as the status and ordering reference;
 the older document remains a historical phase snapshot.
-**Companions:** [Current place](Roadmap-Current_Place_Roadmap-v0.0.2A.md)
+**Companions:** [Current place](Roadmap-Current_Place_Roadmap-v0.0.4A.md)
 is an older codebase map, and the
 [playground direction](playground/Playground-direction.md) is the acceptance
 track for linked debugging.
