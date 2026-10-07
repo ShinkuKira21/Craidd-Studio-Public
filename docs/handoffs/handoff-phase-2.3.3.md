@@ -136,7 +136,7 @@ This is what makes the dialog fluid. Adding a method is one file.
 - Debug attaches to one project, one process.
 - Composed Configurations aren't debuggable as a whole.
 - A library with no entry point needs a driver project (Phase 3 feature).
-- `docs/philosophies/philosophy-mixed-debugging.md` is the reference.
+- `docs/philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md` is the reference.
 
 ### The manifesto
 
@@ -203,7 +203,7 @@ The escape hatch is always available and cheap: one command line in
 **Docs:**
 - `docs/feats/project-model/design-manifests.md`
 - `docs/feats/configurations/design-configurations-sketches.md`
-- `docs/philosophies/philosophy-mixed-debugging.md`
+- `docs/philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md`
 
 ---
 

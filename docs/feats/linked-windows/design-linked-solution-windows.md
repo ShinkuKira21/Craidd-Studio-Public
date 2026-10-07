@@ -98,7 +98,7 @@ admitting it needs help.
 - [profile markers](../profiling/design-profile-markers.md) — how the IDE measures
   what the code is doing, and how those measurements reach the user
   and the AI panel.
-- [philosophy-mixed-debugging.md](../../philosophies/philosophy-mixed-debugging.md) — why
+- [philosophy-mixed-debugging.md](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md) — why
   cross-process debugging of a shared process is out of reach on
   Linux.
 - [design-window-model.md](design-window-model.md) — one solution per
@@ -115,7 +115,7 @@ get relitigated.
 boundary, or from managed into native code generally. This is a
 Linux-wide limitation, not a Craidd one. The reasoning is long enough
 to deserve its own home: see
-[philosophy-mixed-debugging.md](../../philosophies/philosophy-mixed-debugging.md). The
+[philosophy-mixed-debugging.md](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md). The
 short version: `ptrace` permits one tracer per thread, and no
 .NET↔LLDB cooperation protocol exists. Mixed-mode is out of reach on
 Linux, not deferred.

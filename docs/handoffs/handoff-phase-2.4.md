@@ -214,7 +214,7 @@ DAP is a *phase*, not a script. Comes after C# and C++ builds work.
 >
 > Reference documents: `docs/craidd-cln-model.md`,
 > `docs/roadmaps/phase-3-rust-build-debug-toolchains.md`,
-> `docs/philosophies/philosophy-tool-discovery.md`, `docs/working-protocol.md`,
+> `docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md`, `docs/working-protocol.md`,
 > `docs/handoffs/handoff-phase-2.3.3.md`.
 
 ---

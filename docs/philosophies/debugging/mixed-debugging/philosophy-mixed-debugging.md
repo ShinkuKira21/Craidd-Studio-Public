@@ -5,7 +5,7 @@
 **Governs:** What Craidd does and does not attempt when two languages
 share a process, and why.
 
-**Current LDI design:** [LDI debugging](../feats/ldi-debugging/design-ldi-debugging.md) develops the
+**Current LDI design:** [LDI debugging](../../../feats/ldi-debugging/design-ldi-debugging.md) develops the
 separate-driver idea into a Gold Linked Debug workflow with blue managed
 call-site markers and native red markers. The managed caller remains at its
 source stop until the native partner releases it. That document also qualifies
@@ -49,7 +49,7 @@ stacks. Each debugger owns its own process and knows nothing about the
 other. The IDE coordinates *launch* and *focus* — pressing one button
 starts both, and when one debugger pauses, the IDE raises that
 window — but the two debug sessions are genuinely independent. This is
-what Craidd's [linked-window design](../feats/linked-windows/design-linked-solution-windows.md)
+what Craidd's [linked-window design](../../../feats/linked-windows/design-linked-solution-windows.md)
 builds, and it works on every platform.
 
 The first is out of reach. The second is not. Craidd builds the
@@ -199,7 +199,7 @@ into C++."
 own executable. The C# app runs. The C++ driver runs. Each is debugged
 by its own adapter, in its own window. The IDE coordinates launch and
 focus. This is
-[linked-window debugging](../feats/linked-windows/design-linked-solution-windows.md), and it
+[linked-window debugging](../../../feats/linked-windows/design-linked-solution-windows.md), and it
 is what Craidd builds.
 
 ---
@@ -230,7 +230,7 @@ The library stays a library. The driver is a new small project. The
 ## Relationship to linked-window debugging
 
 This document and
-[linked-solution-windows](../feats/linked-windows/design-linked-solution-windows.md) are
+[linked-solution-windows](../../../feats/linked-windows/design-linked-solution-windows.md) are
 siblings. The linked-window design enables coordinated debugging of
 independent processes; this document explains why
 *cross-process* debugging of the shared-process kind is out of reach.

@@ -112,7 +112,7 @@ typescript: language_server -> vtsls, typescript-language-server
 
 Discovered once per language, recorded in
 `~/.craidd-studio/user_preferences.toml`, never installed. Same rules
-as `docs/philosophies/philosophy-tool-discovery.md`.
+as `docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md`.
 
 ### Lifecycle
 
