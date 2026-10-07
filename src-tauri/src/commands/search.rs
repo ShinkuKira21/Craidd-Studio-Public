@@ -1,12 +1,9 @@
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-
-const IGNORE_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", "dist", "build", "bin", "obj",
-    "__pycache__", "venv", "coverage", "out", "Pods", "vendor",
-];
+use super::IGNORE_DIRS;
 
 const MAX_FILE_BYTES: u64 = 1_048_576;      // 1 MB
 const MAX_TOTAL_MATCHES: usize = 500;
@@ -29,7 +26,7 @@ pub struct FileMatch {
     pub mtime_ms: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_in_path(
     root: String,
     query: String,
@@ -43,7 +40,7 @@ pub fn search_in_path(
         return Ok(vec![]);
     }
 
-    let cap = max_total.unwrap_or(MAX_TOTAL_MATCHES);
+    let cap = max_total.unwrap_or(MAX_TOTAL_MATCHES).min(MAX_TOTAL_MATCHES);
     let needle = query.to_lowercase();
     let mut out: Vec<FileMatch> = vec![];
     let mut total: usize = 0;
@@ -96,7 +93,7 @@ fn walk(
             if let Ok(md) = fs::metadata(&p) {
                 if md.len() > MAX_FILE_BYTES { continue; }
             }
-            if let Some(fm) = scan_file(root, &p, needle_lower) {
+            if let Some(fm) = scan_file(root, &p, needle_lower, cap - *total) {
                 *total += fm.matches.len();
                 out.push(fm);
             }
@@ -104,7 +101,11 @@ fn walk(
     }
 }
 
-fn scan_file(root: &Path, path: &Path, needle_lower: &str) -> Option<FileMatch> {
+fn scan_file(root: &Path, path: &Path, needle_lower: &str, remaining: usize) -> Option<FileMatch> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut sample = [0u8; 4096];
+    let size = file.read(&mut sample).ok()?;
+    if sample[..size].contains(&0) { return None; }
     let text = fs::read_to_string(path).ok()?;
     let mut matches: Vec<LineMatch> = vec![];
     for (i, line) in text.lines().enumerate() {
@@ -113,7 +114,7 @@ fn scan_file(root: &Path, path: &Path, needle_lower: &str) -> Option<FileMatch> 
                 line_number: (i as u32) + 1,
                 text: truncate_line(line, 200),
             });
-            if matches.len() >= MAX_MATCHES_PER_FILE { break; }
+            if matches.len() >= MAX_MATCHES_PER_FILE.min(remaining) { break; }
         }
     }
     if matches.is_empty() { return None; }

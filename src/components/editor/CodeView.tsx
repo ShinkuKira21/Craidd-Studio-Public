@@ -258,7 +258,7 @@ export default function CodeView() {
         theme={theme === "craidd-dark" ? CRAIDD_DARK_THEME : theme}
         beforeMount={defineCraiddDarkTheme}
         onChange={onChange}
-        onMount={(instance, monaco) => {
+        onMount={(instance: editor.IStandaloneCodeEditor, monaco: Monaco) => {
           editorRef.current = instance;
           monacoRef.current = monaco;
           decorationsRef.current = instance.createDecorationsCollection();

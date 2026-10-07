@@ -1,8 +1,8 @@
 [package]
 name = "craidd-studio"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "A Linux desktop IDE for linked projects and debugging"
+authors = ["skira24"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -23,6 +23,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# The .cln configuration editor uses the 0.20 Document API; upgrade with its round-trip tests.
 toml_edit = "=0.20.2"
 tauri-plugin-dialog = "2.7.3"
 libc = "0.2"
@@ -34,5 +35,4 @@ regex = "1"
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
 strip = true

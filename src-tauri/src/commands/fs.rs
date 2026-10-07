@@ -1,43 +1,60 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::FileNode;
-
-const IGNORE_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", "dist", "build", "bin", "obj",
-    "__pycache__", "venv", "coverage", "out", "Pods", "vendor",
-];
+use super::IGNORE_DIRS;
 const MAX_TREE_NODES: usize = 12_000;
 const MAX_TREE_DEPTH: usize = 64;
 
-/// Tiny in-memory cache for read_dir_children. Keyed by (root, path).
-/// Entries expire after 2 seconds; explicit invalidation is not required
-/// because directory listings are naturally stale-tolerant and the
-/// frontend calls refreshDiscovery() when it wants fresh data.
+/// Short-lived directory listings, keyed by canonical (root, path).
 static DIR_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, FileNode)>>>
     = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static DIR_CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static SAVE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 fn cache_key(root: &str, path: &str) -> String {
     format!("{}\u{1}{}", root, path)
 }
 
-#[tauri::command]
+fn invalidate_dir_cache(path: &Path) {
+    DIR_CACHE_GENERATION.fetch_add(1, Ordering::SeqCst);
+    let affected = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(mut cache) = DIR_CACHE.lock() {
+        cache.retain(|key, _| key.split_once('\u{1}').is_some_and(|(_, cached)| {
+            let cached = Path::new(cached);
+            !cached.starts_with(&affected) && !affected.starts_with(cached)
+        }));
+    }
+}
+
+fn invalidate_parent(path: &Path) {
+    if let Some(parent) = path.parent() { invalidate_dir_cache(parent); }
+}
+
+#[tauri::command(async)]
 pub fn read_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("read_file({path}) failed: {e}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_dir_tree(path: String) -> Result<FileNode, String> {
     let p = Path::new(&path);
     if !p.exists() { return Err(format!("Path does not exist: {path}")); }
     let mut count = 0;
-    build_tree(p, p, None, 0, &mut count).map_err(|e| format!("read_dir_tree({path}) failed: {e}"))
+    build_tree(p, p, 0, &mut count).map_err(|e| format!("read_dir_tree({path}) failed: {e}"))
 }
 
 /// Return one directory level for File Discovery. Large workspaces are
 /// expanded on demand instead of serializing the entire tree into the webview.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_dir_children(root: String, path: String) -> Result<FileNode, String> {
+    let root = fs::canonicalize(&root).map_err(|e| format!("Invalid workspace root {root}: {e}"))?
+        .to_string_lossy().into_owned();
+    let path = fs::canonicalize(&path).map_err(|e| format!("Invalid folder {path}: {e}"))?
+        .to_string_lossy().into_owned();
+    if !Path::new(&path).starts_with(&root) { return Err("Folder is outside the open workspace".into()); }
     {
         let key = cache_key(&root, &path);
         if let Ok(cache) = DIR_CACHE.lock() {
@@ -48,10 +65,14 @@ pub fn read_dir_children(root: String, path: String) -> Result<FileNode, String>
             }
         }
     }
+    let generation = DIR_CACHE_GENERATION.load(Ordering::SeqCst);
     let result = read_dir_children_uncached(root.clone(), path.clone());
     if let Ok(ref node) = result {
         if let Ok(mut cache) = DIR_CACHE.lock() {
-            cache.insert(cache_key(&root, &path), (std::time::Instant::now(), node.clone()));
+            cache.retain(|_, (at, _)| at.elapsed() < std::time::Duration::from_secs(2));
+            if DIR_CACHE_GENERATION.load(Ordering::SeqCst) == generation {
+                cache.insert(cache_key(&root, &path), (std::time::Instant::now(), node.clone()));
+            }
         }
     }
     result
@@ -66,10 +87,10 @@ fn read_dir_children_uncached(root: String, path: String) -> Result<FileNode, St
     let rel = if rel.is_empty() { ".".to_string() } else { rel };
     let mut children = Vec::new();
     for entry in fs::read_dir(dir).map_err(|e| format!("read_dir_children({path}) failed: {e}"))? {
-        let entry = entry.map_err(|e| e.to_string())?;
+        let Ok(entry) = entry else { continue; };
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('.') { continue; }
-        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        let Ok(kind) = entry.file_type() else { continue; };
         if kind.is_symlink() || (kind.is_dir() && IGNORE_DIRS.contains(&name.as_str())) { continue; }
         if !kind.is_dir() && !kind.is_file() { continue; }
         let child_rel = if rel == "." { name.clone() } else { format!("{rel}/{name}") };
@@ -94,7 +115,7 @@ fn read_dir_children_uncached(root: String, path: String) -> Result<FileNode, St
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_dir_tree_filtered(
     path: String,
     extensions: Vec<String>,
@@ -113,7 +134,7 @@ pub fn read_dir_tree_filtered(
         build_tree_shallow(p).map_err(|e| e.to_string())?
     } else {
         let mut count = 0;
-        build_tree(p, p, None, 0, &mut count).map_err(|e| e.to_string())?
+        build_tree(p, p, 0, &mut count).map_err(|e| e.to_string())?
     };
 
     let includes = include_paths.unwrap_or_default();
@@ -162,7 +183,7 @@ fn build_tree_shallow(root: &Path) -> std::io::Result<FileNode> {
 
 /// Create a new file. Refuses if the file already exists.
 /// Creates parent directories if needed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
     let p = Path::new(&path);
     if p.is_dir() {
@@ -179,13 +200,20 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Could not create parent directory for {path}: {e}"))?;
     }
-    fs::write(p, content)
-        .map_err(|e| format!("write_file({path}) failed: {e}"))
+    let mut file = OpenOptions::new().write(true).create_new(true).open(p)
+        .map_err(|e| format!("write_file({path}) failed: {e}"))?;
+    if let Err(error) = file.write_all(content.as_bytes()) {
+        drop(file);
+        let _ = fs::remove_file(p);
+        return Err(format!("write_file({path}) failed: {error}"));
+    }
+    invalidate_parent(p);
+    Ok(())
 }
 
 /// Create a new folder. Refuses if the folder already exists.
 /// Creates parent directories if needed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_folder(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if p.is_file() {
@@ -199,7 +227,9 @@ pub fn create_folder(path: String) -> Result<(), String> {
             p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.clone())));
     }
     fs::create_dir_all(p)
-        .map_err(|e| format!("create_folder({path}) failed: {e}"))
+        .map_err(|e| format!("create_folder({path}) failed: {e}"))?;
+    invalidate_parent(p);
+    Ok(())
 }
 
 
@@ -246,7 +276,7 @@ fn filter_tree(node: FileNode, extensions: &[String], wnf: &[String], shallow: b
     }
 }
 
-fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>, depth: usize, count: &mut usize) -> std::io::Result<FileNode> {
+fn build_tree(root: &Path, current: &Path, depth: usize, count: &mut usize) -> std::io::Result<FileNode> {
     *count += 1;
     if *count > MAX_TREE_NODES || depth > MAX_TREE_DEPTH {
         return Err(std::io::Error::other("Folder is too large to scan at once. Open a smaller folder or project root."));
@@ -258,18 +288,6 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>, depth: us
         return Ok(FileNode { id: id.clone(), name, path: id, kind: "file".to_string(), children: None });
     }
 
-    if stop_at_craidd.is_some() && !rel.is_empty() {
-        // Boundary rule: a folder with ANY .craidd file ({name}.craidd or
-        // {name}.{lang}.craidd) is a project boundary. The parent walk stops
-        // here regardless of which shape is present.
-        if folder_has_craidd(current, &name) {
-            return Ok(FileNode {
-                id, name, path: rel, kind: "folder".to_string(),
-                children: Some(vec![]),
-            });
-        }
-    }
-
     let mut children: Vec<FileNode> = vec![];
     for entry in fs::read_dir(current)?.flatten() {
         let p = entry.path();
@@ -279,7 +297,7 @@ fn build_tree(root: &Path, current: &Path, stop_at_craidd: Option<()>, depth: us
         if let Ok(md) = fs::symlink_metadata(&p) {
             if md.file_type().is_symlink() { continue; }
         }
-        children.push(build_tree(root, &p, stop_at_craidd, depth + 1, count)?);
+        children.push(build_tree(root, &p, depth + 1, count)?);
     }
     children.sort_by(|a, b| {
         let ka = if a.kind == "folder" { 0 } else { 1 };
@@ -304,7 +322,7 @@ pub struct FileStat {
     pub size: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stat_files(paths: Vec<String>) -> Vec<FileStat> {
     use std::time::UNIX_EPOCH;
     paths
@@ -368,36 +386,69 @@ pub fn stat_files(paths: Vec<String>) -> Vec<FileStat> {
 
 /// Overwrite (or create) a file with the given content. Used for save
 /// and save-as, where the file may or may not already exist.
-#[tauri::command]
+fn atomic_overwrite(path: &Path, content: &[u8]) -> io::Result<()> {
+    // A save through a symlink updates its target, as fs::write did before.
+    let target = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let parent = target.parent().ok_or_else(|| io::Error::other("File has no parent directory"))?;
+    fs::create_dir_all(parent)?;
+    let existing = fs::metadata(&target).ok();
+    let (temporary, mut file) = loop {
+        let nonce = SAVE_NONCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".craidd-save-{}-{nonce}", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&temporary) {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        if let Some(metadata) = existing { file.set_permissions(metadata.permissions())?; }
+        file.write_all(content)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &target)?;
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temporary); }
+    result
+}
+
+#[tauri::command(async)]
 pub fn overwrite_file(path: String, content: String) -> Result<(), String> {
     let p = Path::new(&path);
-    if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Could not create parent directory for {path}: {e}"))?;
-    }
-    fs::write(p, content).map_err(|e| format!("overwrite_file({path}) failed: {e}"))
+    atomic_overwrite(p, content.as_bytes()).map_err(|e| format!("overwrite_file({path}) failed: {e}"))?;
+    invalidate_parent(p);
+    Ok(())
 }
 
 /// Delete a file or folder. For folders, `recursive` must be true.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_path(path: String, recursive: bool) -> Result<(), String> {
     let p = Path::new(&path);
-    if !p.exists() {
-        return Err(format!("Path does not exist: {path}"));
-    }
-    if p.is_dir() {
+    let metadata = fs::symlink_metadata(p).map_err(|e| format!("delete_path({path}) failed: {e}"))?;
+    let result = if metadata.file_type().is_symlink() {
+        fs::remove_file(p)
+    } else if metadata.is_dir() {
         if recursive {
-            fs::remove_dir_all(p).map_err(|e| format!("delete_path({path}) failed: {e}"))
+            fs::remove_dir_all(p)
         } else {
-            fs::remove_dir(p).map_err(|e| format!("delete_path({path}) failed: {e}"))
+            fs::remove_dir(p)
         }
     } else {
-        fs::remove_file(p).map_err(|e| format!("delete_path({path}) failed: {e}"))
-    }
+        fs::remove_file(p)
+    };
+    result.map_err(|e| format!("delete_path({path}) failed: {e}"))?;
+    invalidate_parent(p);
+    invalidate_dir_cache(p);
+    Ok(())
 }
 
 /// Rename or move a file or folder. Refuses if the destination exists.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_path(from: String, to: String) -> Result<(), String> {
     let src = Path::new(&from);
     let dst = Path::new(&to);
@@ -411,24 +462,11 @@ pub fn rename_path(from: String, to: String) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Could not create parent directory for {to}: {e}"))?;
     }
-    fs::rename(src, dst).map_err(|e| format!("rename_path({from} -> {to}) failed: {e}"))
-}
-
-/// True if `dir` contains `{folder_name}.craidd` or `{folder_name}.*.craidd`.
-/// Used by the boundary rule: any of these marks the folder as a project.
-fn folder_has_craidd(dir: &Path, _folder_name: &str) -> bool {
-    // Any .craidd file is a boundary. The name is a convention; the
-    // marker's existence is the declaration. A folder can host a project
-    // whose .craidd was moved in from elsewhere and therefore doesn't
-    // match the folder's own name.
-    let Ok(entries) = fs::read_dir(dir) else { return false; };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if !p.is_file() { continue; }
-        let Some(n) = p.file_name().map(|s| s.to_string_lossy().to_string()) else { continue; };
-        if n.ends_with(".craidd") { return true; }
-    }
-    false
+    fs::rename(src, dst).map_err(|e| format!("rename_path({from} -> {to}) failed: {e}"))?;
+    invalidate_parent(src);
+    invalidate_parent(dst);
+    invalidate_dir_cache(src);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -497,6 +535,44 @@ mod discovery_tests {
         assert!(children.iter().any(|n| n.name == "Cargo.toml"));
         let src = read_dir_children(root_str, root.join("src").to_string_lossy().into_owned()).unwrap();
         assert_eq!(src.children.unwrap()[0].path, "src/nested");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovery_rejects_parent_escape_and_refreshes_after_mutation() {
+        let root = std::env::temp_dir().join(format!("craidd-discovery-{}-{}", std::process::id(),
+            SAVE_NONCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&root).unwrap();
+        let root_str = root.to_string_lossy().into_owned();
+        let outside = root.join("..").to_string_lossy().into_owned();
+        assert!(read_dir_children(root_str.clone(), outside).is_err());
+        assert!(read_dir_children(root_str.clone(), root_str.clone()).unwrap().children.unwrap().is_empty());
+        let file = root.join("new.txt").to_string_lossy().into_owned();
+        write_file(file.clone(), "new".into()).unwrap();
+        assert!(write_file(file.clone(), "replacement".into()).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new");
+        assert!(read_dir_children(root_str.clone(), root_str.clone()).unwrap().children.unwrap()
+            .iter().any(|entry| entry.name == "new.txt"));
+        delete_path(file, false).unwrap();
+        assert!(read_dir_children(root_str.clone(), root_str).unwrap().children.unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_save_preserves_symlink_and_target_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = std::env::temp_dir().join(format!("craidd-save-{}-{}", std::process::id(),
+            SAVE_NONCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("target.txt");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        let link = root.join("link.txt");
+        symlink(&target, &link).unwrap();
+        overwrite_file(link.to_string_lossy().into_owned(), "new".into()).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -52,11 +52,7 @@ pub fn guard<F, R>(label: &'static str, f: F) -> Option<R>
 where
     F: FnOnce() -> R,
 {
-    let previous_hook = std::panic::take_hook();
-    // Silence the default panic print; we log our own.
-    std::panic::set_hook(Box::new(|_| {}));
     let result = catch_unwind(AssertUnwindSafe(f));
-    std::panic::set_hook(previous_hook);
 
     match result {
         Ok(value) => Some(value),
