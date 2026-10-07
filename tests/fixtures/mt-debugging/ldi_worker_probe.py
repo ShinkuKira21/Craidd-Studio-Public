@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Verify that the MT + LDI lab's native reproduction exposes seven workers.
+"""Verify the MT + LDI lab's two-worker and seven-worker native stops.
 
 This checks a real LLDB-DAP session, independent of the Craidd window UI.
 """
 
 from pathlib import Path
+import ctypes
 import shutil
 import subprocess
 import sys
@@ -17,22 +18,16 @@ sys.path.insert(0, str(HERE.parent / "ldi-gate-0" / "tools"))
 from dap import Dap  # noqa: E402
 
 
-def main():
-    debugger = shutil.which("lldb-dap")
-    if not debugger:
-        raise RuntimeError("lldb-dap is required")
-    subprocess.run(["cmake", "-S", str(LAB), "-B", str(LAB / "build"),
-                    "-DCMAKE_BUILD_TYPE=Debug"], check=True)
-    subprocess.run(["cmake", "--build", str(LAB / "build")], check=True)
+def check(debugger, export, marker, worker_name, expected_workers, left, right, expected_result):
     source = LAB / "math.cpp"
     line = next(number for number, text in enumerate(source.read_text().splitlines(), 1)
-                if "// BREAK_CPP_LDI_WORKER" in text)
+                if marker in text)
 
     with tempfile.TemporaryDirectory(prefix="craidd-ldi-workers-") as folder:
         folder = Path(folder)
         driver = folder / "driver.cpp"
-        driver.write_text('extern "C" int mt_add_workers(int, int);\n'
-                          'int main() { return mt_add_workers(20, 22) == 322 ? 0 : 1; }\n')
+        driver.write_text(f'extern "C" int {export}(int, int);\n'
+                          f'int main() {{ return {export}({left}, {right}) == {expected_result} ? 0 : 1; }}\n')
         program = folder / "driver"
         subprocess.run(["c++", "-g", "-O0", str(driver), "-L", str(LAB / "build"),
                         "-lmt_native", f"-Wl,-rpath,{LAB / 'build'}", "-o", str(program)], check=True)
@@ -62,18 +57,37 @@ def main():
             rows = []
             for _ in range(8):
                 rows = dap.request("threads")["threads"]
-                if len([row for row in rows if row["name"].startswith("ldi worker ")]) == 7:
+                if len([row for row in rows if row["name"].startswith(worker_name)]) == expected_workers:
                     break
                 time.sleep(0.05)
-            workers = [row for row in rows if row["name"].startswith("ldi worker ")]
-            assert len(workers) == 7, rows
+            workers = [row for row in rows if row["name"].startswith(worker_name)]
+            assert len(workers) == expected_workers, rows
             assert any(row["id"] == stop["threadId"] for row in workers), (stop, rows)
             frame = dap.frame(stop["threadId"])
             assert frame["source"]["path"] == str(source) and frame["line"] == line, frame
-            print(f"PASS LDI native workers: {len(workers)} named threads; "
+            print(f"PASS {export}: {len(workers)} named native workers; "
                   f"red stop on {stop['threadId']}; all stopped={stop.get('allThreadsStopped')}")
         finally:
             dap.close()
+
+
+def main():
+    debugger = shutil.which("lldb-dap")
+    if not debugger:
+        raise RuntimeError("lldb-dap is required")
+    subprocess.run(["cmake", "-S", str(LAB), "-B", str(LAB / "build"),
+                    "-DCMAKE_BUILD_TYPE=Debug"], check=True)
+    subprocess.run(["cmake", "--build", str(LAB / "build")], check=True)
+
+    library = ctypes.CDLL(str(LAB / "build" / "libmt_native.so"))
+    for caller in range(1, 8):
+        expected = 203 + 4 * caller
+        actual = library.mt_pair_workers(100 + caller, caller)
+        assert actual == expected, (caller, actual, expected)
+    print("PASS mt_pair_workers: seven ordered calls returned their distinct results")
+
+    check(debugger, "mt_pair_workers", "// BREAK_CPP_LDI_PAIR", "ldi pair ", 2, 101, 1, 207)
+    check(debugger, "mt_add_workers", "// BREAK_CPP_LDI_WORKER", "ldi worker ", 7, 20, 22, 322)
 
 
 if __name__ == "__main__":

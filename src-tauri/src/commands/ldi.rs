@@ -100,6 +100,7 @@ struct Pair {
     prepared: HashMap<String, (PathBuf, Option<InterposerPrepared>)>,
     origin_pgid: i32,
     origin_thread_id: i64,
+    origin_thread_name: Option<String>,
     partner_pgid: Option<i32>,
     token: u64,
     held: bool,
@@ -771,6 +772,7 @@ pub(crate) fn prepare_pairs(
             prepared: HashMap::new(),
             origin_pgid: 0,
             origin_thread_id: 0,
+            origin_thread_name: None,
             partner_pgid: None,
             token,
             held: false,
@@ -886,7 +888,7 @@ fn notify(app: &AppHandle, pair: &Pair) {
         "entryPoint":pair.binding.call.entry_point, "landing":if pair.binding.automatic_entry { "automatic-entry" } else { "red" },
         "mode":pair.binding.blue.mode, "locals":pair.binding.call.locals, "values":pair.values,
         "token":pair.token.to_string(), "held":pair.held, "phase":pair.phase, "error":pair.error,
-        "originThreadId":pair.origin_thread_id});
+        "originThreadId":pair.origin_thread_id, "originThreadName":pair.origin_thread_name});
     for label in [
         &pair.binding.blue.origin_label,
         &pair.binding.blue.partner_label,
@@ -929,6 +931,19 @@ pub(crate) fn thread_inspection_ready(app: &AppHandle, label: &str) -> Result<()
         }
     }
     Ok(())
+}
+
+pub(crate) fn on_origin_threads(app: &AppHandle, label: &str, pgid: i32, names: &[(i64, String)]) {
+    let state = app.state::<LdiManager>();
+    let Ok(mut pairs) = state.0.lock() else { return };
+    let Some(pair) = pairs.pairs.get_mut(label)
+        .filter(|pair| pair.held && pair.origin_pgid == pgid && pair.origin_thread_id > 0)
+    else { return };
+    let Some((_, name)) = names.iter().find(|(id, _)| *id == pair.origin_thread_id) else { return };
+    if pair.origin_thread_name.as_deref() != Some(name) {
+        pair.origin_thread_name = Some(name.clone());
+        notify(app, pair);
+    }
 }
 
 pub(crate) fn check_launch(app: &AppHandle, label: &str, token: Option<u64>) -> Result<(), String> {
@@ -1002,6 +1017,7 @@ pub(crate) fn on_stop(app: &AppHandle, label: &str, pgid: i32, thread_id: i64) {
         }
         // Lock before exposing Paused to the renderer; frame verification follows.
         pair.origin_thread_id = thread_id;
+        pair.origin_thread_name = None;
         pair.held = true;
         pair.phase = "checking-stop".into();
         notify(app, pair);
@@ -1072,7 +1088,10 @@ pub(crate) fn on_frame(
             pair.binding = binding;
         }
         pair.held = at_blue;
-        if !at_blue { pair.origin_thread_id = 0; }
+        if !at_blue {
+            pair.origin_thread_id = 0;
+            pair.origin_thread_name = None;
+        }
         pair.phase = if at_blue { "reading" } else { "armed" }.into();
         if at_blue {
             pair.token = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -2304,12 +2323,17 @@ mod tests {
     fn mt_lab_worker_call_can_land_on_native_worker_red() {
         let managed = include_str!("../../../workspaces/mt-lab/CSharpGui/MainWindow.cs");
         let native = include_str!("../../../workspaces/mt-lab/NativeLdi/math.cpp");
-        let blue = managed.lines().position(|line| line.contains("// BREAK_GUI_LDI_WORKERS")).unwrap() as u32 + 1;
-        let red = native.lines().position(|line| line.contains("// BREAK_CPP_LDI_WORKER")).unwrap() as u32 + 1;
-        let call = managed_call(managed, blue).unwrap();
-        assert_eq!(call.entry_point, "mt_add_workers");
-        assert_eq!(call.locals, ["left", "right"]);
-        assert!(native_contains(native, red, &call.entry_point, call.kind));
+        for (blue_marker, red_marker, export) in [
+            ("// BREAK_GUI_LDI_WORKERS", "// BREAK_CPP_LDI_WORKER", "mt_add_workers"),
+            ("// BREAK_GUI_LDI_PAIR", "// BREAK_CPP_LDI_PAIR", "mt_pair_workers"),
+        ] {
+            let blue = managed.lines().position(|line| line.contains(blue_marker)).unwrap() as u32 + 1;
+            let red = native.lines().position(|line| line.contains(red_marker)).unwrap() as u32 + 1;
+            let call = managed_call(managed, blue).unwrap();
+            assert_eq!(call.entry_point, export);
+            assert_eq!(call.locals, ["left", "right"]);
+            assert!(native_contains(native, red, &call.entry_point, call.kind));
+        }
     }
     #[test]
     fn interop_playground_has_two_scalar_calls_and_one_typed_call() {

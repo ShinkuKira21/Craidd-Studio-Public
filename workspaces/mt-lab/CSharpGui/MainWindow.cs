@@ -10,6 +10,7 @@ internal sealed class MainWindow : Window
     private readonly TextBlock status = new() { Text = "Choose a variant.", TextWrapping = Avalonia.Media.TextWrapping.Wrap };
     private ManualResetEventSlim? basicGate;
     private int runNumber;
+    private int sevenCallCohortActive;
 
     public MainWindow()
     {
@@ -28,7 +29,8 @@ internal sealed class MainWindow : Window
                 MakeButton("2 · Launch short worker burst", StartBurst),
                 MakeButton("3 · Worker calls C++ library (LDI gate)", StartNativeCall),
                 MakeButton("4 · Worker calls C++ library with seven workers", StartNativeWorkers),
-                new TextBlock { Text = "Variant 3 keeps the C++ library single threaded. Variant 4 creates seven native workers for the linked thread preview.", TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                MakeButton("5 · Seven C# callers, two C++ workers per call", StartSevenNativeCalls),
+                new TextBlock { Text = "Variant 5 keeps seven C# workers alive together. Each caller enters native code in order, so one LDI handoff owns two C++ workers at a time.", TextWrapping = Avalonia.Media.TextWrapping.Wrap },
                 status,
             },
         }};
@@ -133,6 +135,55 @@ internal sealed class MainWindow : Window
         worker.Start();
         Report($"Run {run}: seven-worker native call started.");
     }
+
+    private void StartSevenNativeCalls()
+    {
+        if (Interlocked.CompareExchange(ref sevenCallCohortActive, 1, 0) != 0)
+        {
+            Report("Finish the current seven-call cohort before starting another.");
+            return;
+        }
+        int run = Interlocked.Increment(ref runNumber);
+        var ready = new CountdownEvent(7);
+        var gates = Enumerable.Range(0, 7).Select(_ => new ManualResetEventSlim(false)).ToArray();
+        for (int number = 1; number <= 7; number++)
+        {
+            int caller = number;
+            var worker = new Thread(() =>
+            {
+                ready.Signal();
+                gates[caller - 1].Wait();
+                try
+                {
+                    int left = 100 + caller;
+                    int right = caller; // BREAK_GUI_PAIR_MANAGED
+                    int result = NativeMath.PairWorkers(left, right); // BREAK_GUI_LDI_PAIR
+                    Report($"Run {run}: C# caller {caller} returned {result} from two C++ workers.");
+                }
+                catch (Exception error)
+                {
+                    Report($"Run {run}: C# caller {caller} failed: {error.Message}");
+                }
+                finally
+                {
+                    if (caller < 7) gates[caller].Set();
+                    else
+                    {
+                        foreach (var gate in gates) gate.Dispose();
+                        ready.Dispose();
+                        Interlocked.Exchange(ref sevenCallCohortActive, 0);
+                    }
+                }
+            }) { IsBackground = true, Name = $"cs pair {run}-{caller}" };
+            worker.Start();
+        }
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            ready.Wait();
+            Report($"Run {run}: seven C# callers ready; caller 1 enters native code.");
+            gates[0].Set();
+        });
+    }
 }
 
 internal static class NativeMath
@@ -142,4 +193,7 @@ internal static class NativeMath
 
     [DllImport("mt_native", EntryPoint = "mt_add_workers", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int AddWorkers(int left, int right);
+
+    [DllImport("mt_native", EntryPoint = "mt_pair_workers", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int PairWorkers(int left, int right);
 }

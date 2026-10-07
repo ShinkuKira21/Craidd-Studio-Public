@@ -1340,6 +1340,7 @@ pub(crate) fn launch_prepared(
                     }
                     "threads" => {
                         let mut retry_membership = false;
+                        let mut observed_names = Vec::new();
                         if session.multi_thread {
                             if let Some(items) = message["body"]["threads"].as_array() {
                                 if let Ok(mut book) = session.threads.lock() {
@@ -1347,10 +1348,14 @@ pub(crate) fn launch_prepared(
                                         retry_membership = book.replace_membership(items);
                                         book.last_response_seq = response_seq;
                                         book.stale = retry_membership;
+                                        observed_names = book.rows.iter().map(|(id, row)| (*id, row.name.clone())).collect();
                                         emit_current_session(&app_reader, &label_reader, &session, book.snapshot(&session));
                                     }
                                 }
                             }
+                        }
+                        if !observed_names.is_empty() {
+                            super::ldi::on_origin_threads(&app_reader, &label_reader, pgid, &observed_names);
                         }
                         if retry_membership { let _ = request(&session, "threads", json!({})); }
                         if let Some(id) = message["body"]["threads"].as_array()

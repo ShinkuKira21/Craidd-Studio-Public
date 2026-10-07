@@ -14,3 +14,9 @@ observes Step Over's continuation scope. LLDB needs ptrace permission. Its
 first immediate thread reply can omit the stopped worker; the probe retries
 once, matching the ordinary-session backend. This is an adapter integration
 check and does not replace a live Craidd UI pass.
+
+Run `python3 tests/fixtures/mt-debugging/ldi_worker_probe.py` for the native
+side of the C# GUI LDI variants. It checks the two-worker and seven-worker
+breakpoint stops under LLDB-DAP and calls the two-worker export seven times
+with distinct inputs. The seven C# caller gates and linked-window labels still
+need a live Craidd UI pass.

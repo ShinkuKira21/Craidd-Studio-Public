@@ -41,6 +41,7 @@ export default function ThreadDropdown() {
   const selectWindow = useLinkedWindows((state) => state.selectWindow);
   const partner = ldi?.held && ldi.originLabel === ownLabel
     ? linkedWindows.find((item) => item.windowLabel === ldi.partnerLabel) : null;
+  const nativeReproduction = Boolean(ldi?.held && ldi.partnerLabel === ownLabel);
   const priorSession = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
   const [showUnnamed, setShowUnnamed] = useState(false);
@@ -124,6 +125,8 @@ export default function ThreadDropdown() {
   const originThread = threads.find((thread) => thread.id === ldi?.originThreadId);
   const originLabel = originThread && !lacksDescriptiveName(originThread)
     ? `${originThread.name} #${originThread.id}` : `thread #${ldi?.originThreadId ?? "?"}`;
+  const remoteOriginLabel = ldi?.originThreadName
+    ? `${ldi.originThreadName} #${ldi.originThreadId}` : `thread #${ldi?.originThreadId ?? "?"}`;
   const others = threads.filter((thread) => thread.id !== selectedId);
   const otherStops = others.filter((thread) => thread.state === "paused" && thread.reason);
   const remaining = others.filter((thread) => !otherStops.includes(thread));
@@ -165,6 +168,8 @@ export default function ThreadDropdown() {
       {partner && <span className={`max-w-[90px] truncate border-l border-zinc-700 pl-1.5 ${partnerColor}`} title={`Linked native window: ${partnerStatus}`}>
         B {partnerStatus}
       </span>}
+      {nativeReproduction && <span className="max-w-[130px] truncate border-l border-zinc-700 pl-1.5 text-blue-300"
+        title={`LDI reproduction from A ${remoteOriginLabel}`}>From A: {ldi?.originThreadName ?? `#${ldi?.originThreadId ?? "?"}`}</span>}
       <span aria-hidden="true" className="text-zinc-500">▾</span>
     </button>
     {open && <>
@@ -172,6 +177,10 @@ export default function ThreadDropdown() {
       <div role="dialog" aria-label="Threads in this debugger session"
         className="absolute top-full left-0 mt-1 w-[320px] max-h-[min(60vh,440px)] overflow-y-auto rounded border border-zinc-700 bg-zinc-900 shadow-2xl z-50 p-2 text-xs">
         <div className="px-1 pb-2 text-zinc-500">Select a paused thread to inspect it. Step targets that thread when its current instruction has a source line. This debugger can resume all threads, so another worker may hit a breakpoint first.</div>
+        {nativeReproduction && ldi && <div className="mb-2 rounded border border-blue-900/70 bg-blue-950/20 p-1.5 text-blue-300">
+          LDI #{ldi.token} · B reproduces A {remoteOriginLabel}
+          <div className="text-[10px] text-zinc-500 mt-1">These native threads belong to this reproduction. The original C# call remains held in A.</div>
+        </div>}
         {partner && ldi && <div className="mb-2 rounded border border-blue-900/70 bg-blue-950/20 p-1.5">
           <div className="flex items-center justify-between gap-2 text-blue-300">
             <span className="truncate">LDI #{ldi.token} · native reproduction</span>

@@ -13,6 +13,8 @@ Open [mt-lab.cln](mt-lab.cln) in Craidd. This solution collects small, repeatabl
 | Rust Tauri GUI | Start two waiting workers, then release them | Click to launch six short workers | Named Rust producer and consumer exchange jobs |
 | C++ GTK4 GUI | Start two waiting workers, then release them | Click to launch six short workers | Named C++ producer and consumer exchange jobs |
 
+The C# GUI also has variant 4 (one C# caller with seven C++ workers) and variant 5 (seven C# callers, each invoking a native export that creates two C++ workers). Variant 5 deliberately orders the calls so each LDI reproduction has one unambiguous C# origin.
+
 The GUI main thread stays responsive while workers run. Every button can be used again to create another cohort. Source comments beginning with `BREAK_` identify useful breakpoint lines. The names are intentionally short enough to remain legible in a debugger. C++ sets Linux thread names through `pthread_setname_np`; other platforms may display generic names.
 
 ## Run the console programs
@@ -45,11 +47,11 @@ In a direct probe with LLDB-DAP 23.1.1, the Rust and C++ basic variants both rep
 ## Run the GUI programs
 
 - **C# GUI · MT:** Build or Debug the Avalonia app. Click variant 1, inspect the waiting workers, release them, and stop at `BREAK_GUI_BASIC`. Variant 2 creates six short workers at `BREAK_GUI_BURST`.
-- **C# GUI · MT + LDI:** This separate configuration builds and installs `libmt_native.so` into the C# output. Variant 3 keeps the native call single threaded: the managed worker reaches `BREAK_GUI_LDI` and calls `mt_add` at `BREAK_CPP_LDI`. Variant 4 reaches `BREAK_GUI_LDI_WORKERS` and calls `mt_add_workers`, which creates seven named native workers and joins them before returning. Put a native red breakpoint on `BREAK_CPP_LDI_WORKER` to inspect a worker in the reproduction.
+- **C# GUI · MT + LDI:** This separate configuration builds and installs `libmt_native.so` into the C# output. Variant 3 keeps the native call single threaded: the managed worker reaches `BREAK_GUI_LDI` and calls `mt_add` at `BREAK_CPP_LDI`. Variant 4 reaches `BREAK_GUI_LDI_WORKERS` and calls `mt_add_workers`, which creates seven named native workers. Variant 5 starts seven named C# callers together, then passes a gate from one caller to the next after each native call returns. Each `BREAK_GUI_LDI_PAIR` call runs `mt_pair_workers`; its two named C++ workers stop at `BREAK_CPP_LDI_PAIR` when red is set there. `BREAK_GUI_PAIR_MANAGED` is a separate managed red breakpoint location before blue.
 - **Rust GUI · MT:** The Tauri frontend is in `RustGui/` and the Rust app is in `RustGui/src-tauri/`. Install frontend packages with `npm install` in `RustGui/`, then use the solution's Run/Debug configuration or `npm run tauri dev`. Breakpoint markers are `BREAK_RS_GUI_BASIC`, `BREAK_RS_GUI_BURST`, and `BREAK_RS_GUI_HANDOFF`.
 - **C++ GUI · MT:** Requires GTK4 development files discoverable by `pkg-config`. Build or Debug the GTK4 app; breakpoint markers are `BREAK_CPP_GUI_BASIC`, `BREAK_CPP_GUI_BURST`, and `BREAK_CPP_GUI_HANDOFF`. The choice of GTK4 keeps the thread experiment independent of graphics rendering; OpenGL is not required for the requested thread scenarios.
 
-The C# GUI catches a missing native library and reports it in its window. Build **C# GUI · MT + LDI** before exercising variants 3 or 4. The ordinary **C# GUI · MT** configuration intentionally concentrates on variants 1 and 2.
+The C# GUI catches a missing native library and reports it in its window. Build **C# GUI · MT + LDI** before exercising variants 3–5. The ordinary **C# GUI · MT** configuration intentionally concentrates on variants 1 and 2.
 
 ### Linked LDI thread preview
 
@@ -60,7 +62,16 @@ The C# GUI catches a missing native library and reports it in its window. Build 
 
 The first worker to reach red can stop the whole B process. Other B workers may therefore show `paused` without each having hit red; the row's stop reason distinguishes the triggering worker where the adapter reports it. A `threads` list alone cannot establish stop scope. This preview is linked to the active LDI reproduction token, and only one reproduction is active per C# origin process. It does not inspect native threads in A's original process.
 
-The real-adapter probe checks the seven B worker names and the shared red line without opening the IDE: `python3 tests/fixtures/mt-debugging/ldi_worker_probe.py` from the repository root. The dropdown and cross-window selection still need a manual Craidd pass.
+The real-adapter probe checks both the two-worker and seven-worker B stops and their native red lines without opening the IDE: `python3 tests/fixtures/mt-debugging/ldi_worker_probe.py` from the repository root. The dropdown and cross-window selection still need a manual Craidd pass.
+
+### Seven C# callers → two C++ workers per call
+
+1. Keep the C# GUI in A and **Native · LDI** in B. Put blue on `BREAK_GUI_LDI_PAIR`, targeting B. Put native red on `BREAK_CPP_LDI_PAIR`. Optionally put managed red on `BREAK_GUI_PAIR_MANAGED` to inspect each C# caller before it reaches blue.
+2. Start Gold Debug and click **5 · Seven C# callers, two C++ workers per call**. Seven named `cs pair` threads are created before caller 1 is released from its gate. A may show all seven paused when `netcoredbg` reports an all-thread stop, but only the caller that hit blue is the **LDI origin**. The other six have not entered their native calls.
+3. B's Threads control identifies the A caller by name/ID and handoff token. B's thread list contains two named `ldi pair` workers **and the driver's call thread**. A's linked section shows the same current B threads. A selected B row changes B's inspection focus; it does not change the captured C# caller.
+4. Finish B's reproduction. A executes its own call; that C# worker then opens the next worker's gate. The next blue hit gets a new handoff token and A origin. Repeat through callers 1–7. Expected results are `207, 211, 215, 219, 223, 227, 231`.
+
+This is a **sequential handoff workaround**, not seven independently held native calls. Current managed LDI runs one reproduction per C# process at a time. Reusing the native names `ldi pair 1` and `ldi pair 2` is safe because the handoff token and A origin identify which invocation B is showing. The debugger may resume all managed threads on Step even when a thread ID is supplied; the gates keep the six waiting callers from reaching blue during the current handoff. A true simultaneous seven-call view, with 14 native workers across seven driver sessions, needs a separate multi-invocation coordinator and explicit session-qualified grouping.
 
 ## Acceptance checklist
 
@@ -70,7 +81,7 @@ The real-adapter probe checks the seven B worker names and the shared red line w
 4. Restart and verify that old thread IDs, elapsed timers, selections, and completed rows disappear. Repeat with a source breakpoint in the new run.
 5. After single-language checks pass, run the C# GUI native-call variant. Verify the managed worker remains the origin for its native call and that selecting another C# thread does not change the LDI hold/release target.
 
-Current Craidd implementation has the thread dropdown for ordinary C#, Rust, and C++ debugging. Linked LDI and Rust-to-native inspection keep their existing routing; the combined C# MT + LDI case is a fixture for a later gate. Successful compilation or a direct adapter probe is a setup check, not proof of live Craidd UI behavior. Request debugging is a separate feature.
+Current Craidd implementation has ordinary C#, Rust, and C++ thread dropdowns and a linked LDI thread preview for one active managed origin. The seven-caller lab checks the invocation handoff model; successful compilation or a direct adapter probe is a setup check, not proof of live Craidd UI behavior. Request debugging is a separate feature.
 
 ## Prerequisites
 
