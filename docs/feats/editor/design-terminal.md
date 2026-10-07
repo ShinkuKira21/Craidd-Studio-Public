@@ -1,8 +1,12 @@
 # Design: The Terminal
 
+**Roadmap track:** Phase 3.y integrated-terminal proposal; earlier terminal tiers are historical. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design locked. External ships in 2.4.4. Integrated ships
 in Phase 3.y.
+
 **Applies to:** Phase 2.4.4 (external), Phase 3.y (integrated).
+
 **Governs:** What "a terminal" means in Craidd, what we build, and
 what we deliberately do not.
 
@@ -235,5 +239,5 @@ from us.
 
 ---
 
-*Last updated: Phase 2.4. Author: skira24.*
-*This document is a design. It governs the terminal.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

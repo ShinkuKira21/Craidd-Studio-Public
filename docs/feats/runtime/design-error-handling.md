@@ -1,9 +1,14 @@
 # Design: Error Handling and Containment
 
-**Status:** Foundation implemented in Phase 2.4. Extensions planned
-for 2.4.2 through 2.4.4.
+**Roadmap track:** Phase 2 containment foundation; Phase 3.x lifecycle reliability. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Foundation introduced in Phase 2.4, with later containment and
+process-lifecycle work in source. The old 2.4.2–2.4.4 extension sequence below
+is historical; the backend fix record tracks current repair evidence.
+
 **Applies to:** Every subprocess Craidd spawns. Every thread Craidd
 starts. Every Tauri command Craidd exposes.
+
 **Governs:** How failures are reported, contained, and cleaned up.
 
 ---
@@ -202,5 +207,5 @@ No silent death. No orphan processes. No lost evidence.
 
 ---
 
-*Last updated: Phase 2.4. Author: skira24.*
-*This document is a design. It governs error handling.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

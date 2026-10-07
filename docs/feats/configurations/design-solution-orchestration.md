@@ -1,7 +1,17 @@
 # Design: Solution Orchestration
 
+**Roadmap track:** Historical Phase 2 placeholder for Phase 3 orchestration; not the current execution schema. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Historical scope:** This early placeholder predates the implemented build
+order and Power Config workflows. Its future-tense schema sketches are retained
+for reasoning, not as current instructions. Use [declarative build order](design-declarative-build-order.md),
+[configuration sketches](design-configurations-sketches.md) and the root project
+model for the current contract.
+
 **Status:** Placeholder. Not yet designed in full.
+
 **Applies to:** Phase 3+.
+
 **Governs:** How `.cln` declares what a solution does — build, run, debug.
 
 **Implementation update:** The sketches below are historical, not the current
@@ -200,5 +210,5 @@ Everything else is negotiable.
 
 ---
 
-*Last updated: Phase 2.1.3. Author: skira24.*
-*This document is a placeholder. Rewrite it when Phase 3 begins.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a placeholder.*

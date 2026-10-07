@@ -1,8 +1,12 @@
 # Design: Configuration Sketches
 
+**Roadmap track:** Phase 2 configuration foundation; Phase 3 build/debug and unscheduled future sketches. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design document. Reference for building the Configuration
 editor's per-method forms.
+
 **Applies to:** Phase 2.3.3 (Configuration editor), Phase 3+ (debug/test).
+
 **Governs:** What fields each method's form contains, and why the layout
 is shared across methods.
 
@@ -710,7 +714,7 @@ Forward-looking. Not Phase 3. Included so the shape is on record.
 │                   │  Pkg mgr   [ inherit: uv           ▾ ]     │
 │                   │  Venv      [ .venv                       ]  │
 │                   │                                            │
-│                   │  ─ training (Phase 4) ───────────────────  │
+│                   │  ─ training (future) ───────────────────  │
 │                   │  Metrics socket [ :9180              ]     │
 │                   │  Checkpoint dir [ checkpoints/       ]     │
 │                   │  The bottom panel will show live loss       │
@@ -721,11 +725,11 @@ Forward-looking. Not Phase 3. Included so the shape is on record.
 
 **Notes.**
 - The only new fields versus Python Application are inside a
-  Phase 4 section (`Metrics socket`, `Checkpoint dir`). The Phase
-  2.3.3 form doesn't render them — the section is documented here so
+  future training section (`Metrics socket`, `Checkpoint dir`). The original
+  Phase 2.3.3 form doesn't render them — the section is documented here so
   the shape is on record.
 - Kind is `train`, a new kind alongside `run`, `build`, `debug`,
-  `test`. Phase 4.
+  `test`. Future, unassigned work.
 - The bottom panel gains a "Training" tab when a `kind = "train"`
   configuration is running. That's the whole ML workflow on the
   record, without committing to build it now.
@@ -798,5 +802,5 @@ Everything else is shared.
 
 ---
 
-*Last updated: Phase 2.3.3 planning. Author: skira24, with assistance.*
-*This document is a design. It governs the Configuration editor's forms.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

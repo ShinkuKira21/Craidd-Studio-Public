@@ -1,8 +1,12 @@
 # Design: Profile Markers
 
+**Roadmap track:** Phase 3.5 profiling proposal; DAP timing belongs to Phase 3.x. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design. Recorded 22 September 2026. No implementation in this
 document.
+
 **Applies to:** Phase 3.5 onward.
+
 **Governs:** How Craidd measures what code is doing, and how those
 measurements reach the user and the AI panel.
 
@@ -477,8 +481,10 @@ diagnosing.
 
 ## The gate
 
-Rungs 1 and 2 ship with the DAP client in Phase 3.x. They are DAP
-work.
+Rungs 1 and 2 belong to the Phase 3.x DAP/debugging track. These are
+delivery intentions, not a claim that the full rungs are implemented. The MT
+thread-row counter measures debugger-observed running intervals, not CPU time
+or the full profiling capability described here.
 
 Rung 3 ships in Phase 3.5. It needs the build system and the runner,
 not the debugger. Markers can exist before the debugger is complete.
@@ -490,8 +496,9 @@ GPU cycles ship after everything else, and depend on what the user's
 machine has installed. Craidd reads what it finds. It does not bundle
 a GPU profiler.
 
-The full sequence: Phase 3.x for rungs 1–2, Phase 3.5 for rung 3,
-Phase 4 for rung 4, and later for GPU.
+The planned sequence: Phase 3.x for rungs 1–2, Phase 3.5 for rung 3,
+then rung 4 after its dependencies are accepted (no phase assigned). GPU is
+later, unassigned work. Phase 4 now refers to the dedicated batch-replace plan.
 
 ---
 
@@ -623,5 +630,5 @@ Everything above is a consequence of that sentence.
 
 ---
 
-*Last updated: Phase 2.4.5. Author: skira24.*
-*This document is a design. It governs how Craidd measures code.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

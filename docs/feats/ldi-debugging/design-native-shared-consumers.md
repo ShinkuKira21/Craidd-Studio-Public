@@ -1,5 +1,7 @@
 # Design question: Rust and C# sharing Native Scalar
 
+**Roadmap track:** Later shared-consumer native-debugging proposal, unassigned. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Follow-up proposal, 3 October 2026. No shared-consumer UI is
 implemented by this document. Companion: [Rust native debugging](design-ldi-debugging-rust.md)
 and [managed LDI](design-ldi-debugging.md).
@@ -165,3 +167,8 @@ tests the live-debugging primitive with two projects. The existing
 [C# playground](../../../workspaces/ldi-interop-playground/README.md) tests the managed
 provider. A combined three-project fixture should follow the context-routing
 implementation; this proposal does not claim that UI already exists.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a proposal.*

@@ -1,10 +1,21 @@
 # Design: Multi-Thread Debugging in Linked Windows
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design. Recorded 3 October 2026.
-**Applies to:** Phase 3.x onward (after LDI's Rust FFI path lands).
+
+**UI scope update:** The combined cross-window dropdown below is superseded by
+[the window-local implementation contract](design-multi-thread-debugging-implementation.md)
+(4 October 2026). This file remains background for the original pair model.
+
+**Applies to:** Phase 3.x. Ordinary single-language MT is the first layer;
+MT with LDI is a subsequent layer. This background proposal is not the current
+selector implementation or a claim of arbitrary concurrent-call support.
+
 **Companion:** [LDI debugging](../ldi-debugging/design-ldi-debugging.md),
 [Linked solution windows](../linked-windows/design-linked-solution-windows.md),
 [Linked window manager](../linked-windows/design-linked-window-manager.md).
+
 **Governs:** How Craidd represents, displays, and lets the user
 select threads across linked debug sessions, with LDI's held-thread
 pair as the sharpest case.
@@ -290,8 +301,9 @@ in v1.
 
 The user's recourse if the wrong thread won:
 
-- **Abandon B and continue A**, releasing the current reproduction
-  without inspecting.
+- Use **Continue in A** to cancel the current B reproduction and release the
+  frozen C# origin, or remove blue to cancel this reproduction and disarm
+  later hits at this call site.
 - If the other thread hits blue again on a subsequent call, the next
   reproduction uses it.
 
@@ -507,5 +519,5 @@ Everything above is a consequence of that sentence.
 
 ---
 
-*Last updated: Phase 3.x planning. Author: skira24.*
-*This document is a design. It governs how Craidd shows threads.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

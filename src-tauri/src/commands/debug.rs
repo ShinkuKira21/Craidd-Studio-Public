@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::os::unix::fs::PermissionsExt;
@@ -39,6 +39,10 @@ struct Session {
     writer: super::debug_transport::DapWriter,
     next_seq: AtomicU64,
     thread_id: AtomicI64,
+    ldi_token: Option<u64>,
+    multi_thread: bool,
+    threads: Mutex<ThreadBook>,
+    inspection_requests: Mutex<HashMap<u64, SelectionRequest>>,
     transport_busy: AtomicBool,
     pgid: i32,
     birth: u64,
@@ -50,6 +54,202 @@ struct Session {
     private_breakpoints: Mutex<Vec<Breakpoint>>,
     alive: Arc<AtomicBool>,
     reaped: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct ThreadRow {
+    name: String,
+    state: &'static str,
+    reason: Option<String>,
+    incarnation: u64,
+    first_seen: Instant,
+    running_since: Option<Instant>,
+    ran_for: Duration,
+    run_observed: bool,
+}
+
+impl ThreadRow {
+    fn new(name: String, state: &'static str, incarnation: u64) -> Self {
+        let now = Instant::now();
+        Self { name, state, reason: None, incarnation, first_seen: now,
+            running_since: (state == "running").then_some(now),
+            ran_for: Duration::ZERO, run_observed: state == "running" }
+    }
+
+    fn ran_ms(&self) -> u128 {
+        (self.ran_for + self.running_since.map_or(Duration::ZERO, |since| since.elapsed())).as_millis()
+    }
+
+    fn transition(&mut self, state: &'static str, reason: Option<String>) {
+        let now = Instant::now();
+        if let Some(since) = self.running_since.take() { self.ran_for += now.saturating_duration_since(since); }
+        self.state = state;
+        self.reason = reason;
+        if state == "running" { self.running_since = Some(now); self.run_observed = true; }
+    }
+}
+
+struct CompletedThreadRow {
+    id: i64,
+    name: String,
+    observed_ms: u128,
+    ran_ms: u128,
+    run_observed: bool,
+    incarnation: u64,
+}
+
+#[derive(Default)]
+struct ThreadBook {
+    rows: BTreeMap<i64, ThreadRow>,
+    completed: VecDeque<CompletedThreadRow>,
+    selected_id: Option<i64>,
+    all_stopped: bool,
+    stop_epoch: u64,
+    selection_epoch: u64,
+    min_response_seq: u64,
+    last_response_seq: u64,
+    stale: bool,
+    next_incarnation: u64,
+    waiting_for_stopped_membership: bool,
+}
+
+fn generic_thread_name(name: &str, id: i64) -> bool {
+    let trimmed = name.trim();
+    let unwrapped = trimmed.strip_prefix('<').and_then(|name| name.strip_suffix('>'))
+        .unwrap_or(trimmed).trim();
+    matches!(unwrapped.to_ascii_lowercase().as_str(),
+        "no name" | "no named thread" | "unnamed" | "unnamed thread")
+        || unwrapped.eq_ignore_ascii_case(&format!("Thread {id}"))
+}
+
+impl ThreadBook {
+    fn snapshot(&self, session: &Session) -> Value {
+        json!({"status":"threads", "sessionKey":format!("{}:{}", session.pgid, session.birth),
+            "stale":self.stale,
+            "threads":self.rows.iter().map(|(id, row)| json!({"id":id, "name":row.name,
+                "state":row.state, "reason":row.reason, "incarnation":row.incarnation,
+                "observedMs":row.first_seen.elapsed().as_millis(),
+                "ranMs":row.ran_ms(), "runObserved":row.run_observed})).collect::<Vec<_>>(),
+            "completed":self.completed.iter().map(|row| json!({"id":row.id, "name":row.name,
+                "observedMs":row.observed_ms, "ranMs":row.ran_ms,
+                "runObserved":row.run_observed, "incarnation":row.incarnation})).collect::<Vec<_>>()})
+    }
+
+    fn started(&mut self, id: i64) {
+        if id <= 0 { return; }
+        if let Some(row) = self.rows.get_mut(&id) {
+            if row.state == "unknown" && !self.all_stopped { row.transition("running", None); }
+            return;
+        }
+        self.next_incarnation += 1;
+        self.rows.insert(id, ThreadRow::new(format!("Thread {id}"),
+            if self.all_stopped { "paused" } else { "running" }, self.next_incarnation));
+    }
+
+    fn finish(&mut self, id: i64) {
+        let Some(row) = self.rows.remove(&id) else { return; };
+        let ran_ms = row.ran_ms();
+        self.completed.push_back(CompletedThreadRow { id, name: row.name,
+            observed_ms: row.first_seen.elapsed().as_millis(), ran_ms,
+            run_observed: row.run_observed, incarnation: row.incarnation });
+        if self.completed.len() > 3 { self.completed.pop_front(); }
+        if self.selected_id == Some(id) { self.selected_id = None; }
+    }
+
+    fn stopped(&mut self, id: i64, reason: &str, all: bool) {
+        self.stop_epoch += 1;
+        self.selection_epoch += 1;
+        self.all_stopped = all;
+        self.waiting_for_stopped_membership = false;
+        if all {
+            for row in self.rows.values_mut() { row.transition("paused", None); }
+        }
+        if id > 0 {
+            self.selected_id = Some(id);
+            if !self.rows.contains_key(&id) {
+                self.started(id);
+            }
+            let row = self.rows.get_mut(&id).expect("stopped thread was inserted");
+            if all && row.state == "paused" { row.reason = Some(reason.into()); }
+            else { row.transition("paused", Some(reason.into())); }
+        }
+    }
+
+    fn continued(&mut self, id: i64, all: bool) {
+        self.stop_epoch += 1;
+        self.selection_epoch += 1;
+        self.waiting_for_stopped_membership = false;
+        if all {
+            self.selected_id = None;
+            for row in self.rows.values_mut() { row.transition("running", None); }
+            self.all_stopped = false;
+        } else if let Some(row) = self.rows.get_mut(&id) {
+            row.transition("running", None);
+        } else if id <= 0 {
+            for row in self.rows.values_mut().filter(|row| row.state == "paused") {
+                row.transition("unknown", None);
+            }
+        }
+        if !all && self.selected_id == Some(id) { self.selected_id = None; }
+        if !all { self.all_stopped = false; }
+    }
+
+    /// Returns true when the adapter omitted the just-stopped thread and a
+    /// single immediate refresh should be requested before removing it.
+    fn replace_membership(&mut self, items: &[Value]) -> bool {
+        let missing_stopped = self.selected_id.is_some_and(|id|
+            self.rows.get(&id).is_some_and(|row| row.state == "paused")
+                && !items.iter().any(|item| item["id"].as_i64() == Some(id)));
+        if missing_stopped && !self.waiting_for_stopped_membership {
+            self.waiting_for_stopped_membership = true;
+            self.stale = true;
+            return true;
+        }
+        self.waiting_for_stopped_membership = false;
+        let mut next = BTreeMap::new();
+        let mut previous = std::mem::take(&mut self.rows);
+        for item in items {
+            let Some(id) = item["id"].as_i64().filter(|id| *id > 0) else { continue };
+            let name = item["name"].as_str().filter(|name| !name.is_empty())
+                .map(str::to_owned).unwrap_or_else(|| format!("Thread {id}"));
+            let mut row = if let Some(row) = previous.remove(&id) { row } else {
+                self.next_incarnation += 1;
+                ThreadRow::new(name.clone(), if self.all_stopped { "paused" } else { "unknown" }, self.next_incarnation)
+            };
+            // A running-thread refresh can lose a name that the adapter
+            // reported while paused. Keep it for this incarnation only.
+            if generic_thread_name(&row.name, id) || !generic_thread_name(&name, id) {
+                row.name = name;
+            }
+            next.insert(id, row);
+        }
+        self.rows = next;
+        for (id, row) in previous {
+            let ran_ms = row.ran_ms();
+            self.completed.push_back(CompletedThreadRow { id, name: row.name,
+                observed_ms: row.first_seen.elapsed().as_millis(), ran_ms,
+                run_observed: row.run_observed, incarnation: row.incarnation });
+            if self.completed.len() > 3 { self.completed.pop_front(); }
+        }
+        if self.selected_id.is_some_and(|id| !self.rows.contains_key(&id)) { self.selected_id = None; }
+        false
+    }
+
+    fn accepts(&self, selection: SelectionRequest) -> bool {
+        self.stop_epoch == selection.stop_epoch
+            && self.selection_epoch == selection.selection_epoch
+            && self.rows.get(&selection.thread_id).is_some_and(|row| row.state == "paused"
+                && row.incarnation == selection.incarnation)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SelectionRequest {
+    stop_epoch: u64,
+    selection_epoch: u64,
+    thread_id: i64,
+    incarnation: u64,
+    stage: &'static str,
 }
 
 #[derive(Default)]
@@ -100,6 +300,13 @@ pub(crate) fn emit(app: &AppHandle, label: &str, value: Value) {
     let _ = app.emit_to(label, "craidd:debug-state", value);
 }
 
+fn emit_current_session(app: &AppHandle, label: &str, session: &Session, value: Value) {
+    let current = app.try_state::<DebugManager>().is_some_and(|manager| manager.0.lock()
+        .is_ok_and(|active| active.get(label)
+            .is_some_and(|active| active.pgid == session.pgid && active.birth == session.birth)));
+    if current { emit(app, label, value); }
+}
+
 pub fn has_debug_session(app: &AppHandle, label: &str) -> bool {
     app.try_state::<DebugManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
         || app.try_state::<DebugBuildManager>().is_some_and(|manager| manager.0.lock().is_ok_and(|active| active.contains_key(label)))
@@ -133,6 +340,16 @@ fn request(session: &Session, command: &str, arguments: Value) -> Result<u64, St
     let body = json!({ "seq": seq, "type": "request", "command": command, "arguments": arguments }).to_string();
     session.writer.send(&body)?;
     Ok(seq)
+}
+
+fn request_selection(session: &Session, command: &str, arguments: Value,
+    selection: SelectionRequest) -> Result<(), String> {
+    // Hold the map lock until the request is sent and recorded; a fast adapter
+    // response cannot reach the reader before its request identity exists.
+    let mut pending = session.inspection_requests.lock().map_err(|error| error.to_string())?;
+    let seq = request(session, command, arguments)?;
+    pending.insert(seq, selection);
+    Ok(())
 }
 
 fn schedule_debug_stop(session: &Session) {
@@ -562,11 +779,42 @@ fn initialize_breakpoints(session: &Session, fallback: &[Breakpoint]) -> Result<
 pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str, locations: &[(String, u32)]) -> Result<(), String> {
     let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
         .get(label).cloned().ok_or("Managed debugger is no longer active")?;
-    session.blue.lock().map_err(|error| error.to_string())?.retain(|blue| !locations.iter().any(|(file, line)|
-        file == &blue.file && *line == blue.line));
+    let mut blues = session.blue.lock().map_err(|error| error.to_string())?;
+    let previous = blues.clone();
+    blues.retain(|blue| !locations.iter().any(|(file, line)| file == &blue.file && *line == blue.line));
+    drop(blues);
     if session.breakpoints_ready.load(Ordering::Acquire) {
-        let points = super::breakpoints::load_breakpoints(session.solution_path.clone())?;
-        send_breakpoints(&session, &points)?;
+        let result = super::breakpoints::load_breakpoints(session.solution_path.clone())
+            .and_then(|points| send_breakpoints(&session, &points));
+        if let Err(error) = result {
+            if let Ok(mut blues) = session.blue.lock() { *blues = previous; }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// Rearm a prepared managed call site or change its Blue condition without
+/// rebuilding the native driver. A genuinely new call site needs Gold Restart.
+pub(crate) fn arm_ldi_blue(app: &AppHandle, label: &str, file: &str, line: u32,
+    condition: Option<String>) -> Result<(), String> {
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(label).cloned().ok_or("Managed debugger is no longer active")?;
+    let mut blues = session.blue.lock().map_err(|error| error.to_string())?;
+    let previous = blues.clone();
+    if let Some(blue) = blues.iter_mut().find(|blue| blue.file == file && blue.line == line) {
+        blue.condition = condition;
+    } else {
+        blues.push(super::ldi::ManagedBlueBreakpoint { file: file.into(), line, condition });
+    }
+    drop(blues);
+    if session.breakpoints_ready.load(Ordering::Acquire) {
+        let result = super::breakpoints::load_breakpoints(session.solution_path.clone())
+            .and_then(|points| send_breakpoints(&session, &points));
+        if let Err(error) = result {
+            if let Ok(mut blues) = session.blue.lock() { *blues = previous; }
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -774,6 +1022,10 @@ pub(crate) fn launch_prepared(
     let session = Arc::new(Session {
         writer,
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
+        ldi_token,
+        multi_thread: !live_native,
+        threads: Mutex::new(ThreadBook::default()),
+        inspection_requests: Mutex::new(HashMap::new()),
         transport_busy: AtomicBool::new(false), pgid, birth, stopping: AtomicBool::new(false),
         breakpoint_files: Mutex::new(HashSet::new()),
         breakpoints_ready: AtomicBool::new(false),
@@ -832,6 +1084,8 @@ pub(crate) fn launch_prepared(
         let mut stop_generation = 0u64;
         let mut stop_reason = String::new();
         let mut inspection_generations: HashMap<u64, u64> = HashMap::new();
+        let mut inspection_selection_epochs: HashMap<u64, u64> = HashMap::new();
+        let mut selected_variables: HashMap<u64, (usize, Vec<Value>)> = HashMap::new();
         // A private driver stop after native return must not be presented as
         // user source. Defer B's pause until its frame is verified.
         let mut pending_native_stop: Option<(u64, Value)> = None;
@@ -871,12 +1125,24 @@ pub(crate) fn launch_prepared(
                         stop_generation += 1;
                         stop_reason = message["body"]["reason"].as_str().unwrap_or("").into();
                         super::native_debug::stopping(&app_reader, &label_reader, pgid, stop_generation);
-                        super::ldi::on_stop(&app_reader, &label_reader, pgid);
+                        let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
+                        super::ldi::on_stop(&app_reader, &label_reader, pgid, thread_id);
                         stopped_variables.clear();
                         variable_requests = 0;
                         ready_reader.store(true, Ordering::Release);
-                        let thread_id = message["body"]["threadId"].as_i64().unwrap_or(0);
                         session.thread_id.store(thread_id, Ordering::Relaxed);
+                        if session.multi_thread {
+                            if let Ok(mut book) = session.threads.lock() {
+                                // LLDB is process-centric and can omit this
+                                // field even though the other threads stop.
+                                let all = message["body"]["allThreadsStopped"].as_bool()
+                                    .unwrap_or(language != "csharp");
+                                book.stopped(thread_id, &stop_reason, all);
+                                book.min_response_seq = session.next_seq.load(Ordering::Acquire);
+                                emit_current_session(&app_reader, &label_reader, &session, book.snapshot(&session));
+                            }
+                            let _ = request(&session, "threads", json!({}));
+                        }
                         if live_native || super::ldi::partner_stop_is_held(&app_reader, &label_reader, pgid) {
                             pending_native_stop = Some((stop_generation, message["body"]["reason"].clone()));
                         } else {
@@ -884,8 +1150,13 @@ pub(crate) fn launch_prepared(
                             emit(&app_reader, &label_reader, json!({"status":"paused", "reason":message["body"]["reason"], "threadId":thread_id}));
                         }
                         hidden_driver_frames = None;
-                        if let Ok(seq) = request(&session, "stackTrace", json!({"threadId":thread_id, "startFrame":0, "levels":20})) {
-                            pending.insert(seq, "stackTrace".into()); inspection_generations.insert(seq, stop_generation);
+                        if thread_id > 0 {
+                            if let Ok(seq) = request(&session, "stackTrace", json!({"threadId":thread_id, "startFrame":0, "levels":20})) {
+                                pending.insert(seq, "stackTrace".into()); inspection_generations.insert(seq, stop_generation);
+                                if session.multi_thread {
+                                    if let Ok(book) = session.threads.lock() { inspection_selection_epochs.insert(seq, book.selection_epoch); }
+                                }
+                            }
                         }
                     }
                     "continued" => {
@@ -897,12 +1168,35 @@ pub(crate) fn launch_prepared(
                         if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0) {
                             session.thread_id.store(id, Ordering::Relaxed);
                         }
+                        if session.multi_thread {
+                            if let Ok(mut book) = session.threads.lock() {
+                                book.continued(message["body"]["threadId"].as_i64().unwrap_or(0),
+                                    message["body"]["allThreadsContinued"] != false);
+                                book.min_response_seq = session.next_seq.load(Ordering::Acquire);
+                                emit_current_session(&app_reader, &label_reader, &session, book.snapshot(&session));
+                            }
+                        }
                         emit(&app_reader, &label_reader, json!({"status":"running"}));
                         super::native_debug::event(&app_reader, &label_reader, pgid, stop_generation, &json!({"status":"running"}));
                     }
                     "thread" => {
-                        if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0 && session.thread_id.load(Ordering::Relaxed) == 0) {
+                        let id = message["body"]["threadId"].as_i64().filter(|id| *id > 0);
+                        if let Some(id) = id.filter(|_| session.thread_id.load(Ordering::Relaxed) == 0) {
                             session.thread_id.store(id, Ordering::Relaxed);
+                        }
+                        if session.multi_thread {
+                            if let Ok(mut book) = session.threads.lock() {
+                                book.min_response_seq = session.next_seq.load(Ordering::Acquire);
+                                if let Some(id) = id {
+                                    match message["body"]["reason"].as_str() {
+                                        Some("started") => book.started(id),
+                                        Some("exited") => book.finish(id),
+                                        _ => {}
+                                    }
+                                }
+                                emit_current_session(&app_reader, &label_reader, &session, book.snapshot(&session));
+                            }
+                            let _ = request(&session, "threads", json!({}));
                         }
                     }
                     "module" => super::native_debug::module(&app_reader, &label_reader, pgid, &message["body"]),
@@ -929,7 +1223,70 @@ pub(crate) fn launch_prepared(
                 }
             } else if message["type"] == "response" {
                 let response_seq = message["request_seq"].as_u64().unwrap_or(0);
+                let selected = session.inspection_requests.lock().ok()
+                    .and_then(|mut requests| requests.remove(&response_seq));
+                if let Some(selected) = selected {
+                    let current = session.threads.lock().is_ok_and(|book| book.accepts(selected));
+                    if !current {
+                        selected_variables.remove(&selected.selection_epoch);
+                        continue;
+                    }
+                    if message["success"] == false {
+                        emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
+                            "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                            "selectionEpoch":selected.selection_epoch,
+                            "error":message["message"].as_str().unwrap_or("Thread inspection failed")}));
+                        selected_variables.remove(&selected.selection_epoch);
+                        continue;
+                    }
+                    match selected.stage {
+                        "stackTrace" => {
+                            let frames = message["body"]["stackFrames"].as_array().cloned().unwrap_or_default();
+                            emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
+                                "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                "selectionEpoch":selected.selection_epoch, "frames":frames, "variables":[]}));
+                            if let Some(frame_id) = frames.first().and_then(|frame| frame["id"].as_i64()) {
+                                let _ = request_selection(&session, "scopes", json!({"frameId":frame_id}),
+                                    SelectionRequest { stage: "scopes", ..selected });
+                            }
+                        }
+                        "scopes" => {
+                            let references: Vec<i64> = message["body"]["scopes"].as_array().into_iter().flatten()
+                                .filter(|scope| scope["expensive"] != true)
+                                .filter_map(|scope| scope["variablesReference"].as_i64().filter(|id| *id > 0))
+                                .collect();
+                            let mut started = 0usize;
+                            for reference in references {
+                                if request_selection(&session, "variables", json!({"variablesReference":reference}),
+                                    SelectionRequest { stage: "variables", ..selected }).is_ok() { started += 1; }
+                            }
+                            if started > 0 {
+                                selected_variables.insert(selected.selection_epoch, (started, Vec::new()));
+                            }
+                        }
+                        "variables" => {
+                            if let Some((remaining, values)) = selected_variables.get_mut(&selected.selection_epoch) {
+                                if let Some(items) = message["body"]["variables"].as_array() { values.extend(items.iter().cloned()); }
+                                *remaining = remaining.saturating_sub(1);
+                                if *remaining == 0 {
+                                    emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
+                                        "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                        "selectionEpoch":selected.selection_epoch, "variables":values}));
+                                    selected_variables.remove(&selected.selection_epoch);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 if inspection_generations.remove(&response_seq).is_some_and(|generation| generation != stop_generation) {
+                    pending.remove(&response_seq);
+                    continue;
+                }
+                let auto_selection_epoch = inspection_selection_epochs.remove(&response_seq);
+                if auto_selection_epoch.is_some_and(|epoch| session.threads.lock()
+                    .is_ok_and(|book| book.selection_epoch != epoch)) {
                     pending.remove(&response_seq);
                     continue;
                 }
@@ -952,6 +1309,14 @@ pub(crate) fn launch_prepared(
                     }
                 }
                 if message["success"] == false {
+                    if session.multi_thread && message["command"] == "threads" {
+                        if let Ok(mut book) = session.threads.lock() {
+                            if response_seq >= book.min_response_seq && response_seq >= book.last_response_seq {
+                                book.stale = true;
+                                emit_current_session(&app_reader, &label_reader, &session, book.snapshot(&session));
+                            }
+                        }
+                    }
                     if message["command"] == "stackTrace" {
                         if let Some((_, reason)) = pending_native_stop.take().filter(|(generation, _)| *generation == stop_generation) {
                             emit(&app_reader, &label_reader, json!({"status":"paused", "reason":reason,
@@ -1005,6 +1370,25 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "threads" => {
+                        let mut retry_membership = false;
+                        let mut observed_names = Vec::new();
+                        if session.multi_thread {
+                            if let Some(items) = message["body"]["threads"].as_array() {
+                                if let Ok(mut book) = session.threads.lock() {
+                                    if response_seq >= book.min_response_seq && response_seq >= book.last_response_seq {
+                                        retry_membership = book.replace_membership(items);
+                                        book.last_response_seq = response_seq;
+                                        book.stale = retry_membership;
+                                        observed_names = book.rows.iter().map(|(id, row)| (*id, row.name.clone())).collect();
+                                        emit_current_session(&app_reader, &label_reader, &session, book.snapshot(&session));
+                                    }
+                                }
+                            }
+                        }
+                        if !observed_names.is_empty() {
+                            super::ldi::on_origin_threads(&app_reader, &label_reader, pgid, &observed_names);
+                        }
+                        if retry_membership { let _ = request(&session, "threads", json!({})); }
                         if let Some(id) = message["body"]["threads"].as_array()
                             .and_then(|threads| threads.first()).and_then(|thread| thread["id"].as_i64()) {
                             if session.thread_id.load(Ordering::Relaxed) == 0 { session.thread_id.store(id, Ordering::Relaxed); }
@@ -1053,6 +1437,7 @@ pub(crate) fn launch_prepared(
                         if let Some(id) = first.and_then(|frame| frame["id"].as_i64()) {
                             if let Ok(seq) = request(&session, "scopes", json!({"frameId":id})) {
                                 pending.insert(seq, "scopes".into()); inspection_generations.insert(seq, stop_generation);
+                                if let Some(epoch) = auto_selection_epoch { inspection_selection_epochs.insert(seq, epoch); }
                             }
                         }
                     }
@@ -1065,6 +1450,7 @@ pub(crate) fn launch_prepared(
                                     if let Ok(seq) = request(&session, "variables", json!({"variablesReference":reference})) {
                                         pending.insert(seq, "variables".into());
                                         inspection_generations.insert(seq, stop_generation);
+                                        if let Some(epoch) = auto_selection_epoch { inspection_selection_epochs.insert(seq, epoch); }
                                         variable_requests += 1;
                                     }
                                 }
@@ -1156,6 +1542,86 @@ pub async fn debug_control(window: WebviewWindow, app: AppHandle, action: String
         .await.map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+pub async fn debug_select_thread(window: WebviewWindow, app: AppHandle, thread_id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || select_thread_by_label(&app, window.label(), thread_id))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn select_thread_by_label(app: &AppHandle, label: &str, thread_id: i64) -> Result<(), String> {
+    super::ldi::thread_inspection_ready(app, label)?;
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(label).cloned().ok_or("No debug session is active")?;
+    if !session.multi_thread { return Err("Thread selection is unavailable for this linked debugging session".into()); }
+    if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+        return Err("Debugger session ended".into());
+    }
+    let selection = {
+        let mut book = session.threads.lock().map_err(|error| error.to_string())?;
+        let row = book.rows.get(&thread_id).ok_or("Thread is no longer reported by the debugger")?;
+        if row.state != "paused" { return Err("Pause this thread before inspecting its stack".into()); }
+        let incarnation = row.incarnation;
+        book.selected_id = Some(thread_id);
+        book.selection_epoch += 1;
+        SelectionRequest { stop_epoch: book.stop_epoch, selection_epoch: book.selection_epoch,
+            thread_id, incarnation, stage: "stackTrace" }
+    };
+    emit_current_session(app, label, &session, json!({"status":"threadSelected", "threadId":thread_id,
+        "selectionEpoch":selection.selection_epoch,
+        "sessionKey":format!("{}:{}", session.pgid, session.birth)}));
+    request_selection(&session, "stackTrace",
+        json!({"threadId":thread_id, "startFrame":0, "levels":20}), selection)
+}
+
+#[tauri::command]
+pub async fn debug_ldi_partner_threads(
+    window: WebviewWindow, app: AppHandle, token: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (partner, pair_token, pgid) = super::ldi::active_partner_for_origin(&app, window.label(), &token)?;
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(&partner).filter(|session| session.pgid == pgid && session.ldi_token == Some(pair_token))
+            .cloned().ok_or("The native driver session has changed")?;
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+            return Err("The native driver is ending".into());
+        }
+        let _ = request(&session, "threads", json!({}));
+        let book = session.threads.lock().map_err(|error| error.to_string())?;
+        let mut snapshot = book.snapshot(&session);
+        snapshot["selectedThreadId"] = json!(book.selected_id);
+        snapshot["partnerLabel"] = json!(partner);
+        Ok(snapshot)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn debug_select_ldi_partner_thread(
+    window: WebviewWindow, app: AppHandle, token: String, thread_id: i64,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (partner, pair_token, pgid) = super::ldi::active_partner_for_origin(&app, window.label(), &token)?;
+        {
+            let manager = app.state::<DebugManager>();
+            let active = manager.0.lock().map_err(|error| error.to_string())?;
+            let session = active.get(&partner).ok_or("The native driver session has changed")?;
+            if session.pgid != pgid || session.ldi_token != Some(pair_token) {
+                return Err("The native driver session has changed".into());
+            }
+        }
+        select_thread_by_label(&app, &partner, thread_id)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn debug_refresh_threads(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(window.label()).cloned().ok_or("No debug session is active")?;
+        if !session.multi_thread { return Err("Thread list is unavailable for this linked debugging session".into()); }
+        request(&session, "threads", json!({})).map(|_| ())
+    }).await.map_err(|error| error.to_string())?
+}
+
 pub fn control_debug_by_label(app: &AppHandle, label: &str, action: &str) -> Result<(), String> {
     super::ldi::with_control(app, label, action, || {
         if action == "stop" && super::build_order::cancel(app, label) { return Ok(()); }
@@ -1204,12 +1670,11 @@ pub(crate) fn detach_native_points(app: &AppHandle, label: &str, pgid: i32, poin
     Ok(())
 }
 
-pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Result<(), String> {
+pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32, thread_id: i64) -> Result<(), String> {
     let state = app.state::<DebugManager>();
     let active = state.0.lock().map_err(|e| e.to_string())?;
     let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
     if session.stopping.load(Ordering::Acquire) { return Err("Origin debugger is stopping".into()); }
-    let thread_id = session.thread_id.load(Ordering::Acquire);
     if thread_id <= 0 { return Err("Origin thread is unavailable".into()); }
     if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return Err("Origin debugger control is busy".into());
@@ -1221,11 +1686,11 @@ pub(crate) fn continue_ldi_origin(app: &AppHandle, label: &str, pgid: i32) -> Re
     Ok(())
 }
 
-pub(crate) fn ldi_origin_thread_id(app: &AppHandle, label: &str, pgid: i32) -> Result<u32, String> {
+pub(crate) fn ldi_origin_thread_id(app: &AppHandle, label: &str, pgid: i32, thread_id: i64) -> Result<u32, String> {
     let state = app.state::<DebugManager>();
     let active = state.0.lock().map_err(|error| error.to_string())?;
-    let session = active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
-    u32::try_from(session.thread_id.load(Ordering::Acquire)).ok().filter(|id| *id > 0)
+    active.get(label).filter(|session| session.pgid == pgid).ok_or("Origin debug session changed")?;
+    u32::try_from(thread_id).ok().filter(|id| *id > 0)
         .ok_or("Origin Linux thread ID is unavailable".into())
 }
 
@@ -1278,7 +1743,12 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
         }
         _ => return Err("Unsupported debug control".into()),
     };
-    let thread_id = session.thread_id.load(Ordering::Relaxed);
+    let thread_id = if session.multi_thread && action != "pause" {
+        let book = session.threads.lock().map_err(|error| error.to_string())?;
+        book.selected_id.filter(|id| book.rows.get(id).is_some_and(|row| row.state == "paused"))
+            .or_else(|| book.rows.iter().find(|(_, row)| row.state == "paused").map(|(id, _)| *id))
+            .ok_or("No paused thread is available for this debugger control")?
+    } else { session.thread_id.load(Ordering::Relaxed) };
     if thread_id <= 0 { return Err("Debugger thread is not ready yet; try again after it starts".into()); }
     if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return Err("A debugger step or pause command is already in progress".into());
@@ -1345,6 +1815,118 @@ fn cancel_debug_session_only(app: &AppHandle, label: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_book_preserves_scope_and_rejects_expired_inspection() {
+        let mut book = ThreadBook::default();
+        book.replace_membership(&[json!({"id":1,"name":"worker one"}), json!({"id":2,"name":"worker two"})]);
+        assert_eq!(book.rows[&2].state, "unknown");
+        book.stopped(1, "exception", true);
+        assert_eq!(book.rows[&1].reason.as_deref(), Some("exception"));
+        assert_eq!(book.rows[&2].state, "paused");
+        assert_eq!(book.rows[&2].reason, None);
+        let selected = SelectionRequest { stop_epoch: book.stop_epoch,
+            selection_epoch: book.selection_epoch, thread_id: 2,
+            incarnation: book.rows[&2].incarnation, stage: "stackTrace" };
+        assert!(book.accepts(selected));
+        book.replace_membership(&[json!({"id":1,"name":"worker one"})]);
+        book.replace_membership(&[json!({"id":1,"name":"worker one"}), json!({"id":2,"name":"new worker"})]);
+        assert_eq!(book.rows[&2].state, "paused");
+        assert!(!book.accepts(selected), "a reused DAP ID cannot inherit an old response");
+        book.continued(1, false);
+        assert_eq!(book.rows[&1].state, "running");
+        assert_eq!(book.rows[&2].state, "paused");
+        assert!(!book.accepts(selected));
+        book.replace_membership(&[json!({"id":1,"name":"worker one"})]);
+        assert!(!book.rows.contains_key(&2));
+    }
+
+    #[test]
+    fn thread_book_retains_three_completed_rows_across_refreshes_and_id_reuse() {
+        let mut book = ThreadBook::default();
+        for id in 1..=4 {
+            book.started(id);
+            book.replace_membership(&[json!({"id":id,"name":format!("short worker {id}")})]);
+            book.finish(id);
+            book.replace_membership(&[]);
+        }
+        assert_eq!(book.completed.len(), 3);
+        assert_eq!(book.completed.iter().map(|row| row.id).collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(book.completed.back().unwrap().name, "short worker 4");
+        let old_incarnation = book.completed.back().unwrap().incarnation;
+        book.started(4);
+        assert!(book.rows[&4].incarnation > old_incarnation);
+        assert_eq!(book.completed.len(), 3);
+    }
+
+    #[test]
+    fn thread_book_keeps_descriptive_name_through_generic_refresh_and_completion() {
+        let mut book = ThreadBook::default();
+        book.replace_membership(&[json!({"id":7,"name":"<No name>"})]);
+        book.replace_membership(&[json!({"id":7,"name":"cs worker 1"})]);
+        book.replace_membership(&[json!({"id":7,"name":"<No name>"})]);
+        assert_eq!(book.rows[&7].name, "cs worker 1");
+        book.finish(7);
+        assert_eq!(book.completed.back().unwrap().name, "cs worker 1");
+
+        book.replace_membership(&[json!({"id":7,"name":"Thread 7"})]);
+        assert_eq!(book.rows[&7].name, "Thread 7", "a reused ID starts a new incarnation");
+    }
+
+    #[test]
+    fn thread_book_retries_first_list_that_omits_the_stopped_worker() {
+        let mut book = ThreadBook::default();
+        book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]);
+        book.stopped(3, "breakpoint", true);
+        assert!(book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]));
+        assert_eq!(book.selected_id, Some(3));
+        assert_eq!(book.rows[&3].state, "paused");
+        assert!(!book.replace_membership(&[
+            json!({"id":1,"name":"mt-rust-console"}),
+            json!({"id":2,"name":"rs worker 1"}),
+            json!({"id":3,"name":"rs worker 2"})]));
+        assert_eq!(book.rows[&3].name, "rs worker 2");
+        assert_eq!(book.rows[&2].state, "paused");
+        book.continued(3, true);
+        assert!(book.rows.values().all(|row| row.state == "running"));
+
+        book.stopped(3, "breakpoint", true);
+        assert!(book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]));
+        assert!(!book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]));
+        assert!(!book.rows.contains_key(&3), "a second omission retires the missing worker");
+    }
+
+    #[test]
+    fn thread_running_time_freezes_on_pause_and_accumulates_across_steps() {
+        let mut book = ThreadBook::default();
+        book.started(1);
+        book.started(2);
+        book.rows.get_mut(&1).unwrap().running_since = Some(Instant::now() - Duration::from_millis(5));
+        book.stopped(1, "breakpoint", true);
+        assert_eq!(book.rows[&1].state, "paused");
+        assert_eq!(book.rows[&2].state, "paused");
+        let first_run = book.rows[&1].ran_ms();
+        let other_run = book.rows[&2].ran_ms();
+        assert!(first_run >= 5);
+        assert_eq!(book.rows[&1].ran_ms(), first_run, "time must stay fixed while paused");
+
+        book.continued(1, false);
+        assert_eq!(book.rows[&1].state, "running");
+        assert_eq!(book.rows[&2].state, "paused");
+        assert_eq!(book.rows[&2].ran_ms(), other_run, "another thread's pause must remain fixed");
+
+        book.rows.get_mut(&1).unwrap().running_since = Some(Instant::now() - Duration::from_millis(5));
+        book.stopped(1, "step", false);
+        assert_eq!(book.rows[&1].state, "paused");
+        let after_step = book.rows[&1].ran_ms();
+        assert!(after_step >= first_run + 5);
+        assert_eq!(book.rows[&1].ran_ms(), after_step);
+        book.continued(0, true);
+        assert_eq!(book.rows[&1].state, "running");
+        assert_eq!(book.rows[&2].state, "running");
+        book.finish(1);
+        assert!(book.completed.back().unwrap().ran_ms >= after_step);
+    }
 
     #[test]
     fn native_remote_symbol_policy_is_explicit_and_session_local() {

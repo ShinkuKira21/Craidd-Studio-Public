@@ -1,10 +1,16 @@
 # Supporting design: Thread debugging and LDI
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Supporting design and source review, 3 October 2026. Proposed
 thread-selector behavior is distinguished from code present in the checkout.
 No runtime or interactive IDE acceptance was performed for this document.
 
-**Companion:** [Thread scope](design-thread-scope.md),
+**UI scope update:** [The window-local implementation contract](../mt-debugging/design-multi-thread-debugging-implementation.md)
+supersedes this document's combined linked-window selector proposal. The
+session/stop/LDI safety analysis here still applies.
+
+**Companion:** [Thread scope](../mt-debugging/design-thread-scope.md),
 [Managed LDI](design-ldi-debugging.md),
 [Rust native debugging](design-ldi-debugging-rust.md), and
 [Shared native consumers](design-native-shared-consumers.md).
@@ -233,9 +239,10 @@ response accepted only for the current session/stop/selection
 +++
 
 In managed LDI, an origin-session resume lock applies even if the user focuses
-another origin thread: a generic Continue could also resume the held call.
-The backend checks the hold before sending any command capable of advancing
-it. A toolbar's disabled appearance alone is insufficient protection.
+another origin thread. A's Continue is a deliberate **skip current B** action:
+cancel B, wait for its build/driver to end, then resume the frozen origin once.
+Step and Pause remain blocked while held. The backend checks the hold before
+sending an origin command; toolbar appearance alone is insufficient protection.
 Keep the release target frozen separately from inspection focus; adding a
 selector must not overwrite the remembered thread ID that origin release uses.
 
@@ -389,7 +396,7 @@ debugger during preparation; simultaneous consumer arbitration is unfinished.
 | Action | Standalone / live-native | Managed LDI |
 | --- | --- | --- |
 | Select thread/frame | Inspect valid stopped context | Inspect without changing captured origin or pair |
-| Step/Continue | Operate named original session, with adapter scope | B operates reproduction; origin controls cannot bypass hold |
+| Step/Continue | Operate named original session, with adapter scope | B Step/Continue operates reproduction. A Continue cancels this reproduction and releases the frozen origin after B ends; A Step remains blocked |
 | Stop owning application | End its debug session/process according to the launch contract | Stop A and its paired reproduction; invalidate release target |
 | Explicit Stop B / abandon | For a live viewer, explicitly stopping the context stops A's original process | Cancel current B; release A for its original call; keep pairing armed where applicable |
 | Hide a viewport | Preserve session and valid subscription | Preserve reproduction and hold |
@@ -434,6 +441,14 @@ active reproduction per managed origin.
 ## 12. Implementation boundary and acceptance structure
 
 ### Source reviewed on 3 October 2026
+
+The table below is the 3 October baseline. A 6 October prototype on
+`codex/ldi-linked-thread-preview` now retains the managed origin thread ID,
+enables per-session thread snapshots for managed LDI and its native driver,
+and exposes the active driver's threads inside A's toolbar dropdown. It
+checks the reproduction token and debugger process identity before remote
+inspection. The desktop handoff still needs interactive validation, and
+simultaneous blue hits remain unresolved.
 
 | Source | Present foundation | Missing or unverified for this proposal |
 | --- | --- | --- |
@@ -493,5 +508,7 @@ debugs a separate supported native invocation before releasing the original.
 The dropdown displays these relationships while their owning transports and
 coordinators retain execution authority.
 
-Last updated: Phase 3.x supporting design, 3 October 2026. Author: skira24, with assistance.
-This document is a supporting design; proposed behavior requires the acceptance above.
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

@@ -1,5 +1,7 @@
 # Rust/native desktop feedback — 3 October 2026
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 User desktop findings after `f9918bb` (not all independently reproduced):
 
 - Normal Cargo run succeeds: scalar 42, original borrowed buffer [6, 7, 8], sum 21.
@@ -57,3 +59,8 @@ check but fails its unrelated dirty-close assertion: it expects five literal
 `await promptNext(` occurrences; unchanged `HEAD` WindowManager has four. No
 WindowManager close behavior was changed by this patch. The configured
 linked-startup/save-restart/build-output suites pass.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

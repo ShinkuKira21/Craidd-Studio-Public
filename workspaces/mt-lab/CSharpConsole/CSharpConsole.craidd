@@ -1,0 +1,5 @@
+[project]
+name = "C# MT Console"
+language = "csharp"
+root = "."
+kind = "application"

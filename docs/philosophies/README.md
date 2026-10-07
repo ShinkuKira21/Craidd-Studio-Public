@@ -1,5 +1,7 @@
 # Design philosophies
 
+**Roadmap track:** Philosophy index, reviewed during Phase 3.x. See the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md).
+
 These documents explain the principles behind Craidd Studio features. Feature-specific implementation proposals live under [`docs/feats/`](../feats/).
 
 ## Debugging
@@ -16,3 +18,8 @@ These documents explain the principles behind Craidd Studio features. Feature-sp
 ## Version control
 
 - [Git workspaces](version-control/git-workspaces/philosophy-workspaces.md) — proposed workspace model; see its [architecture design](../feats/version-control/git-workspaces/design-worktree-workspaces.md).
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a index.*

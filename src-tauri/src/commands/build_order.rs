@@ -795,6 +795,38 @@ mod tests {
     }
 
     #[test]
+    fn mt_lab_loads_all_language_targets_and_keeps_ldi_explicit() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("workspaces/mt-lab");
+        let solution = super::super::solution::load_solution_named(
+            root.to_string_lossy().into_owned(), "mt-lab.cln".into(),
+        ).unwrap().unwrap().solution;
+
+        assert_eq!(solution.projects.len(), 8);
+        assert_eq!(solution.configs.len(), 36);
+        for (language, name) in [
+            ("csharp", "C# MT Console"),
+            ("rust", "Rust MT Console"),
+            ("cpp", "C++ MT Console"),
+            ("csharp", "C# MT GUI"),
+            ("rust", "Rust MT GUI"),
+            ("cpp", "C++ MT GUI"),
+        ] {
+            assert!(solution.projects.iter().any(|project|
+                project.language.as_deref() == Some(language) && project.name == name));
+        }
+        assert_eq!(describe(&solution, "C# GUI · Debug").unwrap(), Vec::<String>::new());
+        assert_eq!(describe(&solution, "C# GUI · LDI Debug").unwrap(), vec![
+            "Build C# GUI · Build → wait for success",
+            "Build Native · Build → wait for success",
+            "Install Native · Build → C# GUI · Build's resolved output",
+        ]);
+        let native = configuration(&solution, "Native · LDI").unwrap().slots.as_ref().unwrap();
+        assert_eq!(native.build.as_deref(), Some("Native · Build"));
+        assert!(native.run.is_none() && native.debug.is_none());
+    }
+
+    #[test]
     fn interop_playground_builds_and_installs_both_libraries_before_gui_launch() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

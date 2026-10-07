@@ -1,5 +1,9 @@
 # Handoff: Phase 2.3.3 — Configurations
 
+> **Historical handoff.** Phase labels and “next session” instructions below
+> describe the original checkpoint. Use the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md)
+> for current ordering. Editorial review: Codex, 7 October 2026.
+
 **Date:** Session ending after Phase 2.3.3.2.3.
 **Current phase:** Configurations feature, UI complete, functionality partial.
 **Next session:** Wire the runner (Stage C.3).
@@ -250,3 +254,5 @@ public.
 
 *Last updated: end of session, Phase 2.3.3.2.3. Author: skira24, with
 assistance.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

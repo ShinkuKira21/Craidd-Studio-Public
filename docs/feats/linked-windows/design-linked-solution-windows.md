@@ -1,5 +1,7 @@
 # Design: Linked solution windows
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design, 19 September 2026. Linked Build/Run, duplicate windows,
 combined Problems, an IDE-window tray, and Rust Cargo DAP debugging are
 implemented. Other debugger adapters and shared writable remote documents
@@ -11,6 +13,7 @@ debugger, and bounded output; Show recreates the window and reopens its
 solution, project choice, and clean tabs. Cursor positions and Monaco undo
 history are not yet restored. A shared writable document model is still
 required to preserve those across GUI teardown.
+
 **Companion:** [Window model](design-window-model.md),
 [solution orchestration](../configurations/design-solution-orchestration.md),
 [configuration megamenu](../configurations/design-configuration-megamenu.md),
@@ -679,5 +682,5 @@ Acceptance checks:
 
 ---
 
-*Last updated: Phase 2.4.1. Author: skira24.*
-*This document is a design. It governs linked-window coordination.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

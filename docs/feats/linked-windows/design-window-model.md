@@ -1,7 +1,12 @@
 # Design: Window Model
 
-**Status:** Design. Locked for Phase 2.5 (Get Started + multi-window).
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Foundational design locked for the Phase 2.5 window milestone.
+Get Started and multi-window source now exist; this remains the ownership design.
+
 **Applies to:** Phase 2.5 onwards.
+
 **Governs:** How Craidd composes windows, what each window owns, and
 what is restored on launch.
 
@@ -172,5 +177,5 @@ restoration.
 
 ---
 
-*Last updated: Phase 2.4. Author: skira24.*
-*This document is a design. It governs the window model.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

@@ -1,5 +1,7 @@
 # LDI Gate 0: standalone held-frame test plan
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Test specification plus an implemented first mechanism harness,
 29 September 2026. See [the internal test fixture](../../../tests/fixtures/ldi-gate-0/README.md).
 The small user-facing example is [LDI GUI Lab](../../../workspaces/ldi-gui-lab/README.md).
@@ -8,6 +10,11 @@ not requirements for developer projects or dependencies of the IDE's LDI runtime
 The complete fault/acceptance matrix below is broader than the tests currently
 implemented; do not treat it as a record that every case passed.
 This plan follows [section 3 of the design](design-ldi-debugging.md#3-execution-and-ownership).
+Gate 0 tests the original transport lock: a direct A DAP Continue is rejected
+until the coordinator authorizes release. The later IDE toolbar maps A's
+Continue to an explicit **cancel B, then release A** coordinator action.
+That user action preserves this transport invariant; the older harness steps
+below remain historical mechanism checks, not the current toolbar wording.
 
 **One mode:** A stops at blue; the harness reads supported scalars from that
 stopped managed frame; B reproduces the native call; B signals release;
@@ -438,3 +445,8 @@ generator and investigate a bounded byte-buffer-plus-length case next, such
 as a parser consuming decompressed network data. Reading/copying that buffer
 and preserving the held-stop interaction require a separate design; no proxy
 or general pointer-graph system is authorized by the scalar experiment.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

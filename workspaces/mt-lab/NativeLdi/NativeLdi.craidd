@@ -1,0 +1,5 @@
+[project]
+name = "C++ LDI Library"
+language = "cpp"
+root = "."
+kind = "library"

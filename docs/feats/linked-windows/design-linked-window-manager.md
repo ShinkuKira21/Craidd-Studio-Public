@@ -1,8 +1,11 @@
 # Proposal: Linked solution window manager
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Implemented in stages. The tray, linked runtime controls, and
 backend parked sessions are present; shared writable document state remains
 open.
+
 **Companion:** [Linked solution windows](design-linked-solution-windows.md),
 [window model](design-window-model.md).
 
@@ -296,3 +299,8 @@ debug state, authoritative document buffers, and clear **Hide** versus
 **Close** behavior are the implementation gates. Test the tray with
 three or more IDE windows before treating it as a general window
 manager.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

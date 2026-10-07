@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+**/target/
+**/build/
+**/node_modules/
+**/dist/
+**/gen/

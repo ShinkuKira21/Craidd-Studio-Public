@@ -1,7 +1,13 @@
-# Design: Profiling
+# Philosophy: Profiling
 
-**Status:** Proposal. No code written.
-**Applies to:** Phase 2.7 onward.
+**Roadmap track:** Phase 3.5 profiling proposal. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Proposal. Profiling is not established by the MT elapsed-time
+counter. The old Phase 2.7 sequence is now local stages within the Phase 3.5
+profiling track; Python-specific stages remain gated on future Python support.
+
+**Applies to:** Phase 3.5 profiling track (proposed).
+
 **Governs:** What profiling means in Craidd, what it deliberately does
 not attempt, and why Linked Windows changes the category.
 
@@ -183,7 +189,7 @@ One parser per tool. Each lives in `src-tauri/src/commands/profile/`.
 Each produces `Vec<ProfileEntry>`. Each is total — a malformed line is
 plain output, not a panic. Same discipline as the Cargo JSON parser.
 
-**Initial parsers for Phase 2.7.1:**
+**Initial parsers for profiling stage 1:**
 
 - Valgrind memcheck XML (`--xml=yes --xml-file=-`).
 - Valgrind massif XML.
@@ -261,41 +267,42 @@ a debugger view.
 a *future* capability: source-resident markers, per-region measurement,
 cross-run comparison, and integration with the AI panel. That design
 depends on the marker infrastructure. The first profiler slice does
-not. Markers are Phase 3.5, not Phase 2.7.
+not. Profiler tools and markers share the proposed Phase 3.5 track, but are
+separate delivery stages. External-tool profiling does not require markers.
 
 ---
 
 ## Delivery order
 
-**2.7.1 — Memcheck on C++.**
+**Profiling stage 1 — Memcheck on C++.**
 
 Smallest useful slice. Valgrind memcheck on the current C++ build,
 leaks parsed into Problems, clickable to source. One parser, one tool,
 one language. Two files new (`commands/profile.rs`,
 `components/panels/ProfilerPanel.tsx`), a few touched.
 
-**2.7.2 — Massif on C++.**
+**Profiling stage 2 — Massif on C++.**
 
 Same tool family, second parser. Heap profile as a summary (peak bytes,
 top allocation sites). Same panel.
 
-**2.7.3 — Perf on Rust and C++.**
+**Profiling stage 3 — Perf on Rust and C++.**
 
 Time sampling. `perf record` under the runner, `perf script` parsed
 into top symbols. Third parser, second language.
 
-**2.7.4 — Aggregation across the linked group.**
+**Profiling stage 4 — Aggregation across the linked group.**
 
 The moat. Each participant's profile is parsed and labeled with its
 window identity. The Profiler panel gains a group view. Gold Profile
 starts every participant, Gold Stop ends them.
 
-**2.7.5 — `dotnet-trace` for C#.**
+**Profiling stage 5 — `dotnet-trace` for C#.**
 
 First managed profiler. Allocations, contention, samples. Same panel,
 same aggregation.
 
-**2.7.6 — `py-spy` for Python.**
+**Profiling stage 6 — `py-spy` for Python.**
 
 Time sampling for the interpreter. Same shape as `perf` for the
 interpreter.
@@ -331,7 +338,7 @@ Debug sidebar is a live session view. Profiles are records. They live
 in Problems and Profiler. The Debug sidebar is for the currently
 paused session.
 
-**Can a profile entry be attached to a breakpoint?** Not in Phase 2.7.
+**Can a profile entry be attached to a breakpoint?** Not in the initial external-tool profiling slice.
 That is the marker system's territory (`design-profile-markers.md`,
 Rung 4). Reserved, not built.
 
@@ -345,5 +352,5 @@ Everything above is a consequence of that sentence.
 
 ---
 
-*Last updated: Phase 2.7 planning. Author: skira24.*
-*This document is a proposal. It governs how Craidd measures code.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a philosophy.*

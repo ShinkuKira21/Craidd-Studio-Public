@@ -33,3 +33,5 @@ workspaces/rust-debug-smoke/target/
 !workspaces/ldi-gui-lab/
 !workspaces/ldi-interop-playground/
 !workspaces/ldi-rust-native-playground/
+!workspaces/mt-debugging-lab/
+!workspaces/mt-lab/

@@ -1,5 +1,9 @@
 # Handoff: State of Craidd-Studio
 
+> **Historical handoff.** Phase labels and “next session” instructions below
+> describe the original checkpoint. Use the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md)
+> for current ordering. Editorial review: Codex, 7 October 2026.
+
 **Date:** End of Phase 2.4 (Containment Foundation).
 **Previous handoff:** `docs/handoffs/handoff-phase-2.3.3.md` (Configurations dialog,
 UI complete).
@@ -213,7 +217,7 @@ DAP is a *phase*, not a script. Comes after C# and C++ builds work.
 > manually so I can observe the IDE's behaviour.
 >
 > Reference documents: `docs/craidd-cln-model.md`,
-> `docs/roadmaps/phase-3-rust-build-debug-toolchains.md`,
+> `docs/roadmaps/archive/phase-3-rust-build-debug-toolchains.md`,
 > `docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md`, `docs/working-protocol.md`,
 > `docs/handoffs/handoff-phase-2.3.3.md`.
 
@@ -237,4 +241,5 @@ and `workspaces/tauri-app/src-tauri/target/`.]
 
 ---
 
-*Last updated: end of Phase 2.4. Author: skira24, with assistance.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

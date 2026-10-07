@@ -1,12 +1,19 @@
 # Philosophy: Tool Discovery
 
-**Status:** Design. Not yet implemented.
+**Roadmap track:** Phase 2 discovery foundation; governs Phase 3 and later tools. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Governing philosophy with tool discovery and preferences in
+source. The proposal language below preserves the original design; it is not
+a claim that every later tool or workflow has been implemented.
+
 **Applies to:** Phase 2.2b onward (discovery), Phase 3+ (build, run, debug).
+
 **Governs:** How Craidd relates to the tools on the user's machine.
 
 ---
 
 ## The thesis
+
 
 **Craidd owns no tools.**
 
@@ -706,5 +713,5 @@ Everything in this document is a consequence of that rule.
 
 ---
 
-*Last updated: Phase 2.2. Author: skira24.*
-*This document is a philosophy. It governs the phases that follow it.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

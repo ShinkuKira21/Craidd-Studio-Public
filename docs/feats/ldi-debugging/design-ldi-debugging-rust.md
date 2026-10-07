@@ -1,14 +1,19 @@
 # Design: LDI for Rust — linked-window debugging across native boundaries
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Initial Rust→C++ live-native pairing implemented 3 October 2026;
 build, regression tests and real LLDB qualification pass. Native desktop
 reveal/focus still needs manual acceptance. Shared-consumer arbitration,
 callbacks and richer Rust debugging remain proposals.
+
 **Applies to:** Phase 3.x onward (after the C# LDI path is manually accepted).
+
 **Companion:** [LDI debugging](design-ldi-debugging.md),
 [Linked solution windows](../linked-windows/design-linked-solution-windows.md),
 [Mixed debugging](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md),
 [Shared native consumers](design-native-shared-consumers.md).
+
 **Governs:** Rust↔C++ live debugging, per-window Power Config ownership,
 and where Native Breakpoint pairing selects a live or reproduction provider.
 The acceptance fixture covers Rust calling C++; a C++ host calling Rust
@@ -620,5 +625,5 @@ Primary references: [Rust external blocks](https://doc.rust-lang.org/reference/i
 
 ---
 
-*Last updated: 3 October 2026. Author: skira24, with assistance.*
-*This document is a design. It governs how Craidd debugs Rust FFI.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

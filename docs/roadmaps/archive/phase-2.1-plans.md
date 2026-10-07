@@ -1,5 +1,10 @@
 # Setup: Phase 2.1 — New File, New Folder
 
+> **Archived on 7 October 2026.** This is a historical snapshot, including its
+> original phase numbers and status claims. Use the [current roadmap](../Roadmap-v0.0.4A.md)
+> and [current codebase map](../Current-place.md) for present direction and source.
+> Archiving and navigation maintenance: Codex. Original attribution is retained.
+
 **Status:** Design locked. Ready to implement.
 
 **Date:** Day 2 (morning session).
@@ -127,4 +132,5 @@ Both return `Ok` on success, `Err(String)` on failure with a clear message.
 
 ---
 
-*Last updated: Day 2 morning. Design locked. Ready to build.*
+*Last updated: Day 2 morning. Author: ShinkuKira21.*
+*This document is a record.*

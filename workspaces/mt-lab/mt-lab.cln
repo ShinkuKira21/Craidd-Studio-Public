@@ -1,0 +1,305 @@
+[solution]
+name = "Multi-Thread Lab"
+version = "1.0"
+projects = ["CSharpConsole/CSharpConsole.craidd", "RustConsole/RustConsole.craidd", "CppConsole/CppConsole.craidd", "CSharpGui/CSharpGui.craidd", "NativeLdi/NativeLdi.craidd", "RustGui/Frontend.craidd", "RustGui/src-tauri/RustGui.craidd", "CppGui/CppGui.craidd"]
+default_project = "CSharpConsole/CSharpConsole.craidd"
+default_config = "C# Console · Basic"
+
+[[config]]
+name = "C# Console · Basic"
+kind = "run"
+target = "CSharpConsole/CSharpConsole.craidd"
+[config.slots]
+build = "C# Console · Build"
+run = "C# Console · Run Basic"
+debug = "C# Console · Debug Basic"
+
+[[config]]
+name = "Rust Console · Basic"
+kind = "run"
+target = "RustConsole/RustConsole.craidd"
+[config.slots]
+build = "Rust Console · Build"
+run = "Rust Console · Run Basic"
+debug = "Rust Console · Debug Basic"
+
+[[config]]
+name = "C++ Console · Basic"
+kind = "run"
+target = "CppConsole/CppConsole.craidd"
+[config.slots]
+build = "C++ Console · Build"
+run = "C++ Console · Run Basic"
+debug = "C++ Console · Debug Basic"
+
+[[config]]
+name = "C# GUI · MT"
+kind = "run"
+target = "CSharpGui/CSharpGui.craidd"
+[config.slots]
+build = "C# GUI · Build"
+run = "C# GUI · Run"
+debug = "C# GUI · Debug"
+
+[[config]]
+name = "C# GUI · MT + LDI"
+kind = "run"
+target = "CSharpGui/CSharpGui.craidd"
+[config.slots]
+build = "Prepare C# LDI"
+run = "C# GUI · LDI Run"
+debug = "C# GUI · LDI Debug"
+
+[[config]]
+name = "Native · LDI"
+kind = "build"
+target = "NativeLdi/NativeLdi.craidd"
+[config.slots]
+build = "Native · Build"
+
+[[config]]
+name = "Rust GUI · MT"
+kind = "run"
+target = "RustGui/src-tauri/RustGui.craidd"
+[config.slots]
+build = "Rust GUI · Build"
+run = "Rust GUI · Run"
+debug = "Rust GUI · Debug"
+
+[[config]]
+name = "C++ GUI · MT"
+kind = "run"
+target = "CppGui/CppGui.craidd"
+[config.slots]
+build = "C++ GUI · Build"
+run = "C++ GUI · Run"
+debug = "C++ GUI · Debug"
+
+[[config]]
+name = "C# Console · Build"
+kind = "build"
+target = "CSharpConsole/CSharpConsole.craidd"
+method = "dotnet"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "C# Console · Run Basic"
+kind = "run"
+target = "CSharpConsole/CSharpConsole.craidd"
+method = "dotnet"
+command = "dotnet run --project MtConsole.csproj --no-launch-profile -- basic"
+
+[[config]]
+name = "C# Console · Debug Basic"
+kind = "debug"
+target = "CSharpConsole/CSharpConsole.craidd"
+method = "dotnet"
+command = "dotnet run --project MtConsole.csproj --no-launch-profile -- basic"
+
+[[config]]
+name = "C# Console · Debug Burst"
+kind = "debug"
+target = "CSharpConsole/CSharpConsole.craidd"
+method = "dotnet"
+command = "dotnet run --project MtConsole.csproj --no-launch-profile -- burst"
+
+[[config]]
+name = "C# Console · Debug Handoff"
+kind = "debug"
+target = "CSharpConsole/CSharpConsole.craidd"
+method = "dotnet"
+command = "dotnet run --project MtConsole.csproj --no-launch-profile -- handoff"
+
+[[config]]
+name = "Rust Console · Build"
+kind = "build"
+target = "RustConsole/RustConsole.craidd"
+method = "cargo"
+command = "cargo build --offline"
+
+[[config]]
+name = "Rust Console · Run Basic"
+kind = "run"
+target = "RustConsole/RustConsole.craidd"
+method = "cargo"
+command = "cargo run --offline -- basic"
+
+[[config]]
+name = "Rust Console · Debug Basic"
+kind = "debug"
+target = "RustConsole/RustConsole.craidd"
+method = "cargo"
+command = "cargo run --offline -- basic"
+
+[[config]]
+name = "Rust Console · Debug Burst"
+kind = "debug"
+target = "RustConsole/RustConsole.craidd"
+method = "cargo"
+command = "cargo run --offline -- burst"
+
+[[config]]
+name = "Rust Console · Debug Handoff"
+kind = "debug"
+target = "RustConsole/RustConsole.craidd"
+method = "cargo"
+command = "cargo run --offline -- handoff"
+
+[[config]]
+name = "C++ Console · Build"
+kind = "build"
+target = "CppConsole/CppConsole.craidd"
+method = "cmake"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "mt_cpp_console"]
+
+[[config]]
+name = "C++ Console · Run Basic"
+kind = "run"
+target = "CppConsole/CppConsole.craidd"
+method = "shell"
+command = "./build/mt_cpp_console basic"
+[config.order]
+before = "C++ Console · Build"
+
+[[config]]
+name = "C++ Console · Debug Basic"
+kind = "debug"
+target = "CppConsole/CppConsole.craidd"
+method = "cmake"
+command = "cmake --build build --target mt_cpp_console -- basic"
+
+[[config]]
+name = "C++ Console · Debug Burst"
+kind = "debug"
+target = "CppConsole/CppConsole.craidd"
+method = "cmake"
+command = "cmake --build build --target mt_cpp_console -- burst"
+
+[[config]]
+name = "C++ Console · Debug Handoff"
+kind = "debug"
+target = "CppConsole/CppConsole.craidd"
+method = "cmake"
+command = "cmake --build build --target mt_cpp_console -- handoff"
+
+[[config]]
+name = "C# GUI · Build"
+kind = "build"
+target = "CSharpGui/CSharpGui.craidd"
+method = "dotnet"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "C# GUI · Run"
+kind = "run"
+target = "CSharpGui/CSharpGui.craidd"
+method = "dotnet"
+command = "dotnet run --project MtGui.csproj --no-launch-profile"
+
+[[config]]
+name = "C# GUI · Debug"
+kind = "debug"
+target = "CSharpGui/CSharpGui.craidd"
+method = "dotnet"
+command = "dotnet run --project MtGui.csproj --no-launch-profile"
+
+[[config]]
+name = "Native · Build"
+kind = "build"
+target = "NativeLdi/NativeLdi.craidd"
+method = "cmake"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "mt_native"]
+
+[[config]]
+name = "Prepare C# LDI"
+kind = "build"
+target = "CSharpGui/CSharpGui.craidd"
+method = "plan"
+[[config.order.steps]]
+kind = "build"
+configuration = "C# GUI · Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native · Build"
+[[config.order.steps]]
+kind = "install"
+configuration = "Native · Build"
+destination = "C# GUI · Build"
+
+[[config]]
+name = "C# GUI · LDI Run"
+kind = "run"
+target = "CSharpGui/CSharpGui.craidd"
+method = "dotnet"
+command = "dotnet run --project MtGui.csproj --no-launch-profile"
+[config.order]
+before = "Prepare C# LDI"
+
+[[config]]
+name = "C# GUI · LDI Debug"
+kind = "debug"
+target = "CSharpGui/CSharpGui.craidd"
+method = "dotnet"
+command = "dotnet run --project MtGui.csproj --no-launch-profile"
+[config.order]
+before = "Prepare C# LDI"
+
+[[config]]
+name = "Rust GUI · Build"
+kind = "build"
+target = "RustGui/src-tauri/RustGui.craidd"
+method = "cargo"
+command = "cargo build --offline"
+
+[[config]]
+name = "Rust GUI · Run"
+kind = "run"
+target = "RustGui/src-tauri/RustGui.craidd"
+method = "npm"
+cwd = "RustGui"
+command = "npm run tauri dev"
+
+[[config]]
+name = "Rust GUI · Debug"
+kind = "debug"
+target = "RustGui/src-tauri/RustGui.craidd"
+method = "cargo"
+command = "cargo build --offline"
+
+[[config]]
+name = "C++ GUI · Build"
+kind = "build"
+target = "CppGui/CppGui.craidd"
+method = "cmake"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug", "--target", "mt_cpp_gui"]
+
+[[config]]
+name = "C++ GUI · Run"
+kind = "run"
+target = "CppGui/CppGui.craidd"
+method = "shell"
+command = "./build/mt_cpp_gui"
+[config.order]
+before = "C++ GUI · Build"
+
+[[config]]
+name = "C++ GUI · Debug"
+kind = "debug"
+target = "CppGui/CppGui.craidd"
+method = "cmake"
+command = "cmake --build build --target mt_cpp_gui"

@@ -1,5 +1,7 @@
 # Git workspaces: worktree architecture and project history
 
+**Roadmap track:** Later, unassigned Git workspaces proposal; local stages 0–8 are not global phases. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
+
 | | |
 |---|---|
 | **Author** | OpenAI GPT-5.6 Sol |
@@ -1061,9 +1063,9 @@ Names are provisional.
 
 ---
 
-## 28. Suggested implementation phases
+## 28. Suggested implementation stages
 
-### Phase 0 — Git/worktree discovery
+### Git workspace stage 0 — Git/worktree discovery
 
 Implement read-only understanding of:
 
@@ -1076,7 +1078,7 @@ Implement read-only understanding of:
 
 No worktree mutation.
 
-### Phase 1 — Workspace model
+### Git workspace stage 1 — Workspace model
 
 Introduce Craidd's internal Workspace abstraction.
 
@@ -1094,7 +1096,7 @@ Project == one Git status
 
 Allow multiple windows to identify which workspace they belong to.
 
-### Phase 2 — Managed worktrees
+### Git workspace stage 2 — Managed worktrees
 
 Implement:
 
@@ -1111,7 +1113,7 @@ Add:
 Open Branch in New Workspace
 +++
 
-### Phase 3 — File History
+### Git workspace stage 3 — File History
 
 Implement:
 
@@ -1122,7 +1124,7 @@ Implement:
 
 No branch switching should occur.
 
-### Phase 4 — Diff and restore
+### Git workspace stage 4 — Diff and restore
 
 Implement the two-panel historical/current comparison.
 
@@ -1133,7 +1135,7 @@ Support:
 - historical copy;
 - editor undo integration.
 
-### Phase 5 — Workspace persistence
+### Git workspace stage 5 — Workspace persistence
 
 Persist managed workspace metadata.
 
@@ -1141,13 +1143,13 @@ Restore/discover workspaces after Craidd restart.
 
 Expose orphaned/dirty workspaces.
 
-### Phase 6 — Editor recovery
+### Git workspace stage 6 — Editor recovery
 
 Implement recovery journalling for unsaved in-memory buffers.
 
 Keep this independent from Git commits/worktrees.
 
-### Phase 7 — Agent workspaces
+### Git workspace stage 7 — Agent workspaces
 
 Expose workspace creation/lifecycle to Craidd agents.
 
@@ -1155,7 +1157,7 @@ Each mutation-capable parallel agent may receive an isolated workspace.
 
 Add review/integration workflow.
 
-### Phase 8 — Remote workspaces
+### Git workspace stage 8 — Remote workspaces
 
 Extend the workspace ownership model to remote sessions.
 
@@ -1390,4 +1392,5 @@ without forcing those actors to share one mutable checkout.**
 
 ---
 
-*Last updated: Phase {N} design. Author: skira24.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

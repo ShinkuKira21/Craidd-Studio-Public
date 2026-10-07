@@ -1,0 +1,4 @@
+[project]
+name = "Rust MT GUI Frontend"
+language = "typescript"
+root = "."

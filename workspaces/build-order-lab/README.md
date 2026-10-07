@@ -19,6 +19,16 @@ Restart Craidd with this branch's backend, then open `build-order-lab.cln`.
 4. The desktop window should show **42**. In debug mode, set a C# breakpoint
    in `Api/Program.cs`, then use the window's **Try again** button.
 
+In **API · Local**, the top Threads dropdown keeps the inspection-focus thread
+visible and folds other threads with generic adapter names into a counted
+section. Expand it to inspect every reported thread. These process threads are
+not request IDs; inspect the stopped stack to find `/sum` code. A long debugger
+pause can time out the Tauri client's pending HTTP request.
+The API's Main Thread normally waits inside `app.Run()`. When its current
+instruction has no source line, Craidd leaves it inspectable and keeps Continue
+available, while Step is disabled with an explanation. This is a normal
+single-session debugger stop, not an LDI hold.
+
 For build-only verification, select **API · Local** and click **Build**.
 The Output pane shows each build/install step and its result. A failed step
 prevents subsequent steps; Stop cancels preparation and its subprocesses.

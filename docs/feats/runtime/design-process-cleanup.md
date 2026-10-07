@@ -1,5 +1,7 @@
 # IDE-owned process cleanup
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 Run, Build, Debug and LDI launches are owned by the IDE, including their build
 preparation commands and any frontend dev server the IDE starts. They must not
 remain alive when the application exits, even if A is held and B is paused.
@@ -46,3 +48,8 @@ containing spaces/parentheses.
 The full live IDE test remains: hold A at Blue, pause B inside native code, then
 exit the application (and separately interrupt `npm run tauri dev`). Confirm
 the owned API/debugger/driver PIDs exit and the API port can be reused.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

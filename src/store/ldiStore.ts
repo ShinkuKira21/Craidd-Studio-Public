@@ -46,7 +46,7 @@ export interface LdiSession {
   nativeFile: string; nativeLine: number;
   mode: "scalar" | "typed-interposer"; locals: [string, string];
   values: [number, number] | null; token: string; held: boolean;
-  phase: string; error: string | null;
+  phase: string; error: string | null; originThreadId: number; originThreadName: string | null;
 }
 export const useLdi = create<{ blues: LdiBlue[]; session: LdiSession | null; nativeSourceVersion: number }>(() => ({ blues: [], session: null, nativeSourceVersion: 0 }));
 let refreshSequence = 0;
@@ -73,7 +73,7 @@ export async function setLdiBlue(file: string, line: number, partnerLabel: strin
   void refreshLdiBlues().catch((error) => console.error("[LDI]", error));
   if (blue.mode === "live-native") {
     if (blue.pendingRestart) notifyRustRestart();
-  } else if (blue.pendingRestart || useLinkedWindows.getState().activeAction === "debug") notifyLdiRestart();
+  } else if (blue.pendingRestart) notifyLdiRestart();
 }
 export async function listLdiCallSites(file: string, partnerLabels: string[]): Promise<LdiCallSite[]> {
   const { invoke } = await import("@tauri-apps/api/core");

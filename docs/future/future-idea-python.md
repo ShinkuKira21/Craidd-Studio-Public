@@ -1,15 +1,22 @@
 # FUTURE_IDEA: Python and ML tooling in Craidd-Studio
 
+**Roadmap track:** Later Python/ML direction, unassigned. See the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Future direction. Not a phase. Not a plan. A record of
 *why* Python matters to this project beyond "another language",
 written so that the reasoning is available when the time comes.
 
-**Gate:** Nothing in this document is actionable until Phases 1–5 are
-complete. Specifically:
+**Gate:** This Python/ML expansion is later, unassigned work. Its
+prerequisites are outcome-based rather than the old “Phases 1–5” shorthand:
 
-- Rust, TypeScript, C++ — editing, LSP, build, debug
-- C#, Python — polyglot proof (managed + native)
-- Open source release and real-world usage
+- Rust, TypeScript, C++ and C# — accepted editing, LSP, build and debug paths
+- Accepted managed/native and native/native workflows
+- Linux open-source release and real-world usage
+- Python language/runtime support before the ML views described here
+
+The original language prerequisites remain. Python/native proof belongs to
+the later Python work and must precede the ML-specific views; no new delivery
+phase is assigned here.
 
 Only then does this file move from "future" to "considered".
 
@@ -225,5 +232,5 @@ Then, and only then, the studio.
 
 ---
 
-*Last updated: Phase 2.0. Author: skira24.*
-*This file is a destination, not a task.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

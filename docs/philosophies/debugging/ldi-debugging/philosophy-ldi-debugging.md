@@ -1,7 +1,13 @@
-# Design: Live Driver Injection
+# Philosophy: Live Driver Injection
 
-**Status:** Design. Recorded 29 September 2026. No implementation.
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Original design reasoning, recorded 29 September 2026. Managed
+LDI now has implemented slices; the original interposition proposal below is
+not the current delivery status. See the operational design for supported paths.
+
 **Applies to:** Phase 3.x onward (after DAP is stable for Rust and C#).
+
 **Governs:** How Craidd lets a user step through native C/C++ code that
 is only reachable from a managed process, on Linux, without mixed-mode
 debugging.
@@ -10,11 +16,12 @@ debugging.
 approach. Use [the LDI design](../../../feats/ldi-debugging/design-ldi-debugging.md) and
 [Gate 0 plan](../../../feats/ldi-debugging/design-ldi-gate-0.md) for the revised scalar workflow: Gold Linked
 Debug activates an enabled blue **Native Debugging Breakpoint** at the managed
-call site paired with a compatible native red marker. A stays at that managed
+call site paired with a resolved native export. A native red marker is
+optional; without one, B receives a private entry stop. A stays at that managed
 stop while B reproduces readable scalar arguments, then resumes only after B
 releases it. Blue belongs at the call, not the DllImport declaration. Native
-interposition is later scope; the current design also qualifies the Linux
-mixed-debugging claims made below.
+interposition has a bounded typed experimental path; the current design
+also qualifies the Linux mixed-debugging claims made below.
 
 ---
 
@@ -474,39 +481,39 @@ that produced it. Two different surfaces for two different questions:
 end-to-end for a manually-created driver. This is the same path Live
 Driver Injection uses; ship it first.
 
-**Phase 1 — the interposer, standalone.** A minimal `LD_PRELOAD`
+**LDI stage 1 — the interposer, standalone.** A minimal `LD_PRELOAD`
 interposer that intercepts a named symbol, captures scalar arguments
 and a single `char*`, writes a line to stdout, and calls through.
 Test it against a real C# → C++ `DllImport` call on Linux. Confirm it
 fires when expected and the C# app behaves normally. This is the whole
 risk of the feature and it is ten lines of C.
 
-**Phase 2 — the plumbing.** A socket from interposer to IDE. A
+**LDI stage 2 — the plumbing.** A socket from interposer to IDE. A
 configuration format for "which symbol to interpose, for how long." A
 store in the IDE for captured events. No UI yet; verify the events
 arrive correctly with real C# apps.
 
-**Phase 3 — the trigger.** Blue breakpoints in `netcoredbg`. The
+**LDI stage 3 — the trigger.** Blue breakpoints in `netcoredbg`. The
 follow-up action at a blue breakpoint: arm the interposer, continue
 C#, wait for the capture. Wire the capture into the existing driver
 generation.
 
-**Phase 4 — the queue.** Serialize captures. Label them by thread.
+**LDI stage 4 — the queue.** Serialize captures. Label them by thread.
 Surface the queue in the tray. Wire "next capture" and "dismiss" into
 the debugger UX.
 
-**Phase 5 — pointer fidelity.** Struct arguments, byte buffers,
+**LDI stage 5 — pointer fidelity.** Struct arguments, byte buffers,
 disclosed limitations for pointer graphs. This is the phase where the
 feature goes from "useful for scalar calls" to "useful for most real
 calls."
 
-**Phase 6 — the tracing feature.** A separate mode where the
+**LDI stage 6 — the tracing feature.** A separate mode where the
 interposer logs without launching drivers. This is a distinct feature
 and lands when it is separately justified.
 
 **Parallel track — the thread dropdown.** Can ship as soon as the
 first debug adapter reports multiple threads. Independent of LDI.
-Recommended to land before Phase 4 of LDI, so that LDI's queue labels
+Recommended to land before LDI stage 4, so that LDI's queue labels
 use the same thread vocabulary the dropdown has already established.
 
 ---
@@ -560,6 +567,5 @@ do over time." They can run simultaneously on different processes.
 
 ---
 
-*Last updated: Phase 3.x planning. Author: skira24, with assistance.*
-*This document is a design. It governs how Craidd reproduces managed
-calls for native debugging.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a philosophy.*

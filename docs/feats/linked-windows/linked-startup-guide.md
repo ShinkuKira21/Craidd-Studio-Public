@@ -1,5 +1,7 @@
 # Linked startup order
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 Linked Run and Debug can start an API, wait until it is ready, and only then
 start its clients. Window numbers do not determine launch order: each selected
 configuration owns its named startup prerequisites and optional readiness check.
@@ -75,3 +77,8 @@ client hint files over 256 KB and symlinked hint files are skipped.
 A new `.cln` can therefore receive suggestions when matching evidence exists,
 but not every solution will. Without a suggestion, use the manual fields to
 declare the order and readiness endpoint yourself.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a guide.*
