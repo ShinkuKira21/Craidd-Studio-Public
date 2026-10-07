@@ -35,3 +35,7 @@ workspaces/rust-debug-smoke/target/
 !workspaces/ldi-rust-native-playground/
 !workspaces/mt-debugging-lab/
 !workspaces/mt-lab/
+
+# Setup script artifacts (not part of the product)
+.setup-applied/
+.setup-checkpoints/

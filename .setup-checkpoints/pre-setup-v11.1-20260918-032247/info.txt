@@ -1,3 +1,0 @@
-script: setup-v1.sh
-date:   2026-09-18T03:22:47+01:00
-pwd:    /mnt/ext_drives/Development/Development/Desktop Development/Craidd-Studio
