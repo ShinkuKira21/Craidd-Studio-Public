@@ -2,15 +2,17 @@
 
 **Roadmap track:** Phase 2 identity/discovery foundation; retained in Phase 3.x. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Foundational design. Current source includes project identity,
-discovery and project dialogs. Earlier implementation notes below describe the
-original Phase 2 baseline; review the current codebase map before using them
-as a change list.
+**Status:** Historical Phase 2 design. Its five-field marker proposal,
+including `framework` and `kind`, is superseded as a target schema by
+[the Craidd model](../../craidd-cln-model.md). The current implementation
+still reads and writes optional `kind`, but does not write `framework`.
+The sections below record the original proposal, not a current schema
+or implementation checklist.
 
 **Applies to:** Phase 2.1.4 (schema), Phase 2.5 (detection + dialog).
 
-**Governs:** What a `.craidd` file is, what it declares, and where every
-other kind of fact lives.
+**Records:** The original Phase 2 project identity proposal. Use the
+Craidd model above for the current design boundary.
 
 ---
 
@@ -373,5 +375,5 @@ in Phase 2.5, after the save system (Phase 2.2) and file operations
 
 ---
 
-*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*Last updated: Phase 3.x, 7 October 2026. Author(s): ShinkuKira21.*
 *This document is a design.*

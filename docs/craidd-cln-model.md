@@ -2,11 +2,14 @@
 
 **Roadmap track:** Phase 2 foundation, governing Phase 3 and later work. See the [current roadmap](roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Foundational contract locked in Phase 2.1, retained during the
-Phase 3.x documentation review. This document is the reference for
-what each file is, what it is not, and where every kind of information
-lives. It exists so that future sessions don't relitigate the boundary
-between declaration, composition, and ecosystem truth.
+**Status:** Target design contract locked in Phase 2.1, retained during the
+Phase 3.x documentation review. It defines where information belongs,
+but its schema migration is not fully implemented. Current code still
+reads and writes optional `[project] kind` in `.craidd`, and writes a
+`[solution].projects` path array instead of the `[[project]] role`
+tables shown below. It also retains `[[build]]` entries when present.
+It does not write a `framework` field. Do not treat the target examples
+as the current on-disk format.
 
 ---
 
@@ -39,7 +42,7 @@ field in a schema.
 
 ### 2. `.craidd` — folder classification cache
 
-Six lines is the maximum:
+A marker stays small. This example includes an optional config facet:
 
 +++
 [project]
@@ -339,7 +342,7 @@ action = "run"
 
 ### `.cln` `[[build]]` (Phase 2.0–2.1)
 
-The current `.cln` format has:
+The current reader and writer still support:
 
 +++
 [[build]]
@@ -349,7 +352,8 @@ command = "cargo build"
 cwd = "."
 +++
 
-This is replaced by `[[config]]` / `[[config.step]]`. Reasons:
+The target design replaces this with `[[config]]` / `[[config.step]]`.
+Reasons:
 
 - `[[build]]` only models build, not run or debug. Three toolbar
   buttons deserve three configuration kinds, not one.
@@ -357,20 +361,21 @@ This is replaced by `[[config]]` / `[[config.step]]`. Reasons:
   says Cargo. It never needed to be repeated.
 - There was no way to compose multiple projects in one action.
 
-Old `.cln` files with `[[build]]` are **parsed as legacy** — the
-parser reads them, converts them into a single implicit `[[config]]`
-with `kind = "build"`, and never writes `[[build]]` again.
+Current code parses `[[build]]` into a separate build list and writes it
+back when that list is nonempty. Converting existing entries to the
+target configuration schema remains future migration work.
 
 ### `.craidd` `[project] kind` (Phase 2.0–2.1)
 
-Currently parsed but unused. In the target model:
+Current code reads `kind`, writes it for non-application projects, and
+uses it for behavior such as library selection. In the target model:
 
 - Removed from `.craidd`.
 - Renamed `role`, moved to `.cln`'s `[[project]]` tables.
-- Old `.craidd` files with `kind` are **parsed but ignored** —
-  `.cln`'s `role` wins. If absent in `.cln`, default `application`.
+- Old `.craidd` files with `kind` need backward-compatible handling;
+  the solution's role will take precedence after the migration.
 
-No code branches on it today, so this migration is free.
+This is a future migration, not a free cleanup of unused data.
 
 ---
 
@@ -479,7 +484,7 @@ the IDE can resolve, instead of silent corruption the user discovers later.
 Three layers. Three kinds of truth. No duplication.
 
 - **Manifests** — what an ecosystem says about itself.
-- **`.craidd`** — what a folder is, intrinsically. Six lines.
+- **`.craidd`** — what a folder is, intrinsically, with optional facets.
 - **`.cln`** — how projects relate. Composition, ordering, roles.
 
 When in doubt, ask: *Is this true of the folder, or true of the
@@ -488,5 +493,5 @@ don't store it.
 
 ---
 
-*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*Last updated: Phase 3.x, 7 October 2026. Author(s): ShinkuKira21.*
 *This document is a record.*

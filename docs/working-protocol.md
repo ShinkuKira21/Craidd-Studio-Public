@@ -166,9 +166,12 @@ The user declares, Craidd obeys. Automation is a first guess,
 correctable by the user. The correction becomes the default.
 Eventually the dialog becomes optional.
 
-.craidd is a marker. Five lines. Language, framework, kind,
-root, name. Nothing more. Toolchain in preferences, orchestration
-in .cln.
+`.craidd` is a small folder marker for name, language and root,
+with optional config and membership facets. Framework facts come
+from ecosystem manifests. The current implementation can still
+store `kind` in a marker; the target model places solution roles
+in `.cln`. See [the project model](craidd-cln-model.md) for the
+design boundary and the current implementation gap.
 
 No custom languages, no custom frameworks, no user-authored
 detection rules — until Phase 5+, if ever. See
@@ -244,5 +247,5 @@ them build it, not to impress them.
 
 ---
 
-*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*Last updated: Phase 3.x, 7 October 2026. Author(s): ShinkuKira21.*
 *This document is a record.*
