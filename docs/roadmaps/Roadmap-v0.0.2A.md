@@ -83,7 +83,7 @@ Craidd does not ship a compiler, a runtime, a package manager, a
 language server, a debug adapter, an AI runtime, or a Python
 interpreter. Tools are discovered on the user's machine, recorded, and
 delegated to. When a tool is missing, Craidd says so and gets out of
-the way. See `docs/philosophies/philosophy-tool-discovery.md` for the full
+the way. See `docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md` for the full
 argument. The rule applies to every phase, including the AI pipeline
 in Phase 4.
 

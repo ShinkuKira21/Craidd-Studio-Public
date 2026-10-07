@@ -6,8 +6,8 @@ flow still needs manual acceptance. This is not a claim that all gates below pas
 **Recorded:** 29 September 2026.
 **Starting point:** `master` at `7594cc6`.
 
-This develops [the LDI philosophy](../../philosophies/philosophy-ldi-debugging.md) and
-[the mixed-debugging philosophy](../../philosophies/philosophy-mixed-debugging.md).
+This develops [the LDI philosophy](../../philosophies/debugging/ldi-debugging/philosophy-ldi-debugging.md) and
+[the mixed-debugging philosophy](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md).
 
 ## The general shape
 

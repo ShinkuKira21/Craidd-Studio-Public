@@ -148,7 +148,7 @@ python: profiler  -> py-spy          (time, live stack sampling)
 
 Discovered once per language, recorded in
 `~/.craidd-studio/user_preferences.toml`, never installed. Same rules
-as `docs/philosophies/philosophy-tool-discovery.md`. Same banners. Same "Not
+as `docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md`. Same banners. Same "Not
 found" state.
 
 ### Invocation

@@ -138,7 +138,7 @@ No hardcoded framework knowledge at runtime. Detection reads
 declarations, it does not infer from extensions.
 
 No bundling of tools. Craidd owns no tools. It discovers,
-records, and delegates. See docs/philosophies/philosophy-tool-discovery.md.
+records, and delegates. See docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md.
 
 No silent mutation. Every file change by Craidd is visible to
 the user. Every plugin action appears in the Output panel.

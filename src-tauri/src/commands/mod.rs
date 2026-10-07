@@ -1,4 +1,8 @@
 pub mod fs;
+pub(crate) const IGNORE_DIRS: &[&str] = &[
+    ".git", "node_modules", "target", "dist", "build", "bin", "obj",
+    "__pycache__", "venv", "coverage", "out", "Pods", "vendor",
+];
 pub mod solution;
 pub mod search;
 pub mod toolchain;

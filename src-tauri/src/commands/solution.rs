@@ -3,11 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::types::{AncestorInfo, BuildEntry, ConfigEntry, ConfigSlots, CraiddProject, CraiddSolution, LinkedLaunch, SolutionWithPath};
-
-const IGNORE_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", "dist", "build", "bin", "obj",
-    "__pycache__", "venv", "coverage", "out", "Pods", "vendor",
-];
+use super::IGNORE_DIRS;
 
 // ── HELPERS ───────────────────────────────────────────────
 

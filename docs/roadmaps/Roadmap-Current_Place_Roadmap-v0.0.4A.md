@@ -129,7 +129,7 @@ example) and per-project defaults. Everything it produces is tagged
 `dotnet`, `node`, `pnpm`, `g++`, `clang++`, `cmake`, `python3`, and
 others). Writes results to `~/.craidd-studio/user_preferences.toml`.
 Never installs anything. Ever. The full rule is in
-`docs/philosophies/philosophy-tool-discovery.md`.
+`docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md`.
 
 **`commands/build.rs`** — the Cargo-specific build runner. Parses
 Cargo's JSON messages for compiler diagnostics and artifact paths.
@@ -373,7 +373,7 @@ language list is fixed and grows only when LSP, build, and debug
 support are real.
 
 **If you want to add tool discovery for a new toolchain:** read
-`docs/philosophies/philosophy-tool-discovery.md`, then `commands/toolchain.rs`.
+`docs/philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md`, then `commands/toolchain.rs`.
 
 **If you want to add a UI surface:** read
 `docs/feats/linked-windows/design-window-model.md` first. The window owns one solution and
