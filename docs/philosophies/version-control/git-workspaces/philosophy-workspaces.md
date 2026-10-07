@@ -410,7 +410,8 @@ This gives Craidd a simple principle to carry into future features:
 > **History records what happened.**
 >
 > **Workspaces represent what is happening.**
-> Integration decides what becomes shared.**
+>
+> **Integration decides what becomes shared.**
 
 ---
 
