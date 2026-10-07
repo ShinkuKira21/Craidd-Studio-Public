@@ -38,7 +38,7 @@ pub struct RunnerManager(pub Mutex<HashMap<String, ActiveRun>>);
 
 pub struct ActiveRun {
     id: u64,
-    pgid: i32,
+    pgid: Option<i32>,
     cancelled: Arc<AtomicBool>,
     term_sent: Arc<AtomicI32>,
 }
@@ -52,14 +52,16 @@ impl Drop for RunnerManager {
         // On IDE close, terminate any active run's process group.
         // SIGTERM, short grace, then SIGKILL.
         if let Ok(active) = self.0.lock() {
-            for run in active.values() {
-                unsafe { libc::killpg(run.pgid, libc::SIGTERM); }
+            let groups: Vec<i32> = active.values().filter_map(|run| run.pgid).collect();
+            drop(active);
+            for pgid in &groups {
+                unsafe { libc::killpg(*pgid, libc::SIGTERM); }
             }
-            if !active.is_empty() {
+            if !groups.is_empty() {
                 thread::sleep(Duration::from_millis(SIGTERM_GRACE_MS));
             }
-            for run in active.values() {
-                unsafe { libc::killpg(run.pgid, libc::SIGKILL); }
+            for pgid in groups {
+                unsafe { libc::killpg(pgid, libc::SIGKILL); }
             }
         }
     }
@@ -91,12 +93,10 @@ struct RunnerEvent {
 }
 
 fn emit(app: &AppHandle, label: &str, session_id: u64, kind: &'static str, text: Option<String>, exit_code: Option<i32>) {
-    eprintln!("[craidd-debug] runner::emit -> label={:?} session_id={} kind={}",
-        label, session_id, kind);
     super::linked_windows::note_process_event(app, label, kind, text.as_deref(), exit_code);
     let result = app.emit_to(label, "craidd:build", RunnerEvent { session_id, kind, text, exit_code });
     if let Err(error) = result {
-        eprintln!("[craidd-debug] emit_to error: {}", error);
+        eprintln!("[craidd] Could not deliver {kind} event to {label}: {error}");
     }
 }
 
@@ -116,6 +116,28 @@ fn kill_group(pgid: i32) {
     }
 }
 
+/// Observe exit without reaping so the PID remains reserved while descendants
+/// in its process group are signalled.
+fn exited_without_reaping(pid: i32) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info,
+        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    if result == -1 { return Err(std::io::Error::last_os_error()); }
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
+fn drain_lines_lossy<R: Read>(reader: R, mut on_line: impl FnMut(String)) -> std::io::Result<()> {
+    let mut reader = BufReader::new(reader);
+    let mut bytes = Vec::new();
+    loop {
+        bytes.clear();
+        if reader.read_until(b'\n', &mut bytes)? == 0 { return Ok(()); }
+        if bytes.last() == Some(&b'\n') { bytes.pop(); }
+        if bytes.last() == Some(&b'\r') { bytes.pop(); }
+        on_line(String::from_utf8_lossy(&bytes).into_owned());
+    }
+}
+
 fn stream_lines<R: Read + Send + 'static>(
     app: AppHandle,
     label: String,
@@ -124,9 +146,10 @@ fn stream_lines<R: Read + Send + 'static>(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         guard("runner::stream_lines", || {
-            for line in BufReader::new(reader).lines() {
-                let Ok(line) = line else { break; };
+            if let Err(error) = drain_lines_lossy(reader, |line| {
                 emit(&app, &label, id, "output", Some(line), None);
+            }) {
+                eprintln!("[craidd] Could not read process output: {error}");
             }
         });
     })
@@ -235,31 +258,62 @@ pub async fn start_config_for_label(app: AppHandle, label: String, mut spec: Run
         });
     }
 
-    let state = app.state::<RunnerManager>();
-    let mut active = state.0.lock().map_err(|e| e.to_string())?;
-    if active.contains_key(&label) {
-        return Err("A run is already active in this window. Stop it first.".into());
-    }
-
-    let mut child = crate::process_supervisor::spawn(&mut command)
-        .map_err(|e| format!("Could not start {}: {e}", spec.program))?;
-    let pgid = child.id() as i32;
-
-    let stdout = child.stdout.take().ok_or("Could not capture stdout")?;
-    let stderr = child.stderr.take().ok_or("Could not capture stderr")?;
-
     let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
-    let child = Arc::new(Mutex::new(child));
     let cancelled = Arc::new(AtomicBool::new(false));
     let term_sent = Arc::new(AtomicI32::new(0));
+    {
+        let state = app.state::<RunnerManager>();
+        let mut active = state.0.lock().map_err(|e| e.to_string())?;
+        if active.contains_key(&label) {
+            return Err("A run is already active in this window. Stop it first.".into());
+        }
+        active.insert(label.clone(), ActiveRun {
+            id, pgid: None, cancelled: cancelled.clone(), term_sent: term_sent.clone(),
+        });
+    }
 
-    active.insert(label.clone(), ActiveRun {
-        id,
-        pgid,
-        cancelled: cancelled.clone(),
-        term_sent: term_sent.clone(),
-    });
-    drop(active);
+    let mut child = match crate::process_supervisor::spawn(&mut command) {
+        Ok(child) => child,
+        Err(error) => {
+            if let Ok(mut active) = app.state::<RunnerManager>().0.lock() { active.remove(&label); }
+            return Err(format!("Could not start {}: {error}", spec.program));
+        }
+    };
+    let pgid = child.id() as i32;
+
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        kill_group(pgid);
+        let _ = child.wait();
+        if let Ok(mut active) = app.state::<RunnerManager>().0.lock() { active.remove(&label); }
+        return Err("Could not capture process output".into());
+    };
+
+    let child = Arc::new(Mutex::new(child));
+    {
+        let state = app.state::<RunnerManager>();
+        let mut active = match state.0.lock() {
+            Ok(active) => active,
+            Err(error) => {
+                let detail = error.to_string();
+                drop(error);
+                unsafe { libc::killpg(pgid, libc::SIGKILL); }
+                let _ = child.lock().map(|mut p| p.wait());
+                return Err(detail);
+            }
+        };
+        if let Some(run) = active.get_mut(&label).filter(|run| run.id == id) {
+            run.pgid = Some(pgid);
+        } else {
+            drop(active);
+            unsafe { libc::killpg(pgid, libc::SIGKILL); }
+            let _ = child.lock().map(|mut p| p.wait());
+            return Err("Run reservation was lost before launch".into());
+        }
+    }
+    if cancelled.load(Ordering::SeqCst) {
+        term_sent.store(1, Ordering::SeqCst);
+        kill_group(pgid);
+    }
 
     emit(&app, &label, id, "start", Some(format!("$ {}  (in {})", spec.label, spec.cwd)), None);
     if let Some(text) = preparation { emit(&app, &label, id, "output", Some(text), None); }
@@ -273,19 +327,26 @@ pub async fn start_config_for_label(app: AppHandle, label: String, mut spec: Run
             let out = stream_lines(app.clone(), label.clone(), id, stdout);
             let err = stream_lines(app.clone(), label.clone(), id, stderr);
 
-            let status = loop {
-                let result = child.lock().map_err(|e| e.to_string())
-                    .and_then(|mut p| p.try_wait().map_err(|e| e.to_string()));
-                match result {
-                    Ok(Some(s)) => break Ok(s),
-                    Ok(None) => thread::sleep(Duration::from_millis(60)),
-                    Err(e) => break Err(e),
+            let exit_observed = loop {
+                match exited_without_reaping(pgid) {
+                    Ok(true) => break Ok(()),
+                    Ok(false) => thread::sleep(Duration::from_millis(60)),
+                    Err(error) => break Err(error.to_string()),
                 }
             };
 
-            // Grandchildren may hold the output pipes open after the parent exits.
-            // Stop the group before waiting for the stream readers to finish.
+            // The unreaped root reserves its PID while we stop grandchildren.
             kill_group(pgid);
+            if let Some(manager) = app.try_state::<RunnerManager>() {
+                if let Ok(mut active) = manager.0.lock() {
+                    if let Some(run) = active.get_mut(&label).filter(|run| run.id == id) {
+                        run.pgid = None;
+                    }
+                }
+            }
+            let reaped = child.lock().map_err(|e| e.to_string())
+                .and_then(|mut p| p.wait().map_err(|e| e.to_string()));
+            let status = exit_observed.and(reaped);
             let _ = out.join();
             let _ = err.join();
             let was_cancelled = cancelled.load(Ordering::SeqCst);
@@ -336,6 +397,8 @@ pub fn stop_config(window: WebviewWindow, state: State<'_, RunnerManager>) -> Re
         (run.pgid, run.term_sent.clone())
     };
 
+    let Some(pgid) = pgid else { return Ok(()); };
+
     let already_termed = term_sent.swap(1, Ordering::SeqCst) == 1;
 
     let result = unsafe { libc::killpg(pgid, libc::SIGTERM) };
@@ -363,8 +426,38 @@ pub fn cancel_run_by_label(app: &AppHandle, label: &str) {
         if let Ok(active) = manager.0.lock() {
             if let Some(run) = active.get(label) {
                 run.cancelled.store(true, Ordering::SeqCst);
-                kill_group(run.pgid);
+                if let Some(pgid) = run.pgid { kill_group(pgid); }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_utf8_does_not_stop_output_drain() {
+        let mut lines = Vec::new();
+        drain_lines_lossy(b"bad\xff\nnext\n".as_slice(), |line| lines.push(line)).unwrap();
+        assert_eq!(lines, ["bad\u{fffd}", "next"]);
+    }
+
+    #[test]
+    fn exit_can_be_observed_before_reaping() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 7"]);
+        unsafe { command.pre_exec(|| {
+            if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        }); }
+        let mut child = command.spawn().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !exited_without_reaping(child.id() as i32).unwrap() {
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        kill_group(child.id() as i32);
+        assert_eq!(child.wait().unwrap().code(), Some(7));
     }
 }

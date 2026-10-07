@@ -1,7 +1,18 @@
-# Tauri + React + Typescript
+# Craidd Studio
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Craidd Studio is a Linux desktop IDE for projects and solutions described by
+`.craidd` and `.cln` files. It uses Tauri, React, and Rust.
 
-## Recommended IDE Setup
+See [the documentation index](docs/README.md) for the project model, current
+designs, and working protocol.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Build and check
+
+```sh
+npm install
+npm run build
+cd src-tauri
+cargo test --lib
+```
+
+Run the desktop app from the repository root with `npm run tauri dev`.

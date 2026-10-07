@@ -20,6 +20,17 @@ struct Owner {
     ack: ChildStdout,
 }
 
+/// Parse one complete response without allocation; safe to call post-fork.
+fn ack_for_pid(response: &[u8], own_pid: u32) -> Option<bool> {
+    if response.len() < 2 || !matches!(response[0], b'+' | b'-') { return None; }
+    let mut reply_pid = 0u32;
+    for digit in &response[1..] {
+        if !digit.is_ascii_digit() { return None; }
+        reply_pid = reply_pid.checked_mul(10)?.checked_add((digit - b'0') as u32)?;
+    }
+    (reply_pid == own_pid).then_some(response[0] == b'+')
+}
+
 pub fn entry() -> bool {
     if std::env::args().nth(1).as_deref() != Some(MODE) { return false; }
     if let Err(error) = supervise() { eprintln!("[craidd] Process supervisor: {error}"); }
@@ -63,7 +74,8 @@ pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
         let mut message = [0u8; 32];
         message[..4].copy_from_slice(b"own ");
         let mut digits = [0u8; 10];
-        let mut pid = libc::getpid() as u32;
+        let my_pid = libc::getpid() as u32;
+        let mut pid = my_pid;
         let mut count = 0;
         while pid > 0 { digits[count] = b'0' + (pid % 10) as u8; count += 1; pid /= 10; }
         for index in 0..count { message[4 + index] = digits[count - index - 1]; }
@@ -75,7 +87,10 @@ pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
             if written < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue; }
             return Err(io::Error::from_raw_os_error(libc::EPIPE));
         }
-        let mut byte = 0u8;
+        // Replies share one pipe. A launch that times out can leave a late
+        // reply behind; consume it, but only accept the reply for this PID.
+        let mut response = [0u8; 32];
+        let mut length = 0usize;
         loop {
             let mut ready = libc::pollfd { fd: ack, events: libc::POLLIN, revents: 0 };
             let result = libc::poll(&mut ready, 1, 3000);
@@ -84,8 +99,22 @@ pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
                 if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue; }
                 return Err(io::Error::last_os_error());
             }
+            let mut byte = 0u8;
             let received = libc::read(ack, (&mut byte as *mut u8).cast(), 1);
-            if received == 1 && byte == b'+' { break; }
+            if received == 1 {
+                if byte == b'\n' {
+                    if let Some(accepted) = ack_for_pid(&response[..length], my_pid) {
+                        if accepted { break; }
+                        return Err(io::Error::from_raw_os_error(libc::EACCES));
+                    }
+                    length = 0;
+                } else {
+                    if length == response.len() { return Err(io::Error::from_raw_os_error(libc::EPROTO)); }
+                    response[length] = byte;
+                    length += 1;
+                }
+                continue;
+            }
             if received < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) { continue; }
             return Err(io::Error::from_raw_os_error(libc::EPIPE));
         }
@@ -208,9 +237,10 @@ fn supervise() -> io::Result<()> {
                 pending.push_str(&String::from_utf8_lossy(&buffer[..size]));
                 while let Some(end) = pending.find('\n') {
                     let line: String = pending.drain(..=end).collect();
-                    let accepted = line.strip_prefix("own ").and_then(|pid| pid.trim().parse().ok())
-                        .is_some_and(|pid| tree.own(pid));
-                    output.write_all(if accepted { b"+" } else { b"-" })?;
+                    let requested_pid = line.strip_prefix("own ").and_then(|pid| pid.trim().parse::<i32>().ok());
+                    let accepted = requested_pid.is_some_and(|pid| tree.own(pid));
+                    let reply = format!("{}{}\n", if accepted { '+' } else { '-' }, requested_pid.unwrap_or(0));
+                    output.write_all(reply.as_bytes())?;
                     output.flush()?;
                 }
                 if pending.len() > 64 { return Err(io::Error::other("Invalid supervisor request")); }
@@ -226,6 +256,14 @@ fn supervise() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_ack_cannot_release_a_different_launch() {
+        assert_eq!(ack_for_pid(b"+123", 124), None);
+        assert_eq!(ack_for_pid(b"+124", 124), Some(true));
+        assert_eq!(ack_for_pid(b"-124", 124), Some(false));
+        assert_eq!(ack_for_pid(b"+12x", 124), None);
+    }
 
     #[test]
     fn scoped_cancel_escalates_for_a_held_tree_and_preserves_manual_processes() {
