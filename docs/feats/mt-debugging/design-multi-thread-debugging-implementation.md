@@ -79,6 +79,34 @@ thread on its first immediate `threads` reply; the ordinary native session
 uses LLDB's process-wide stop model and retries one incomplete reply before
 discarding the stopped worker.
 
+### Pattern to investigate for independent worker debugging
+
+The first proposed UX improvement is honest **step focus**: send the selected thread ID,
+show which thread actually stops next, and preserve the user's selected row
+when a different worker reaches a breakpoint. A new stop must never be
+presented as progress by the selected worker merely because that worker was
+focused. The current adapters' all-thread continuation means this does not
+isolate execution or side effects.
+
+For real isolation, first test a debugger version that advertises
+`supportsSingleThreadExecutionRequests`, accepts `singleThread: true`, and
+actually reports `allThreadsContinued: false` for this fixture. Gate the
+control on that observed capability per session. A fallback is an **opt-in
+cooperative worker gate** in the debugged program: workers wait at known
+checkpoints and the user releases one logical job at a time. Variant 5 of
+`mt-lab` uses this fallback for seven C# callers; it is a lab scheduling
+technique, not an IDE ability to suspend arbitrary application threads.
+Blocking other threads at a runtime level can deadlock locks, UI dispatch,
+and native calls, so a generic forced-freeze control is not a safe substitute.
+
+If the product needs to follow a logical operation through thread switches,
+correlate a job/call ID above the DAP thread ID. Present that as a separate
+trace or handoff view. It must not claim that one operation owns a thread for
+its whole lifetime. Acceptance requires two workers on the same breakpoint:
+step worker 1, observe the adapter's continuation scope, then verify whether
+worker 2 ran, hit red, or changed shared state. Repeat with a supported
+single-thread adapter before promising isolated Step.
+
 An all-thread debugger stop pauses the API Main Thread too; it does not create
 an LDI-style hold on that thread. In ASP.NET Core, `app.Run()` normally waits
 for host shutdown. If a selected thread's current frame has no source line,

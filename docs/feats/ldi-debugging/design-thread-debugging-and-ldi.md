@@ -237,9 +237,10 @@ response accepted only for the current session/stop/selection
 +++
 
 In managed LDI, an origin-session resume lock applies even if the user focuses
-another origin thread: a generic Continue could also resume the held call.
-The backend checks the hold before sending any command capable of advancing
-it. A toolbar's disabled appearance alone is insufficient protection.
+another origin thread. A's Continue is a deliberate **skip current B** action:
+cancel B, wait for its build/driver to end, then resume the frozen origin once.
+Step and Pause remain blocked while held. The backend checks the hold before
+sending an origin command; toolbar appearance alone is insufficient protection.
 Keep the release target frozen separately from inspection focus; adding a
 selector must not overwrite the remembered thread ID that origin release uses.
 
@@ -393,7 +394,7 @@ debugger during preparation; simultaneous consumer arbitration is unfinished.
 | Action | Standalone / live-native | Managed LDI |
 | --- | --- | --- |
 | Select thread/frame | Inspect valid stopped context | Inspect without changing captured origin or pair |
-| Step/Continue | Operate named original session, with adapter scope | B operates reproduction; origin controls cannot bypass hold |
+| Step/Continue | Operate named original session, with adapter scope | B Step/Continue operates reproduction. A Continue cancels this reproduction and releases the frozen origin after B ends; A Step remains blocked |
 | Stop owning application | End its debug session/process according to the launch contract | Stop A and its paired reproduction; invalidate release target |
 | Explicit Stop B / abandon | For a live viewer, explicitly stopping the context stops A's original process | Cancel current B; release A for its original call; keep pairing armed where applicable |
 | Hide a viewport | Preserve session and valid subscription | Preserve reproduction and hold |

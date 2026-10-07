@@ -278,14 +278,14 @@ Suggested presentation:
 Window A · API / netcoredbg        Window B · order_math / LLDB
 Held at native boundary           Inputs from A's stopped frame
 left=20, right=22                  left=20, right=22
-Continue/Step: locked by B         Paused at math.cpp
-[Inspect] [Stop A]                 [Step] [Continue B]
+Step: locked by B                  Paused at math.cpp
+[Continue C# · skip B] [Stop A]     [Step] [Continue B]
                                   Separate process
 ```
 
 Use text/shape as well as blue/red colors. Ordinary C# source breakpoints remain
-ordinary breakpoints. Blue means this stop has a reproduction partner and
-cannot be resumed through A's controls until that partner releases it.
+ordinary breakpoints. Blue means this stop has a reproduction partner. A's
+Continue explicitly cancels this reproduction; Step remains held until B ends.
 
 The API's `/health` route also calls the native library. A marker on the
 selected `/sum` call site is not an any-thread trap on the same symbol; unrelated
@@ -304,7 +304,7 @@ blue source breakpoint hit ------> acquire resume lock
 A remains at that stop             read frame/scalars
                                    create input record --------> run driver
 inspect C# locals                                                red or automatic entry stop
-A Continue/Step rejected                                          native stepping
+A Step rejected; Continue requests B stop                         native stepping
                                    <---------------------------- partner done
                                    validate release identity
 original A call executes <-------- one managed Continue
@@ -312,7 +312,7 @@ C# runs to next red/blue stop
 ```
 
 No DAP Continue, Step, Run-to-cursor, or equivalent resume is sent to A between
-the blue stop and the matching partner release. No temporary resume/re-pause,
+the blue stop and B's verified completion or explicit cancellation barrier. No temporary resume/re-pause,
 native wrapper hold, shared-memory arm, or lease expiry participates in v1.
 If arguments are unavailable, keep A stopped and report the unsupported input.
 
@@ -340,13 +340,16 @@ someone independently controlling the debugger outside that coordinator.
 B's successful reproduction completion produces a partner-release event.
 The coordinator then sends Continue to A exactly once. A partner-side
 **Done — Continue A** action may expose that same release after inspection.
-A's own Continue cannot override the hold. A breakpoint/step stop in B is not
+A's own Continue requests cancellation of this B reproduction, waits for B to
+end, then releases the fixed A origin. A breakpoint/step stop in B is not
 completion; a crash, killed driver, or transport EOF is not a successful release.
 
 If reproduction fails, A remains held. B's error surface offers Retry, explicit
 **Cancel reproduction and release A**, or Stop. Cancellation release is an
 acknowledged partner/coordinator action, not an automatic fail-open timeout.
-Changing or removing a blue marker while held cannot bypass this lifecycle.
+Removing the active blue marker uses the same cancellation barrier before A
+continues; it also disarms later hits at that call site. A condition edit on
+an already prepared call site applies to later hits, not the current stop.
 If Continue fails after release, keep A visibly stopped, preserve the release
 authorization, and report the error; do not start a second B or send a blind retry.
 
@@ -504,13 +507,18 @@ driver or treat waiting for blue as a server-readiness dependency.
 
 | Event/action | Result |
 | --- | --- |
-| A Continue/Step while held | Rejected by the backend; A stays stopped |
+| A Continue while held | Cancel the current B reproduction, wait for B to end, then resume the fixed A origin exactly once. The original C# call still executes and future armed blue sites remain active |
+| A Step/Pause while held | Rejected; the current B reproduction owns the hold |
 | B Step/Continue | Operates on B only |
 | B successful completion/release | Validates current hold, then resumes A once |
 | B crash/build failure | A stays held; report why B did not return. A failed reproduction must never silently resume the original call |
 | Duplicate/stale B release | Ignored/rejected; cannot release a later stop |
 | White Stop A (C#) | Stop A and its paired B; invalidate the LDI hold without continuing A. Unpaired clients keep running |
 | White Stop B (C++ reproduction) | Stop only the current B reproduction, release the held A to execute its original call, and leave A's managed debugger and blue pairing armed for the next call |
+| Remove an armed C# blue during Gold | Remove its DAP breakpoint and active binding. If it owns the current hold, cancel B and release A through the same barrier. Future calls at that location run without LDI; an ordinary red breakpoint at the same line survives |
+| Restore that blue during the same Gold run | Rearm its dormant prepared binding and DAP breakpoint when the call site and native partner still match; no new driver build is claimed |
+| Edit an armed blue condition during Gold | Update the current adapter breakpoint for later hits when that call site and partner were prepared for this Gold run. The current held hit keeps its captured identity |
+| Add a new or changed blue call site during Gold | Show pending Gold Restart; no unprepared driver is claimed live |
 | White Stop an unpaired client | Stop that client's process/debugger only; do not stop the API, B, or another client |
 | Gold Stop | Stop **every** participant in the linked action, including both sides of every LDI pair and all clients; invalidate pending launches and releases |
 | Hide/park a viewport | Preserve the hold and session state |
@@ -530,7 +538,7 @@ White Stop B is an **intentional abandon-and-continue**, not a successful native
 reproduction: cancel its driver/build first, make stale completion tokens
 unusable, then continue A exactly once. A may then hit another red or blue
 breakpoint. An unexpected B crash remains held until the user chooses White
-Stop B (abandon and continue) or Gold Stop; a crash must not make that choice
+Stop B, A Continue, or Gold Stop; a crash must not make that choice
 for them. White Stop A and Gold Stop must never execute a held original call.
 Closing B uses the same cancellation barrier, then removes only B's injected
 blue markers before A continues; other native partners and ordinary C# red
@@ -558,6 +566,12 @@ server, but each owns a separate client process and debug session.
 | B returns successfully, then A's **original** native call fails | Report this as a managed-host/runtime failure after release, not as a B driver failure. The two client debug sessions remain independent |
 | White Stop A | Stop A and B; both clients keep their own debug sessions. Any pending client launch waiting on A must fail clearly rather than start against an unrelated listener |
 | White Stop B | Cancel B, release A's current hold exactly once, and keep A armed for the next blue hit; neither client stops |
+| A Continue with B paused at native red | B ends before A runs its original call; the next caller may hit blue with a new token. No stale B completion releases that next hold |
+| A Continue during B driver build | Cancel the build and release A only after its cancellation callback; no orphan B driver starts |
+| Remove current blue while B is paused | Cancel B, release A once, then let later callers pass this site without LDI; a co-located C# red breakpoint still works |
+| Restore that prepared blue after removal | Later callers hit blue again without Gold Restart; an unrelated new site still requests restart |
+| Edit current blue condition while B is paused | The current reproduction keeps its caller/token; the new condition governs later hits at the already prepared site without a Gold restart |
+| Set blue at an unprepared call site during Gold | Gold Restart tip appears; the running process does not claim that native binding is active |
 | White Stop either client | Only that client stops. The other client, A, and B are unaffected; shared Vite stays alive while a client still uses it |
 | Close A's IDE window | Cancel the A–B pair. Do not stop already-running unpaired clients; show them that their API dependency is gone |
 | Close either client's IDE window | Stop only that client's session; preserve the other client and A–B pair |

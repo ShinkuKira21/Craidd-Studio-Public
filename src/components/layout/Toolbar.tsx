@@ -134,7 +134,8 @@ function Toolbar() {
       {(native || (remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {viewedStatus === "paused"
           ? (!native || native.nativeStop)
-            ? <DebugTransport disabled={heldByLdi} label="Continue" icon="▶" onClick={() => debugViewed("continue")} />
+            ? <DebugTransport label={heldByLdi ? "Continue C# · stop this native reproduction" : "Continue"}
+                icon="▶" onClick={() => debugViewed("continue")} />
             : <button type="button" className="px-2 text-blue-300 hover:text-blue-200"
               onClick={() => void linked.selectWindow(native.originLabel).catch((error) => alert(String(error)))}>Paused in Rust · show owner</button>
           : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}

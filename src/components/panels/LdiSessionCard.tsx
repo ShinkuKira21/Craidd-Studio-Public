@@ -44,8 +44,8 @@ export default function LdiSessionCard() {
           : session.phase === "finishing-native" ? "Native call returned; finishing B…"
             : session.phase === "stopping-native" ? "Stopping B; A will execute its original call when B ends."
               : session.phase === "closing-native" ? "Closing B; A will execute its original call and LDI will detach."
-                : session.phase === "failed" ? "B was not started or did not finish. Abandon explicitly to let A make its original call."
-                  : partner ? "Step the real library here. Finish B to resume A." : "Continue and Step are held until B releases this call."}
+                : session.phase === "failed" ? "B did not finish. Use Continue in A or Abandon in B to let A make its original call."
+                  : partner ? "Step the native reproduction here, or use Continue in A to skip it." : "Continue in A stops B, then resumes this C# call. Step waits for B."}
     </div>}
     {session.error && <div role="alert" className="mt-2 text-amber-300">{session.error}</div>}
     {partner && session.held && !["building-native", "stopping-native", "closing-native"].includes(session.phase) && <button type="button"

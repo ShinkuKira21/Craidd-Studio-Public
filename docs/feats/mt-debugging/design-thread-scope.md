@@ -293,8 +293,9 @@ in v1.
 
 The user's recourse if the wrong thread won:
 
-- **Abandon B and continue A**, releasing the current reproduction
-  without inspecting.
+- Use **Continue in A** to cancel the current B reproduction and release the
+  frozen C# origin, or remove blue to cancel this reproduction and disarm
+  later hits at this call site.
 - If the other thread hits blue again on a subsequent call, the next
   reproduction uses it.
 

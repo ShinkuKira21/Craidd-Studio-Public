@@ -73,7 +73,7 @@ export async function setLdiBlue(file: string, line: number, partnerLabel: strin
   void refreshLdiBlues().catch((error) => console.error("[LDI]", error));
   if (blue.mode === "live-native") {
     if (blue.pendingRestart) notifyRustRestart();
-  } else if (blue.pendingRestart || useLinkedWindows.getState().activeAction === "debug") notifyLdiRestart();
+  } else if (blue.pendingRestart) notifyLdiRestart();
 }
 export async function listLdiCallSites(file: string, partnerLabels: string[]): Promise<LdiCallSite[]> {
   const { invoke } = await import("@tauri-apps/api/core");

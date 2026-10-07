@@ -75,6 +75,14 @@ fn binding_key(binding: &Binding) -> String {
     format!("{}:{}", binding.blue.file, binding.blue.line)
 }
 
+fn same_prepared_blue(binding: &Binding, blue: &Blue) -> bool {
+    binding.blue.file == blue.file && binding.blue.line == blue.line
+        && binding.blue.partner_label == blue.partner_label
+        && binding.blue.origin_instance == blue.origin_instance
+        && binding.blue.partner_instance == blue.partner_instance
+        && blue_matches_call(blue, &binding.call) && blue.warning.is_none()
+}
+
 fn binding_at<'a>(bindings: &'a [Binding], path: &Path, line: u32) -> Option<&'a Binding> {
     bindings.iter().find(|binding| binding.blue.line == line && same_source(path, Path::new(&binding.blue.file)))
 }
@@ -97,6 +105,7 @@ struct InterposerCapture {
 struct Pair {
     binding: Binding,
     bindings: Vec<Binding>,
+    dormant_bindings: Vec<Binding>,
     prepared: HashMap<String, (PathBuf, Option<InterposerPrepared>)>,
     origin_pgid: i32,
     origin_thread_id: i64,
@@ -549,10 +558,6 @@ fn set_blue_for_label(app: &AppHandle, owner: &str, file: String, line: u32, par
         super::linked_windows::ldi_selections(app, owner, &partner_label)?;
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
-    let pending_restart = state
-        .pairs
-        .get(owner)
-        .is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire));
     let path = Path::new(&file)
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -592,13 +597,39 @@ fn set_blue_for_label(app: &AppHandle, owner: &str, file: String, line: u32, par
         locals: call.locals.clone(),
         warning: landing.err(),
         native_points: native_points(&call, &partner).unwrap_or_default(),
-        pending_restart,
+        pending_restart: false,
     };
+    let mut live_condition = false;
+    if let Some(pair) = state.pairs.get_mut(owner)
+        .filter(|pair| !pair.cancelled.load(Ordering::Acquire)) {
+        let prepared = pair.prepared.keys().cloned().collect::<std::collections::HashSet<_>>();
+        if let Some(binding) = pair.bindings.iter_mut().find(|binding|
+            prepared.contains(&binding_key(binding)) && same_prepared_blue(binding, &blue)) {
+            if pair.origin_pgid > 0 {
+                super::debug::arm_ldi_blue(app, owner, &blue.file, blue.line, blue.condition.clone())?;
+            }
+            binding.blue.condition = blue.condition.clone();
+            if pair.binding.blue.file == blue.file && pair.binding.blue.line == blue.line {
+                pair.binding.blue.condition = blue.condition.clone();
+            }
+            live_condition = true;
+        } else if let Some(index) = pair.dormant_bindings.iter().position(|binding|
+            prepared.contains(&binding_key(binding)) && same_prepared_blue(binding, &blue)) {
+            if pair.origin_pgid > 0 {
+                super::debug::arm_ldi_blue(app, owner, &blue.file, blue.line, blue.condition.clone())?;
+            }
+            let mut binding = pair.dormant_bindings.remove(index);
+            binding.blue.condition = blue.condition.clone();
+            pair.bindings.push(binding);
+            live_condition = true;
+        }
+        blue.pending_restart = !live_condition;
+    }
     let blues = state.blues.entry(origin.label).or_default();
     blues.retain(|existing| existing.file != blue.file || existing.line != blue.line);
     blues.push(blue.clone());
     drop(state);
-    blue.pending_restart |= super::linked_windows::ldi_debug_group_active(&app, &blue.origin_label);
+    blue.pending_restart |= !live_condition && super::linked_windows::ldi_debug_group_active(&app, &blue.origin_label);
     let _ = app.emit("craidd:ldi-blues", ());
     Ok(blue)
 }
@@ -608,16 +639,29 @@ pub fn remove_ldi_blue(window: WebviewWindow, app: AppHandle, file: String, line
     if file.ends_with(".rs") { return super::native_debug::remove_blue(&app, window.label(), &file, line); }
     let manager = app.state::<LdiManager>();
     let mut state = manager.0.lock().map_err(|error| error.to_string())?;
-    let pending_restart = state
-        .pairs
-        .get(window.label())
-        .is_some_and(|pair| !pair.cancelled.load(Ordering::Acquire));
+    let mut skip_current = false;
+    if let Some(pair) = state.pairs.get_mut(window.label())
+        .filter(|pair| !pair.cancelled.load(Ordering::Acquire)) {
+        let locations = pair.bindings.iter().filter(|binding|
+            same_source(Path::new(&binding.blue.file), Path::new(&file)) && binding.blue.line == line)
+            .map(|binding| (binding.blue.file.clone(), binding.blue.line)).collect::<Vec<_>>();
+        if !locations.is_empty() {
+            if pair.origin_pgid > 0 { super::debug::disable_ldi_blue(&app, window.label(), &locations)?; }
+            let (removed, retained): (Vec<_>, Vec<_>) = pair.bindings.drain(..).partition(|binding|
+                locations.iter().any(|(path, at)| path == &binding.blue.file && *at == binding.blue.line));
+            pair.bindings = retained;
+            pair.dormant_bindings.extend(removed);
+            skip_current = pair.held && pair.binding.blue.line == line
+                && same_source(Path::new(&pair.binding.blue.file), Path::new(&file));
+        }
+    }
     if let Some(blues) = state.blues.get_mut(window.label()) {
         blues.retain(|blue| !same_source(Path::new(&blue.file), Path::new(&file)) || blue.line != line);
     }
     drop(state);
     let _ = app.emit("craidd:ldi-blues", ());
-    Ok(pending_restart || super::linked_windows::ldi_debug_group_active(&app, window.label()))
+    if skip_current { super::debug::control_debug_by_label(&app, window.label(), "continue")?; }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -769,6 +813,7 @@ pub(crate) fn prepare_pairs(
         Pair {
             binding,
             bindings,
+            dormant_bindings: Vec::new(),
             prepared: HashMap::new(),
             origin_pgid: 0,
             origin_thread_id: 0,
@@ -1941,13 +1986,32 @@ pub(crate) fn with_control(
             // tear down A or another library's active reproduction.
             return Ok(());
         }
-        if origin == label
-            && pair.held
-            && matches!(
-                action,
-                "continue" | "stepOver" | "stepInto" | "stepOut" | "pause"
-            )
-        {
+        if origin == label && pair.held && action == "continue" {
+            if pair.phase == "stopping-native" { return Ok(()); }
+            if pair.phase == "closing-native" {
+                return Err("B is closing; wait for the current LDI hold to release".into());
+            }
+            // Continue in A skips this reproduction, not the original C# call.
+            // Cancel B first, then release the frozen origin after B has ended.
+            let building = pair.phase == "building-native";
+            pair.partner_cancelled.store(true, Ordering::Release);
+            pair.phase = "stopping-native".into();
+            pair.error = None;
+            notify(app, pair);
+            let partner = pair.binding.blue.partner_label.clone();
+            if let Err(error) = super::debug::stop_ldi_partner(app, &partner) {
+                pair.phase = "failed".into();
+                pair.error = Some(format!("Could not stop B: {error}. A remains held."));
+                notify(app, pair);
+                return Err(error);
+            }
+            if !building && pair.partner_pgid.is_none() {
+                finish_abandoned_partner(app, pair)?;
+            }
+            return Ok(());
+        }
+        if origin == label && pair.held
+            && matches!(action, "stepOver" | "stepInto" | "stepOut" | "pause") {
             return Err(format!(
                 "A is held by LDI. CS{} must finish or explicitly release this reproduction.",
                 pair.binding.blue.partner_window_id
@@ -2049,7 +2113,8 @@ fn finish_partner_close(app: &AppHandle, pair: &mut Pair) -> Result<(), String> 
         }
     }
     pair.bindings.retain(|binding| binding.blue.partner_label != partner);
-    let active = pair.bindings.iter().map(binding_key).collect::<Vec<_>>();
+    pair.dormant_bindings.retain(|binding| binding.blue.partner_label != partner);
+    let active = pair.bindings.iter().chain(&pair.dormant_bindings).map(binding_key).collect::<Vec<_>>();
     pair.prepared.retain(|key, _| active.contains(key));
     pair.partner_pgid = None;
     pair.partner_cancelled = Arc::new(AtomicBool::new(false));
@@ -2080,7 +2145,8 @@ pub(crate) fn partner_window_closing(app: &AppHandle, label: &str) -> Result<boo
             .map(|binding| (binding.blue.file.clone(), binding.blue.line)).collect::<Vec<_>>();
         if pair.origin_pgid > 0 { super::debug::disable_ldi_blue(app, &origin, &locations)?; }
         pair.bindings.retain(|binding| binding.blue.partner_label != label);
-        let active = pair.bindings.iter().map(binding_key).collect::<Vec<_>>();
+        pair.dormant_bindings.retain(|binding| binding.blue.partner_label != label);
+        let active = pair.bindings.iter().chain(&pair.dormant_bindings).map(binding_key).collect::<Vec<_>>();
         pair.prepared.retain(|key, _| active.contains(key));
         if let Some(blues) = state.blues.get_mut(&origin) { blues.retain(|blue| blue.partner_label != label); }
         drop(state);

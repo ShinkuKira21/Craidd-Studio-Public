@@ -8,6 +8,11 @@ not requirements for developer projects or dependencies of the IDE's LDI runtime
 The complete fault/acceptance matrix below is broader than the tests currently
 implemented; do not treat it as a record that every case passed.
 This plan follows [section 3 of the design](design-ldi-debugging.md#3-execution-and-ownership).
+Gate 0 tests the original transport lock: a direct A DAP Continue is rejected
+until the coordinator authorizes release. The later IDE toolbar maps A's
+Continue to an explicit **cancel B, then release A** coordinator action.
+That user action preserves this transport invariant; the older harness steps
+below remain historical mechanism checks, not the current toolbar wording.
 
 **One mode:** A stops at blue; the harness reads supported scalars from that
 stopped managed frame; B reproduces the native call; B signals release;

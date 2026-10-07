@@ -779,11 +779,42 @@ fn initialize_breakpoints(session: &Session, fallback: &[Breakpoint]) -> Result<
 pub(crate) fn disable_ldi_blue(app: &AppHandle, label: &str, locations: &[(String, u32)]) -> Result<(), String> {
     let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
         .get(label).cloned().ok_or("Managed debugger is no longer active")?;
-    session.blue.lock().map_err(|error| error.to_string())?.retain(|blue| !locations.iter().any(|(file, line)|
-        file == &blue.file && *line == blue.line));
+    let mut blues = session.blue.lock().map_err(|error| error.to_string())?;
+    let previous = blues.clone();
+    blues.retain(|blue| !locations.iter().any(|(file, line)| file == &blue.file && *line == blue.line));
+    drop(blues);
     if session.breakpoints_ready.load(Ordering::Acquire) {
-        let points = super::breakpoints::load_breakpoints(session.solution_path.clone())?;
-        send_breakpoints(&session, &points)?;
+        let result = super::breakpoints::load_breakpoints(session.solution_path.clone())
+            .and_then(|points| send_breakpoints(&session, &points));
+        if let Err(error) = result {
+            if let Ok(mut blues) = session.blue.lock() { *blues = previous; }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// Rearm a prepared managed call site or change its Blue condition without
+/// rebuilding the native driver. A genuinely new call site needs Gold Restart.
+pub(crate) fn arm_ldi_blue(app: &AppHandle, label: &str, file: &str, line: u32,
+    condition: Option<String>) -> Result<(), String> {
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(label).cloned().ok_or("Managed debugger is no longer active")?;
+    let mut blues = session.blue.lock().map_err(|error| error.to_string())?;
+    let previous = blues.clone();
+    if let Some(blue) = blues.iter_mut().find(|blue| blue.file == file && blue.line == line) {
+        blue.condition = condition;
+    } else {
+        blues.push(super::ldi::ManagedBlueBreakpoint { file: file.into(), line, condition });
+    }
+    drop(blues);
+    if session.breakpoints_ready.load(Ordering::Acquire) {
+        let result = super::breakpoints::load_breakpoints(session.solution_path.clone())
+            .and_then(|points| send_breakpoints(&session, &points));
+        if let Err(error) = result {
+            if let Ok(mut blues) = session.blue.lock() { *blues = previous; }
+            return Err(error);
+        }
     }
     Ok(())
 }
