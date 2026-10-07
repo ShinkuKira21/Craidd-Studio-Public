@@ -1,5 +1,10 @@
 # Phase 3 — Rust Build, Debug, and Toolchains
 
+> **Archived on 7 October 2026.** This is a historical snapshot, including its
+> original phase numbers and status claims. Use the [current roadmap](../Roadmap-v0.0.4A.md)
+> and [current codebase map](../Current-place.md) for present direction and source.
+> Archiving and navigation maintenance: Codex. Original attribution is retained.
+
 **Status:** Implementation plan. Review against the working app before coding.
 **Date:** 2026-09-17.
 **Goal:** Build and debug a declared Rust project from Craidd Studio, while establishing the global and per-project tool choices that later languages will share.

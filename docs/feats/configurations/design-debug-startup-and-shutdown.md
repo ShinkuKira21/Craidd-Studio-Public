@@ -1,5 +1,7 @@
 # Design: Debug startup visibility and bounded shutdown
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 Status: Source implementation and automated checks completed, 3 October 2026.
 The user reported that the repaired IDE workflow works on 4 October. The
 specific GUI and three-window race steps they exercised remain to be recorded.
@@ -131,7 +133,7 @@ On 4 October the user reported “It works!!” after trying the repaired build.
 This is a positive desktop outcome for the repair; no step-by-step acceptance
 record accompanied it. Keep the specific checks above open until recorded.
 
-+++
-Last updated: Debug startup and shutdown repair, 3 October 2026. Author: skira24.
-This document is a design.
-+++
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

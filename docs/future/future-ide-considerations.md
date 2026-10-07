@@ -1,6 +1,9 @@
 # Future Considerations
 
+**Roadmap track:** Future reasoning, not a scheduled phase. See the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Record of design thinking. Not a phase. Not a plan.
+
 **Purpose:** Preserve reasoning that will matter in Phase 3 and beyond,
 before the daily work of shipping features erases the shape of the
 argument.
@@ -120,7 +123,7 @@ A single "run" action. Three processes. Coordinated lifetimes.
 
 This is the hard part. Not LSP. Not DAP. **Process orchestration.**
 
-Questions that need answers before Phase 3:
+Questions to resolve for Phase 3 language intelligence:
 
 - Who starts first?
 - Who waits for whom?
@@ -311,7 +314,7 @@ downstream.
 
 ## What this document is for
 
-When Phase 3 arrives, and someone (including future-you) asks
+When the Phase 3 language-intelligence slice is implemented, and someone (including future-you) asks
 "why don't we just bolt on an AI chat panel and ship it?" — this
 document is the answer.
 
@@ -343,6 +346,5 @@ document is a consequence of it.
 
 ---
 
-*Last updated: Phase 2.2. Author: skira24, with assistance.*
-*Recorded because the daily work of shipping features tends to
-erase the shape of the argument that made them worth shipping.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

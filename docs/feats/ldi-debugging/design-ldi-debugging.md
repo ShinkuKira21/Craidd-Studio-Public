@@ -1,9 +1,16 @@
 # Design: LDI debugging through linked sessions
 
-**Status:** Design with an initial implementation slice on `feature/ldi-debugging`.
-The standalone mechanism has run with real debuggers; the interactive two-window
-flow still needs manual acceptance. This is not a claim that all gates below passed.
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Design with implemented managed-LDI slices, reviewed 7 October 2026.
+The original implementation began on `feature/ldi-debugging`; subsequent work
+adds held-origin Continue, prepared blue rearming/condition edits and an ordered
+MT lab. skira24 reports the latest flow feels good. Standalone real-debugger
+checks exist; the full two-window fault/close/restart matrix remains unaccepted.
+This is not a claim that all gates below passed.
+
 **Recorded:** 29 September 2026.
+
 **Starting point:** `master` at `7594cc6`.
 
 This develops [the LDI philosophy](../../philosophies/debugging/ldi-debugging/philosophy-ldi-debugging.md) and
@@ -879,3 +886,8 @@ parallel held origins, arbitrary signatures, or Rust/Python/JNI providers;
 those languages need separate loader and marshalling proofs. Unsupported
 captured values produce a typed error while A remains at the gate, rather
 than terminating the developer's process or silently spawning B.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

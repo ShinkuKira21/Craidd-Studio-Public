@@ -1,7 +1,11 @@
 # Philosophy: Mixed debugging
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design. Recorded 19 September 2026.
+
 **Applies to:** Every polyglot debugging question from Phase 3 onward.
+
 **Governs:** What Craidd does and does not attempt when two languages
 share a process, and why.
 
@@ -255,5 +259,5 @@ document holds the whole argument.
 
 ---
 
-*Last updated: Phase 2.4.2. Author: skira24.*
-*This document is a philosophy. It governs mixed-debugging decisions.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a philosophy.*

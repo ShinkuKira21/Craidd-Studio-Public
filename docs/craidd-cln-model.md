@@ -1,6 +1,9 @@
 # The Craidd Model: `.craidd` and `.cln`
 
-**Status:** Locked as of Phase 2.1. This document is the reference for
+**Roadmap track:** Phase 2 foundation, governing Phase 3 and later work. See the [current roadmap](roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Foundational contract locked in Phase 2.1, retained during the
+Phase 3.x documentation review. This document is the reference for
 what each file is, what it is not, and where every kind of information
 lives. It exists so that future sessions don't relitigate the boundary
 between declaration, composition, and ecosystem truth.
@@ -483,4 +486,7 @@ When in doubt, ask: *Is this true of the folder, or true of the
 solution?* Folder → `.craidd`. Solution → `.cln`. Manifest → read it,
 don't store it.
 
-*Last updated: Phase 2.1. Author: skira24.*
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

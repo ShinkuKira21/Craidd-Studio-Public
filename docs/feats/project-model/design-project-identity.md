@@ -1,7 +1,14 @@
 # Design: Project Identity
 
-**Status:** Design. Partially implemented (schema fields), not yet used.
+**Roadmap track:** Phase 2 identity/discovery foundation; retained in Phase 3.x. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Foundational design. Current source includes project identity,
+discovery and project dialogs. Earlier implementation notes below describe the
+original Phase 2 baseline; review the current codebase map before using them
+as a change list.
+
 **Applies to:** Phase 2.1.4 (schema), Phase 2.5 (detection + dialog).
+
 **Governs:** What a `.craidd` file is, what it declares, and where every
 other kind of fact lives.
 
@@ -66,7 +73,7 @@ the folder itself. Nothing else.
 - `root` — path to the source root relative to the `.craidd` file.
   Defaults to `"."`.
 
-**Later (Phase 2.1.3+, not yet implemented):**
+**Original later-scope note (Phase 2.1.3+ at drafting):**
 
 - `[membership]` — the Fine Tune persistence. Which files belong to the
   project, which belong to its config, which belong to neither.
@@ -349,7 +356,7 @@ re-open this decision because a `.vscode/`-equivalent seems neat.
 
 ---
 
-## What this means for the current code
+## Original Phase 2 implementation baseline (historical)
 
 `src/types/project.ts` already has `Language` and `ProjectKind` enums.
 It does not yet have `Framework`. Phase 2.1.4 adds it as an optional
@@ -366,5 +373,5 @@ in Phase 2.5, after the save system (Phase 2.2) and file operations
 
 ---
 
-*Last updated: Phase 2.1.3. Author: skira24.*
-*This document is a design. It governs project identity.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

@@ -1,7 +1,12 @@
-# Design: IntelliSense
+# Philosophy: IntelliSense
 
-**Status:** Proposal. No code written.
-**Applies to:** Phase 2.8 onward.
+**Roadmap track:** Phase 3 language-intelligence proposal. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Proposal. No LSP client found in current source. The previous
+Phase 2.8 label is superseded by the Phase 3 language-intelligence track.
+
+**Applies to:** Phase 3 onward.
+
 **Governs:** How Craidd speaks to language servers, what it does with
 their output, and why it is a transport layer, not an intelligence.
 
@@ -193,7 +198,7 @@ practice, the community uses `csharp-ls` as a wrapper. Craidd
 discovers and launches whatever the user has, and does not attempt to
 bootstrap a Roslyn server itself.
 
-The consequence is that C# completions in Phase 2.8 depend on the
+The consequence is that C# completions in Phase 3 depend on the
 user having `csharp-ls` or an equivalent installed. If they do not,
 the language server banner explains what to install. This matches the
 existing toolchain discipline exactly: Craidd does not bundle, does
@@ -251,37 +256,37 @@ speed of the IDE is not negotiable, and it is preserved by this rule.
 
 ## Delivery order
 
-**2.8.1 — rust-analyzer.**
+**LSP stage 1 — rust-analyzer.**
 
 The first language server. Rust only. Initialize, didOpen, diagnostics,
 completion, hover, definition. Enough to prove the shape. If this
 works, every other server is a table entry.
 
-**2.8.2 — clangd.**
+**LSP stage 2 — clangd.**
 
 Second server, first polyglot case. C++ and C. Same shape, different
 tool. `compile_commands.json` handling is the interesting bit;
 Craidd reads it, does not generate it. If it is missing, the banner
 explains how to produce it (CMake: `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`).
 
-**2.8.3 — tsserver / vtsls.**
+**LSP stage 3 — tsserver / vtsls.**
 
 Third server, second language in the same solution as Rust. This is
 where routing matters: a `.ts` file in the TypeScript project goes to
 `vtsls`; a `.ts` file in a Config project does not.
 
-**2.8.4 — csharp-ls.**
+**LSP stage 4 — csharp-ls.**
 
 Fourth server, first bridge. Roslyn does not fit the standard LSP
 model cleanly. Whatever the user has installed, Craidd discovers and
 launches it.
 
-**2.8.5 — pyright or pylsp.**
+**LSP stage 5 — pyright or pylsp.**
 
 Fifth server, fifth language. By now the integration is a table
 entry and a parser variant.
 
-**2.8.6 — Aggregation across linked windows.**
+**LSP stage 6 — Aggregation across linked windows.**
 
 Diagnostics from hidden windows appear in the group's Problems list,
 clickable to reveal. This is the same aggregation step as in the
@@ -311,7 +316,7 @@ process. Signal-aware exit reporting in Output. A restart button in
 the language server status. The IDE survives. The user decides
 whether to restart.
 
-**How are server settings surfaced?** Not in Phase 2.8. The
+**How are server settings surfaced?** Not in Phase 3. The
 `initializationOptions` sent to each server are the defaults. Making
 them user-editable is a later phase, and it lives in the project's
 `.craidd` or in `~/.craidd-studio/user_preferences.toml`, following
@@ -336,6 +341,5 @@ Everything above is a consequence of that sentence.
 
 ---
 
-*Last updated: Phase 2.8 planning. Author: skira24.*
-*This document is a proposal. It governs how Craidd speaks to
-language servers.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a philosophy.*

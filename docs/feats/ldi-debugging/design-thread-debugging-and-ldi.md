@@ -1,5 +1,7 @@
 # Supporting design: Thread debugging and LDI
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Supporting design and source review, 3 October 2026. Proposed
 thread-selector behavior is distinguished from code present in the checkout.
 No runtime or interactive IDE acceptance was performed for this document.
@@ -8,7 +10,7 @@ No runtime or interactive IDE acceptance was performed for this document.
 supersedes this document's combined linked-window selector proposal. The
 session/stop/LDI safety analysis here still applies.
 
-**Companion:** [Thread scope](design-thread-scope.md),
+**Companion:** [Thread scope](../mt-debugging/design-thread-scope.md),
 [Managed LDI](design-ldi-debugging.md),
 [Rust native debugging](design-ldi-debugging-rust.md), and
 [Shared native consumers](design-native-shared-consumers.md).
@@ -506,5 +508,7 @@ debugs a separate supported native invocation before releasing the original.
 The dropdown displays these relationships while their owning transports and
 coordinators retain execution authority.
 
-Last updated: Phase 3.x supporting design, 3 October 2026. Author: skira24, with assistance.
-This document is a supporting design; proposed behavior requires the acceptance above.
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

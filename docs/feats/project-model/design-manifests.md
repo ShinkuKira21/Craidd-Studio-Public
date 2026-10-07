@@ -1,7 +1,14 @@
 # Design: Manifests
 
-**Status:** Implemented in Phase 2.3.2 (reading only). Not yet consumed.
+**Roadmap track:** Phase 2.3 foundation; Phase 3 build/debug consumers. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Foundational design, reading introduced in Phase 2.3.2. Current
+source includes manifest reading, configuration inference and build execution.
+The milestone descriptions below record the original progression; they are
+not a claim that inference/build are still unimplemented.
+
 **Applies to:** Phase 2.3.2 (read), Phase 2.3.3 (inference from), Phase 3+ (build from).
+
 **Governs:** What a manifest is, what it is not, and how Craidd uses it.
 
 ---
@@ -50,7 +57,7 @@ configuration (Tier 3), not a manifest.
 
 ## What Craidd does with a manifest
 
-### Phase 2.3.2 — Reading (current)
+### Phase 2.3.2 — Reading (foundation)
 
 A Rust command, `read_manifests(folder)`, reads the top level of a folder
 and returns any recognized manifests as loose structs:
@@ -71,7 +78,7 @@ pub struct Manifest {
   the result on the project object as `manifests?: Manifest[]`. It is
   session-only and refreshed alongside the tree.
 
-### Phase 2.3.3 — Inference (next)
+### Phase 2.3.3 — Inference (subsequent milestone)
 
 The three-tier build configuration system reads `project.manifests` and
 infers build defaults:
@@ -194,7 +201,5 @@ at the moment of creation.
 
 ---
 
-+++
-Last updated: Phase 2.3.2. Author: skira24, with assistance.
-This document is a design. It governs how Craidd reads manifests.
-+++
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

@@ -1,5 +1,7 @@
 # Languages Craidd-Studio does NOT support yet — and why
 
+**Roadmap track:** Later language expansion, unassigned. See the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design decisions, not roadblocks. Each section says *what we'd do*,
 *why we're not doing it yet*, and *what unblocks it*. Nothing here is
 "never." Everything here is "not this phase."
@@ -38,4 +40,5 @@ Java is a **package-tree language**:
 
 ### What Java support would look like (when it arrives)
 
-**One `.craidd` per Java project, sitting above the package root:**
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

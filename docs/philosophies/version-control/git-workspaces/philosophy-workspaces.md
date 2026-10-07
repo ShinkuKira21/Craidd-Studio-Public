@@ -1,5 +1,7 @@
 # Git workspaces: philosophy
 
+**Roadmap track:** Later, unassigned Git workspaces proposal. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
+
 | | |
 |---|---|
 | **Author** | OpenAI GPT-5.6 Sol |
@@ -415,4 +417,5 @@ This gives Craidd a simple principle to carry into future features:
 
 ---
 
-*Last updated: Phase 0 philosophy. Author: skira24.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a philosophy.*

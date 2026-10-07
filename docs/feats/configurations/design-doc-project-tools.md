@@ -1,6 +1,9 @@
 # Design: Project Tools and dependency workflows
 
+**Roadmap track:** Later dependency/project-tool proposal, unassigned. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Proposed, 19 September 2026. Planning only; no UI or backend implementation in this document.
+
 **Companions:** [Configuration megamenu](design-configuration-megamenu.md), [project configurations and NuGet](design-project-configurations-and-nuget.md), [tool discovery philosophy](../../philosophies/ide_editor/tool-discovery/philosophy-tool-discovery.md), [terminal design](../editor/design-terminal.md).
 
 ## Goal
@@ -230,3 +233,8 @@ Target **under one animation frame (16 ms) at p95** for opening a cached menu on
 - npm, pnpm, and Yarn projects use the selected/project-hinted manager and do not accidentally create a second lockfile; a C++ folder without a supported package manifest does not advertise an installer.
 - Open the menu and type in the palette while offline: no registry calls or process launches. Measure cached menu p95 on Arch and Debian/Crostini; record any breach of the 16 ms target.
 - Cancel a package task, change the active chip while a dialog is open, and modify a manifest externally: no retargeted or concurrent write, and the UI reports the actual outcome.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a proposal.*

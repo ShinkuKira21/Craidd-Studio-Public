@@ -1,13 +1,20 @@
 # Multi-thread debugging: window-local implementation contract
 
-**Status:** Active implementation, 6 October 2026. The ordinary C#, Rust, and
-C++ selector is in source and compiles; interactive IDE acceptance is still pending.
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
+**Status:** Active implementation, reviewed 7 October 2026. The ordinary C#,
+Rust and C++ selectors are in source. skira24 reports that the MT lab worked
+smoothly and the latest managed-LDI flow feels good; the complete per-language
+IDE acceptance matrix is still pending.
 The `codex/ldi-linked-thread-preview` branch adds a bounded managed-LDI
 preview: A's dropdown retains A's thread list and, during a held call, shows
 B's reproduction status and a separate B thread section. Selecting a paused
 B row routes inspection to B and focuses/views B; it does not retarget A's
 frozen origin. The seven-worker `mt-lab` variant and real LLDB-DAP probe cover
-native thread discovery. Cross-window desktop acceptance remains pending.
+native thread discovery. Ordered callers provide one active reproduction at
+a time; they do not establish independent stepping or simultaneous native
+call correlation. Remaining cross-window cases need explicit desktop records.
+
 **Supersedes for UI scope:** The combined cross-window dropdown in
 [design-thread-scope.md](design-thread-scope.md). The session identity, stop
 scope, and LDI safety corrections in
@@ -340,3 +347,8 @@ works. Desktop focus/reveal and stop controls need a live IDE pass.
 
 Protocol references: [DAP overview](https://microsoft.github.io/debug-adapter-protocol/overview)
 and [DAP specification](https://microsoft.github.io/debug-adapter-protocol/specification).
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

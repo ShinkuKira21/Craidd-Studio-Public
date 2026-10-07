@@ -1,9 +1,15 @@
-Phase 4: Find and Replace Batch
-Status: Planned. Not yet started.
-Depends on: Phase 2.2 (editable Monaco, save, dirty state), Phase 2.3 (delete/rename), Phase 3 (LSP).
-Unlocks: Bulk rename, project-wide string migration, refactoring across a polyglot solution.
+# Phase 4: Find and Replace Batch
 
-The premise
+**Roadmap track:** Phase 4 future plan; reviewed during Phase 3.x. See the [current roadmap](Roadmap-v0.0.4A.md).
+
+**Status:** Planned. Not yet started.
+
+**Depends on:** Phase 2.2 (editable Monaco, save, dirty state), Phase 2.3 (delete/rename), Phase 3 (LSP).
+
+**Unlocks:** Bulk rename, project-wide string migration, refactoring across a polyglot solution.
+
+## The premise
+
 Search is ambient. Replace is deliberate.
 
 Craidd's sidebar Search panel exists because the user searches continuously — dozens of times an hour, small queries, exploratory. It's designed for speed and low ceremony.
@@ -18,7 +24,8 @@ Ctrl+Shift+P → "Find and Replace Batch"
 
 The command opens a dedicated dialog. Not a sidebar section. Not an inline widget. A modal — because this is a decision, not a reflex.
 
-The dialog
+## The dialog
+
 +++
 ┌─ Find and Replace Batch ────────────────────────────────────┐
 │ │
@@ -68,26 +75,30 @@ Every file that matches has a checkbox. Every checkbox controls whether that fil
 
 The preview pane shows a diff for the currently highlighted file. Not for all files (that's noise), for the one the user is looking at.
 
-Scope options
+## Scope options
+
 Four scopes, mirroring the Search panel's tiers:
 
-Scope	What it covers	When to use
-Whole solution	All files in every declared project, respecting boundary rules.	The default. Refactoring across a polyglot project.
-Current project only	Just the currently focused project's tree.	Localized rename.
-Open editors only	Only files with an active tab.	Small, targeted change while working.
-Discovery (raw filesystem)	Everything visible in File Discovery, including non-project files.	When the change has to touch files the projects don't own.
+| Scope | What it covers | When to use |
+| --- | --- | --- |
+| Whole solution | All files in every declared project, respecting boundary rules | Default; refactoring across a polyglot project |
+| Current project only | The currently focused project's tree | Localized rename |
+| Open editors only | Files with an active tab | Small change while working |
+| Discovery (raw filesystem) | Everything visible in File Discovery, including non-project files | Changes outside declared projects |
+
 Boundary rules and IGNORE_DIRS apply except when "Include ignored files" is checked. That checkbox exists because sometimes the user really does want to touch something in dist/, and Craidd shouldn't be paternalistic about it — but the default is off, and the toggle is explicit.
 
-Options
+## Options
+
 Four toggles, all off by default except where noted:
 
-Case sensitive — off by default. Matches Search panel behavior.
+- **Case sensitive** — off by default. Matches Search panel behavior.
 
-Whole word — off by default. When on, uses word-boundary matching (\b semantics).
+- **Whole word** — off by default. When on, uses word-boundary matching (\b semantics).
 
-Regular expression — off by default. When on, Find is a regex. Replace supports $1, $2, ${name} backreferences. When a regex pattern is invalid, the dialog shows the compile error inline and disables Apply.
+- **Regular expression** — off by default. When on, Find is a regex. Replace supports $1, $2, ${name} backreferences. When a regex pattern is invalid, the dialog shows the compile error inline and disables Apply.
 
-Include ignored files — off by default. When on, IGNORE_DIRS and hidden-file rules are not applied. A warning band appears at the top of the dialog.
+- **Include ignored files** — off by default. When on, IGNORE_DIRS and hidden-file rules are not applied. A warning band appears at the top of the dialog.
 
 Regex mode is the dangerous one. When it's on:
 
@@ -99,7 +110,8 @@ Apply requires a second confirmation if the count exceeds 100.
 
 That last rule is deliberate. It's an anti-footgun, and it matches the phase's principle: replace is deliberate, and the larger the blast radius, the more deliberate it must be.
 
-The undo problem
+## The undo problem
+
 This is the phase's real design question.
 
 Replacing across N files mutates disk. Monaco's per-file undo stack knows nothing about changes made by other tools. If the user replaces across 12 files and immediately regrets it, the only recovery is:
@@ -112,7 +124,8 @@ Manual revert, which is unacceptable.
 
 Phase 4 ships with Option 1, because without it the feature is unsafe.
 
-Transaction design
+## Transaction design
+
 Each Apply generates a transaction:
 
 +++rust
@@ -157,7 +170,8 @@ In any of those cases, the command disappears.
 
 This is not a complete undo system. It's a single-step, session-scoped, best-effort undo — enough to recover from an accident, not enough to be a version control replacement. And that's the honest scope: this is not a document editor, it doesn't pretend to be.
 
-Interaction with open editors
+## Interaction with open editors
+
 If a file is open in an editor tab and gets replaced:
 
 The tab is reloaded from disk after the replace.
@@ -170,7 +184,8 @@ The second rule is non-negotiable. Replacing into a file with unsaved buffer edi
 
 This is the reason Phase 4 depends on Phase 2.2: without a save path and dirty state, "which files have unsaved changes" cannot be answered correctly.
 
-Interaction with the search panel
+## Interaction with the search panel
+
 The Search panel does not gain a replace input. Ever.
 
 Instead, the search panel gets a single action on its results header:
@@ -189,7 +204,8 @@ Options pre-filled with whatever the search used.
 
 The bridge is one-way. Search never triggers replace automatically. Replace never opens with a query the user didn't see.
 
-What is explicitly out of scope
+## What is explicitly out of scope
+
 Persistent undo history across restarts. Use git.
 
 Multi-step undo. One Apply, one Undo. Repeat.
@@ -206,7 +222,8 @@ Streaming replace on huge trees. The transaction holds everything in memory. Tre
 
 Replace with conditional logic. No "replace only if the line also contains X." That's a scripting feature, not this feature.
 
-Implementation sketch
+## Implementation sketch
+
 Rust commands:
 
 +++rust
@@ -251,12 +268,14 @@ Find and Replace Batch — opens the dialog.
 
 Undo: Find and Replace Batch — visible only when a transaction exists, includes the count in the label.
 
-Why this is Phase 4 and not Phase 2
+## Why this is Phase 4 and not Phase 2
+
 Replace mutates. Craidd has been disciplined about not shipping mutating features until the mechanisms exist to honor them: save path, dirty state, undo, conflict detection.
 
 Phase 4 is the phase where all of those exist. Shipping replace any earlier would produce a feature that writes files correctly but recovers incorrectly, and recovery is the half of the feature users actually need.
 
-Open questions
+## Open questions
+
 Transaction size cap. 500 files? 1000? The in-memory original_content for 1000 files at 50 KB each is 50 MB — acceptable. Cap at 1000, warn above 500.
 
 Atomicity. Should Apply be atomic across files, or best-effort? Atomic means: if file 7 fails to write, files 1–6 are rolled back. Best-effort means: files 1–6 stay written, file 7 fails, user is told. I lean best-effort with a clear failure report — atomic across multiple filesystem paths is genuinely hard, and the undo path already handles full rollback.
@@ -265,5 +284,7 @@ Undo window. Until another Apply happens? Until the affected file is modified? B
 
 Regex backreference syntax. $1 or \1? JS regex uses $1. Rust regex uses $1 too (with replace_all). Use $1. Document it in the dialog's help text.
 
-Last updated: Phase 2.1.3. Author: skira24.
-This document is a plan, not a task.
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

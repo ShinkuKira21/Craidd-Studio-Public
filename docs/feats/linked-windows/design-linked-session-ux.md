@@ -1,5 +1,7 @@
 # Linked sessions: editing, launch, and exit
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design and implementation record, 21 September 2026.
 The shared Tauri frontend server, close-scope dialog, session-scoped breakpoint
 menu, and exception navigation are implemented. Shared writable documents
@@ -203,3 +205,8 @@ model is complete.
 5. Two clients set different breakpoints, then set different definitions on
    the same source line; conditions and profiling affordances appear only
    when backed by real support.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

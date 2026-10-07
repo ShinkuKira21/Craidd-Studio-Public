@@ -1,11 +1,16 @@
 # Roadmap v0.0.3A — from debugger prototypes to a dependable Linux IDE
 
+> **Archived on 7 October 2026.** This is a historical snapshot, including its
+> original phase numbers and status claims. Use the [current roadmap](../Roadmap-v0.0.4A.md)
+> and [current codebase map](../Current-place.md) for present direction and source.
+> Archiving and navigation maintenance: Codex. Original attribution is retained.
+
 **Status:** Current direction as of 4 October 2026. Supersedes
 [v0.0.2A](Roadmap-v0.0.2A.md) as the status and ordering reference;
 the older document remains a historical phase snapshot.
 **Companions:** [Current place](Roadmap-Current_Place_Roadmap-v0.0.4A.md)
 is an older codebase map, and the
-[playground direction](playground/Playground-direction.md) is the acceptance
+[playground direction](../playground/Playground-direction.md) is the acceptance
 track for linked debugging.
 
 ## Where I think we are
@@ -39,7 +44,7 @@ could move materially after a full acceptance pass.
 ## Direction and order
 
 1. **Record and preserve the working debugger baseline.** Complete the
-   [playground acceptance track](playground/Playground-direction.md), including
+   [playground acceptance track](../playground/Playground-direction.md), including
    Rust FFI, managed LDI, Tauri startup, Gold from a Native invoker, and a
    repeated Native-close/Gold-Stop race. Report source, automated and desktop
    evidence separately. Fix only reproduced regressions.
@@ -81,13 +86,13 @@ debugging, callbacks and optimized/multithreaded FFI stay outside this gate.
 
 ## Next checkpoint
 
-Use the four playgrounds in [the acceptance track](playground/Playground-direction.md)
+Use the four playgrounds in [the acceptance track](../playground/Playground-direction.md)
 to record a complete White/Gold/Stop matrix on the repaired build. The result
 will tell us whether the next implementation should address a live regression,
 the unsaved-file review, or the first LSP slice. Update this roadmap from that
 record rather than treating “tests passed” as a completed product milestone.
 
-+++
-Last updated: Roadmap v0.0.3A, 4 October 2026. Author: skira24.
-This document is a plan.
-+++
+---
+
+*Last updated: Roadmap v0.0.3A, 4 October 2026. Author: ShinkuKira21.*
+*This document is a plan.*

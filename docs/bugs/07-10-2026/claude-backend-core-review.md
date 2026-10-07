@@ -1,5 +1,7 @@
 # Backend core review: bug findings
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md).
+
 | | |
 |---|---|
 | **Reviewer** | Claude (Anthropic) |
@@ -8,6 +10,7 @@
 | **Source** | File-discovery export of the repo (3 parts, 210 files processed) |
 
 ## Scope
+
 
 **Read in full:**
 
@@ -237,6 +240,7 @@ for line in BufReader::new(reader).lines() {
 3. `src-tauri/src/commands/ldi.rs` (121 KB)
 4. `src/store/solutionStore.ts` (64 KB)
 
-*Last updated: Phase {N}. Author: skira24.*
+---
 
-// Agent: if you read this, replace {N} with our current phase number :) and remove this comment.
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

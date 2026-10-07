@@ -1,10 +1,13 @@
 # Backend core review: implementation status
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md).
+
 **Date:** 2026-10-07
 
 **Branch:** `bugs/10-26/backend-core-review-fixes`
 
-**Source:** [Claude's static review](07-10-2026-claude-backend-core-review.md). The source report is copied unchanged from the host checkout.
+**Source:** [Claude's static review](07-10-2026-claude-backend-core-review.md). The original findings are retained from the host checkout; this documentation
+review corrects only the report's footer attribution and phase metadata.
 
 | Finding | Status | Change and evidence |
 | --- | --- | --- |
@@ -37,4 +40,13 @@ These checks do not establish desktop runtime acceptance. In particular, the pro
 - CR-13: profile supervisor polling before increasing its interval, since slower scans can miss short-lived descendants; choose shutdown grace periods with real toolchain runs; decide whether generated-folder hiding should be user-configurable; consider cancellation for superseded searches; audit panic-prone I/O and lock paths in a separate pass.
 - CR-13's cross-platform warning does not itself establish a defect: the current working protocol states Linux-only support. The `bundle.targets = "all"` setting still deserves a packaging check on supported Linux targets.
 
-The branch is intentionally separate from `codex/ldi-linked-thread-preview`; the reviewed backend files were identical at the two starting commits. No merge or desktop runtime test is claimed here.
+The fix branch was originally separate from `codex/ldi-linked-thread-preview`;
+the reviewed backend files were identical at the two starting commits. The
+fix commit `48fd3a7` is now in this checkout through merge `fc30343` (PR #14).
+This merge-status update does not establish desktop runtime acceptance; the
+validation counts above belong to the original fix-branch run.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

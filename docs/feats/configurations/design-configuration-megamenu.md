@@ -1,6 +1,9 @@
 # Visual design: Configuration megamenu
 
+**Roadmap track:** Configuration UI proposal; no new delivery phase assigned. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Proposal for review, 19 September 2026. No UI code changed.
+
 **Companion:** [Project configurations and NuGet](design-project-configurations-and-nuget.md).
 
 ## The idea
@@ -138,3 +141,8 @@ separate inferred Build and Run entries, giving eight rows for four projects.
 The first implementation can group those existing entries for display and
 keep their commands intact. A later model can store one project configuration
 with Build/Run/Debug action slots, as described in the companion design.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

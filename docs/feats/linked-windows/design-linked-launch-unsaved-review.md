@@ -1,10 +1,14 @@
 # Design: Unsaved changes before linked launch
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Design proposal recorded 3 October 2026. Not implemented or
 desktop-accepted. This document records the user's requested interaction;
 it is not evidence that Gold eligibility or launch preparation has been fixed.
+
 **Governs:** Resolving unsaved files before Gold Build, Run, or Debug from one
 visible IDE window, with an explicit route to each owning editor.
+
 **Companions:** [Linked solution windows](design-linked-solution-windows.md),
 [linked window manager](design-linked-window-manager.md),
 [saving during Run and Debug](design-save-session-restart.md), and
@@ -186,5 +190,7 @@ Rust-to-C++ live inspection still uses one original process and one LLDB session
 - The final Start rechecks new dirty edits, membership and dependency order;
   unrelated solutions are untouched. White controls retain their own scope.
 
-Last updated: 3 October 2026. Author: skira24, with assistance.
-This document is a design. Implementation and desktop acceptance remain pending.
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a proposal.*

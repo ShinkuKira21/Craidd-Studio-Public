@@ -1,5 +1,10 @@
 # Roadmap
 
+> **Archived on 7 October 2026.** This is a historical snapshot, including its
+> original phase numbers and status claims. Use the [current roadmap](../Roadmap-v0.0.4A.md)
+> and [current codebase map](../Current-place.md) for present direction and source.
+> Archiving and navigation maintenance: Codex. Original attribution is retained.
+
 **Status:** Living document. Updated at the end of every phase.
 **Purpose:** A single source of truth for phase ordering, for the
 constraints that hold across every phase, and for the two ambitions
@@ -276,5 +281,5 @@ Craidd. It is a different product wearing Craidd's clothes.
 
 ---
 
-*Last updated: Phase 2.4.4. Author: skira24.*
-*This document is a plan. It is the ordering reference.*
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a plan.*

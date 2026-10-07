@@ -1,6 +1,9 @@
 # Design: Project configurations and NuGet
 
+**Roadmap track:** Configuration design and later NuGet proposal; no new delivery phase assigned. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 **Status:** Proposed, 19 September 2026. Design only; no implementation in this document.
+
 **Scope:** The toolbar configuration picker, Build/Run/Debug defaults, the
 Configurations dialog, and project-scoped NuGet package management.
 
@@ -228,3 +231,8 @@ existing credential provider.
 - [Microsoft: remove packages](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-package-remove)
 - [Microsoft: Central Package Management](https://learn.microsoft.com/en-us/nuget/consume-packages/central-package-management)
 - [Microsoft: authenticated feeds](https://learn.microsoft.com/en-us/nuget/consume-packages/consuming-packages-authenticated-feeds)
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a proposal.*

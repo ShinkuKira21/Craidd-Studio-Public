@@ -1,5 +1,7 @@
 # Declarative build order: working prototype
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 The executable example is [`workspaces/build-order-lab`](../../../workspaces/build-order-lab/README.md).
 It extends Power configurations without changing ecosystem manifests or making
 libraries into runnable sessions.
@@ -71,3 +73,8 @@ mixed managed/native debugging. A future project wizard can propose these same
 saved configurations with visible evidence and user approval, without a separate
 wizard-only scheduler. Additional tool adapters and artifact destinations can
 extend the typed steps without making every user write shell scripts.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*

@@ -1,5 +1,7 @@
 # Forks
 
+**Roadmap track:** Project-wide contribution policy, not a delivery phase. See the [current roadmap](../roadmaps/Roadmap-v0.0.4A.md).
+
 This folder exists so a fork can **declare itself** before it tries to change anything.
 
 A fork is not a PR. A PR is *aligned* — it sharpens the current shape. A fork is *divergent* — it proposes a different shape. Both are welcome. They arrive differently, and they are reviewed differently.
@@ -93,3 +95,8 @@ A fork graduates when it stops being a fork. That is a human decision and it is 
 When it happens, `docs/forks/your-fork/` becomes `docs/feats/your-fork/`. The content moves intact. No rewriting, no reformatting, no "adjusting it to fit." The argument that earned the move is the argument that ships.
 
 If a fork never graduates, it still lives in `docs/forks/`. That is not failure. A declared, legible fork is a better contribution to the project's thinking than an undeclared one, whether or not it ever becomes the mainline.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a record.*

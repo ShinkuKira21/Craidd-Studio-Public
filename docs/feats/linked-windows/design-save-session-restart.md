@@ -1,5 +1,7 @@
 # Saving during Run and Debug
 
+**Roadmap track:** Phase 3.x debugger, linked-window and reliability work. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+
 The save dialog makes process restart explicit. It applies to Ctrl+S, File →
 Save, Save As, and user saves from tab-close and disk-conflict prompts. Internal
 save-before-launch and save-before-exit preparation does not open this dialog.
@@ -86,3 +88,8 @@ preview; restart a server with White and verify clients remain alive; edit one
 client source used by several windows and verify Gold launch readiness order;
 save native source before the first Blue hit and after a reproduction finishes,
 while A is running: both must offer Save / Save and Gold Restart Debug.
+
+---
+
+*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*This document is a design.*
