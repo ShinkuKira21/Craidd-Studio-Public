@@ -39,6 +39,13 @@ result alone cannot justify a Craidd toolbar control. Any transport must keep
 one debugger owner and prove its stop, release, and failure semantics before
 the UI offers isolation. [LLDB-DAP capabilities](https://lldb.llvm.org/use/lldbdap.html#supported-features).
 
+An initial direct check with the installed LLDB 23.1.1 and the C++ MT Console
+stopped both workers at `main.cpp:37`. `thread step-over -m this-thread` moved
+worker 1 to line 38 while worker 2 stayed at line 37; selecting worker 2 and
+repeating the command moved it to line 38 while worker 1 stayed at line 38.
+This is source-position evidence in the stock LLDB CLI, not a worker-side-effect
+counter result or a Craidd/LLDB-DAP integration result.
+
 For ordinary managed C#, a Linux OS-thread stop is not a managed source Step.
 The CLR debugger owner must coordinate managed thread state, queued callbacks,
 and release; a separate Linux `ptrace` controller is not an approved fallback.
