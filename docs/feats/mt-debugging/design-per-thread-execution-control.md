@@ -3,10 +3,11 @@
 **Roadmap track:** Phase 3.x debugger investigation, after the ordinary thread
 selector baseline. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Proposal, 8 October 2026. No per-thread hold or exclusive step is
-implemented or accepted in Craidd. C# is the first investigation; Rust and C++
-follow through their native debugger. This document does not assign a release
-phase to the feature.
+**Status:** Retained design investigation, 8 October 2026. No per-thread hold or
+exclusive step is implemented or accepted on `master`. A local C# feasibility
+prototype on `feat/mt-debugging-thread-control` is not a product dependency.
+Native Rust and C++ are the next bounded investigation; ordinary managed C#
+remains dependent on a capable installed debugger. No release phase is assigned.
 
 **Companions:** [MT implementation contract](design-multi-thread-debugging-implementation.md),
 [thread debugging and LDI](../ldi-debugging/design-thread-debugging-and-ldi.md),
@@ -15,6 +16,37 @@ and the [MT lab](../../../workspaces/mt-lab/README.md). The archived
 [future-directions sketch](archives/design-thread-debugging-future-directions.md)
 record the earlier exploration; this plan replaces their execution-control
 direction.
+
+## Decision after the C# feasibility prototype
+
+The local prototype showed that a modified netcoredbg can hold other managed
+threads for a source-level Step. It also failed to step a selected worker whose
+current frame had no source line. The desktop screenshots established selection
+and stepping on both workers, but did not capture before/after counters for
+each step. These are feasibility results, not product acceptance.
+
+Craidd will **not** require users to build or download a Craidd-maintained
+netcoredbg, replace their system debugger, or silently attach a second
+controller. The experimental adapter and ⇥ control remain on the preserved
+feature branch; they are absent from `master`. The C# implementation track
+below records what was tested and what a capable owner would need to prove;
+it is no longer the active distribution plan.
+
+For native Rust and C++, investigate the installed LLDB owner's
+`thread step-over --run-mode this-thread` behavior directly. The installed
+`lldb-dap` does not advertise DAP single-thread execution, so a direct LLDB
+result alone cannot justify a Craidd toolbar control. Any transport must keep
+one debugger owner and prove its stop, release, and failure semantics before
+the UI offers isolation. [LLDB-DAP capabilities](https://lldb.llvm.org/use/lldbdap.html#supported-features).
+
+For ordinary managed C#, a Linux OS-thread stop is not a managed source Step.
+The CLR debugger owner must coordinate managed thread state, queued callbacks,
+and release; a separate Linux `ptrace` controller is not an approved fallback.
+Craidd can enable exclusive stepping later only when an installed, maintained
+debugger reports and demonstrates the required capability. Until then, retain
+ordinary thread inspection and Step with its observed process-wide behavior.
+[Linux `ptrace`](https://man7.org/linux/man-pages/man2/ptrace.2.html),
+[CLR thread-state risks](https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/icordebug/icordebugthread-setdebugstate-method).
 
 ## The user problem and the boundary
 
