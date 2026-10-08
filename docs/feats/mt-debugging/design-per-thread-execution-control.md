@@ -51,6 +51,20 @@ The separate toolchain-manager proposal may later make user-chosen tools
 easier to select or acquire per project. It does not change this execution
 gate or turn an optional patched debugger into a default dependency.
 
+### Isolated `dep/mt-debugging-thread-control` implementation
+
+This branch carries the earlier Craidd thread selector, an experimental ⇥
+Step Over control, the C# lab solution, and a patch against a pinned upstream
+netcoredbg revision. Stock adapters keep ordinary Step; ⇥ appears only when
+the active adapter advertises standard DAP
+`supportsSingleThreadExecutionRequests` or the experimental managed request.
+The standard path sends `next` with `singleThread: true`; the patched C# path
+sends `craiddExclusiveNext`. Neither path is a general promise to isolate
+threads: capability claims still need independent behavior and recovery tests
+on the selected build and platform. This branch is for compatibility work and
+is not a merge candidate for `master` until those gates and the desktop
+acceptance cases pass. The patched debugger binary remains local and ignored.
+
 The local prototype showed that a modified netcoredbg can hold other managed
 threads for a source-level Step. It also failed to step a selected worker whose
 current frame had no source line. The desktop screenshots established selection

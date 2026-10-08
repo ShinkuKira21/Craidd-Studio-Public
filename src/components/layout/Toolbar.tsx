@@ -33,6 +33,9 @@ function Toolbar() {
   const debugInspectionError = useDebug((s) => s.inspectionError);
   const selectedThreadId = useDebug((s) => s.selectedThreadId);
   const threadSessionKey = useDebug((s) => s.threadSessionKey);
+  const exclusiveNextSessionKey = useDebug((s) => s.exclusiveNextSessionKey);
+  const threadsStale = useDebug((s) => s.threadsStale);
+  const allThreadsStopped = useDebug((s) => s.allThreadsStopped);
   const nativeContext = useNativeDebug((s) => s.context);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [startupSetupRequested, setStartupSetupRequested] = useState(false);
@@ -53,6 +56,8 @@ function Toolbar() {
     && item.windowLabel !== linked.ownWindowLabel);
   const heldByLdi = Boolean(ldi?.held && ldi.phase !== "stopped" && ldi.originLabel === (remote?.windowLabel ?? linked.ownWindowLabel));
   const native = !remote ? nativeContext : null;
+  const hasExclusiveStep = !remote && !native && Boolean(threadSessionKey)
+    && exclusiveNextSessionKey === threadSessionKey;
   const showGold = linked.windows.length > 1 || linked.linked || Boolean(linked.activeAction);
   const liveOwner = !remote && blues.some((blue) => blue.mode === "live-native"
     && blue.originLabel === linked.ownWindowLabel && !blue.warning)
@@ -65,7 +70,7 @@ function Toolbar() {
     ? "Select a paused thread before stepping"
     : debugFrames.length === 0
       ? debugInspectionError ? "The selected thread's stack could not be inspected; choose another paused thread" : "Waiting for the selected thread's stack"
-    : "This thread has no source line at its current instruction. Inspect it or select a thread stopped in code; Continue remains available.";
+    : "This thread has no source line at its current instruction. Continue to its next source breakpoint; other threads may run too.";
   const running = ["waiting", "starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
   const viewedProfileName = remote ? remote.selectedProfileName : selectedProfileName;
@@ -79,6 +84,8 @@ function Toolbar() {
     .catch((error) => alert(`Could not stop the viewed window: ${String(error)}`));
   const debugViewed = (action: "continue" | "pause" | "stepOver" | "stepInto" | "stepOut") => void controlViewedDebug(action)
     .catch((error) => alert(`Debug ${action} failed: ${String(error)}`));
+  const stepThreadOnly = () => void useDebug.getState().stepThreadOnly()
+    .catch((error) => alert(`Could not step this thread only: ${String(error)}`));
   const onChipSelect = (name: string) => void selectViewedConfiguration(name)
     .catch((error) => alert(`Could not select configuration: ${String(error)}`));
 
@@ -141,9 +148,16 @@ function Toolbar() {
           : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
         {!remote && !native && (threadSessionKey || (ldi?.held && ldi.originLabel === linked.ownWindowLabel)) && <ThreadDropdown />}
         {viewedStatus === "paused" && (!native || native.nativeStop) && <>
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason}
+            label="Step Over · may resume all threads" icon="↷" onClick={() => debugViewed("stepOver")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason}
+            label="Step Into · may resume all threads" icon="↓" onClick={() => debugViewed("stepInto")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason}
+            label="Step Out · may resume all threads" icon="↑" onClick={() => debugViewed("stepOut")} />
+          {hasExclusiveStep &&
+            <DebugTransport disabled={heldByLdi || threadsStale || !allThreadsStopped || Boolean(localStepUnavailable)}
+              disabledReason={threadsStale ? "Wait for the debugger's current thread list" : !allThreadsStopped ? "Pause all threads before stepping only one" : heldByLdi ? undefined : localStepReason}
+              label="Experimental: Step selected thread only" icon="⇥" onClick={stepThreadOnly} />}
         </>}
       </div>}
 

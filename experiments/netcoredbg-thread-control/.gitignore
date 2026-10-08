@@ -1,0 +1,6 @@
+.local-tools/
+**/bin/
+**/obj/
+**/.runs/
+.runs/
+**/runs/

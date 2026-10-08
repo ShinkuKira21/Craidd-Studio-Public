@@ -1,0 +1,342 @@
+diff --git a/src/debugger/callbacksqueue.cpp b/src/debugger/callbacksqueue.cpp
+index fb74d87..428a1f6 100644
+--- a/src/debugger/callbacksqueue.cpp
++++ b/src/debugger/callbacksqueue.cpp
+@@ -66,6 +66,7 @@ bool CallbacksQueue::CallbacksWorkerBreakpoint(ICorDebugAppDomain *pAppDomain, I
+         m_debugger.pProtocol->EmitOutputEvent(OutputStdErr, ss.str());
+         m_debugger.pProtocol->EmitBreakpointEvent(changeEvent);
+     }
++    m_debugger.ReleaseExclusiveStep();
+     m_debugger.pProtocol->EmitStoppedEvent(event);
+     m_debugger.m_ioredirect.async_cancel();
+     return true;
+@@ -93,6 +94,7 @@ bool CallbacksQueue::CallbacksWorkerStepComplete(ICorDebugAppDomain *pAppDomain,
+ #endif // INTEROP_DEBUGGING
+ 
+     m_debugger.SetLastStoppedThread(pThread);
++    m_debugger.ReleaseExclusiveStep();
+     m_debugger.pProtocol->EmitStoppedEvent(event);
+     m_debugger.m_ioredirect.async_cancel();
+     return true;
+@@ -123,6 +125,7 @@ bool CallbacksQueue::CallbacksWorkerBreak(ICorDebugAppDomain *pAppDomain, ICorDe
+ 
+     StoppedEvent event(StopPause, threadId);
+     event.frame = stackFrame;
++    m_debugger.ReleaseExclusiveStep();
+     m_debugger.pProtocol->EmitStoppedEvent(event);
+     m_debugger.m_ioredirect.async_cancel();
+     return true;
+@@ -151,6 +154,7 @@ bool CallbacksQueue::CallbacksWorkerException(ICorDebugAppDomain *pAppDomain, IC
+ #endif // INTEROP_DEBUGGING
+ 
+     m_debugger.SetLastStoppedThread(pThread);
++    m_debugger.ReleaseExclusiveStep();
+     m_debugger.pProtocol->EmitStoppedEvent(event);
+     m_debugger.m_ioredirect.async_cancel();
+     return true;
+@@ -387,6 +391,10 @@ HRESULT CallbacksQueue::Pause(ICorDebugProcess *pProcess, ThreadId lastStoppedTh
+     if (Status == S_FALSE) // Already stopped.
+         return S_OK;
+ 
++    // A release failure is reported by ReleaseExclusiveStep. Still emit the
++    // pause stop so the client can show the unverified state and offer Stop.
++    m_debugger.ReleaseExclusiveStep();
++
+ #ifdef INTEROP_DEBUGGING
+     if (m_debugger.m_interopDebugging)
+         IfFailRet(m_debugger.m_sharedInteropDebugger->StopAllNativeThreads(pProcess));
+diff --git a/src/debugger/manageddebugger.cpp b/src/debugger/manageddebugger.cpp
+index d6e8daa..8ca20fc 100644
+--- a/src/debugger/manageddebugger.cpp
++++ b/src/debugger/manageddebugger.cpp
+@@ -142,6 +142,7 @@ void ManagedDebuggerBase::NotifyProcessCreated()
+ 
+ void ManagedDebuggerBase::NotifyProcessExited()
+ {
++    m_exclusiveStepActive.store(false);
+     std::unique_lock<std::mutex> lock(m_processAttachedMutex);
+     m_processAttachedState = ProcessAttachedState::Unattached;
+     lock.unlock();
+@@ -356,7 +357,25 @@ HRESULT ManagedDebugger::Disconnect(DisconnectAction action)
+     return TerminateProcess();
+ }
+ 
+-HRESULT ManagedDebugger::StepCommand(ThreadId threadId, StepType stepType)
++HRESULT ManagedDebuggerBase::ReleaseExclusiveStep()
++{
++    if (!m_exclusiveStepActive.exchange(false))
++        return S_OK;
++
++    if (!m_iCorProcess)
++        return E_FAIL;
++
++    HRESULT status = m_iCorProcess->SetAllThreadsDebugState(THREAD_RUN, nullptr);
++    if (FAILED(status))
++    {
++        m_exclusiveStepActive.store(true);
++        LOGE("Could not release managed thread holds: %s", errormessage(status));
++        pProtocol->EmitOutputEvent(OutputStdErr, "Exclusive step: managed thread release failed; process state is unverified.\n");
++    }
++    return status;
++}
++
++HRESULT ManagedDebugger::StepCommand(ThreadId threadId, StepType stepType, bool exclusive)
+ {
+     LogFuncEntry();
+ 
+@@ -379,19 +398,52 @@ HRESULT ManagedDebugger::StepCommand(ThreadId threadId, StepType stepType)
+ 
+     ToRelease<ICorDebugThread> pThread;
+     IfFailRet(m_iCorProcess->GetThread(int(threadId), &pThread));
++    IfFailRet(ReleaseExclusiveStep());
++#ifdef INTEROP_DEBUGGING
++    if (exclusive && m_interopDebugging)
++        return E_NOTIMPL; // Managed holds cannot promise native-thread isolation.
++#endif
+     IfFailRet(m_uniqueSteppers->SetupStep(pThread, stepType));
+ 
++    if (exclusive)
++    {
++        Status = m_iCorProcess->SetAllThreadsDebugState(THREAD_SUSPEND, pThread);
++        if (FAILED(Status))
++        {
++            m_uniqueSteppers->DisableAllSteppers(m_iCorProcess);
++            // Bulk state changes may have partially applied. Keep the lease
++            // marked active until rollback succeeds, so later controls retry.
++            m_exclusiveStepActive.store(true);
++            ReleaseExclusiveStep();
++            return Status;
++        }
++        m_exclusiveStepActive.store(true);
++    }
++
+     m_sharedVariables->Clear(); // Important, must be sync with MIProtocol m_vars.clear()
+     FrameId::invalidate(); // Clear all created during break frames.
+-    pProtocol->EmitContinuedEvent(threadId); // VSCode protocol need thread ID.
++    pProtocol->EmitContinuedEvent(threadId, !exclusive); // VSCode protocol needs accurate resume scope.
+ 
+     // Note, process continue must be after event emitted, since we could get new stop event from queue here.
+     if (FAILED(Status = m_sharedCallbacksQueue->Continue(m_iCorProcess)))
++    {
+         LOGE("Continue failed: %s", errormessage(Status));
++        ReleaseExclusiveStep();
++    }
+ 
+     return Status;
+ }
+ 
++HRESULT ManagedDebugger::ReleaseThreadHolds()
++{
++    std::lock_guard<Utility::RWLock::Reader> guardProcessRWLock(m_debugProcessRWLock.reader);
++    HRESULT Status;
++    IfFailRet(CheckDebugProcess());
++    if (m_sharedCallbacksQueue->IsRunning())
++        return E_FAIL; // Pause first; never change managed thread state in a running process.
++    return ReleaseExclusiveStep();
++}
++
+ HRESULT ManagedDebugger::Continue(ThreadId threadId)
+ {
+     LogFuncEntry();
+@@ -413,6 +465,8 @@ HRESULT ManagedDebugger::Continue(ThreadId threadId)
+         return S_OK; // Send 'OK' response, but don't generate continue event.
+     }
+ 
++    IfFailRet(ReleaseExclusiveStep());
++
+     m_sharedVariables->Clear(); // Important, must be sync with MIProtocol m_vars.clear()
+     FrameId::invalidate(); // Clear all created during break frames.
+     pProtocol->EmitContinuedEvent(threadId); // VSCode protocol need thread ID.
+@@ -800,6 +854,9 @@ HRESULT ManagedDebuggerHelpers::DetachFromProcess()
+ 
+         DisableAllBreakpointsAndSteppers();
+ 
++        if (FAILED(ReleaseExclusiveStep()))
++            LOGW("Managed thread holds could not be released before detach.");
++
+         HRESULT Status;
+         if (FAILED(Status = m_iCorProcess->Detach()))
+             LOGE("Process detach failed: %s", errormessage(Status));
+@@ -828,6 +885,9 @@ HRESULT ManagedDebuggerHelpers::TerminateProcess()
+ 
+         DisableAllBreakpointsAndSteppers();
+ 
++        if (FAILED(ReleaseExclusiveStep()))
++            LOGW("Managed thread holds could not be released before termination.");
++
+         HRESULT Status;
+         if (SUCCEEDED(Status = m_iCorProcess->Terminate(0)))
+         {
+diff --git a/src/debugger/manageddebugger.h b/src/debugger/manageddebugger.h
+index 5ef62ef..139bdb6 100644
+--- a/src/debugger/manageddebugger.h
++++ b/src/debugger/manageddebugger.h
+@@ -9,6 +9,7 @@
+ #include <vector>
+ #include <map>
+ #include <set>
++#include <atomic>
+ #include "interfaces/idebugger.h"
+ #include "debugger/dbgshim.h"
+ #include "debugger/interop_debugging.h"
+@@ -98,6 +99,11 @@ protected:
+     Utility::RWLock m_debugProcessRWLock;
+     ToRelease<ICorDebug> m_iCorDebug;
+     ToRelease<ICorDebugProcess> m_iCorProcess;
++    std::atomic<bool> m_exclusiveStepActive{false};
++
++    // The managed debugger owns the one-step lease. A stopped callback releases it
++    // before reporting the stop to the client.
++    HRESULT ReleaseExclusiveStep();
+ 
+     bool m_justMyCode;
+     bool m_stepFiltering;
+@@ -183,7 +189,8 @@ public:
+     void EnumerateBreakpoints(std::function<bool (const IDebugger::BreakpointInfo&)>&& callback) override;
+     HRESULT AllBreakpointsActivate(bool act) override;
+     HRESULT GetStackTrace(ThreadId threadId, FrameLevel startFrame, unsigned maxFrames, std::vector<StackFrame> &stackFrames, int &totalFrames, bool hotReloadAwareCaller = false) override;
+-    HRESULT StepCommand(ThreadId threadId, StepType stepType) override;
++    HRESULT StepCommand(ThreadId threadId, StepType stepType, bool exclusive = false) override;
++    HRESULT ReleaseThreadHolds() override;
+     HRESULT GetScopes(FrameId frameId, std::vector<Scope> &scopes) override;
+     HRESULT GetVariables(uint32_t variablesReference, VariablesFilter filter, int start, int count, std::vector<Variable> &variables) override;
+     int GetNamedVariables(uint32_t variablesReference) override;
+diff --git a/src/interfaces/idebugger.h b/src/interfaces/idebugger.h
+index 77b9f8d..e8f2b87 100644
+--- a/src/interfaces/idebugger.h
++++ b/src/interfaces/idebugger.h
+@@ -90,7 +90,8 @@ public:
+     virtual void EnumerateBreakpoints(std::function<bool (const BreakpointInfo&)>&& callback) = 0;
+     virtual HRESULT AllBreakpointsActivate(bool act) = 0;
+     virtual HRESULT GetStackTrace(ThreadId threadId, FrameLevel startFrame, unsigned maxFrames, std::vector<StackFrame> &stackFrames, int &totalFrames, bool hotReloadAwareCaller = false) = 0;
+-    virtual HRESULT StepCommand(ThreadId threadId, StepType stepType) = 0;
++    virtual HRESULT StepCommand(ThreadId threadId, StepType stepType, bool exclusive = false) = 0;
++    virtual HRESULT ReleaseThreadHolds() = 0;
+     virtual HRESULT GetScopes(FrameId frameId, std::vector<Scope> &scopes) = 0;
+     virtual HRESULT GetVariables(uint32_t variablesReference, VariablesFilter filter, int start, int count, std::vector<Variable> &variables) = 0;
+     virtual int GetNamedVariables(uint32_t variablesReference) = 0;
+diff --git a/src/interfaces/iprotocol.h b/src/interfaces/iprotocol.h
+index 5987317..d37c130 100644
+--- a/src/interfaces/iprotocol.h
++++ b/src/interfaces/iprotocol.h
+@@ -35,7 +35,7 @@ public:
+     virtual void EmitStoppedEvent(const StoppedEvent &event) = 0;
+     virtual void EmitExitedEvent(const ExitedEvent &event) = 0;
+     virtual void EmitTerminatedEvent() = 0;
+-    virtual void EmitContinuedEvent(ThreadId threadId) = 0;
++    virtual void EmitContinuedEvent(ThreadId threadId, bool allThreadsContinued = true) = 0;
+     virtual void EmitInteropDebuggingErrorEvent(const int error_n) {}
+     virtual void EmitThreadEvent(const ThreadEvent &event) = 0;
+     virtual void EmitModuleEvent(const ModuleEvent &event) = 0;
+diff --git a/src/protocols/cliprotocol.cpp b/src/protocols/cliprotocol.cpp
+index 31ce7bb..f7aa9fc 100644
+--- a/src/protocols/cliprotocol.cpp
++++ b/src/protocols/cliprotocol.cpp
+@@ -906,7 +906,7 @@ void CLIProtocol::EmitTerminatedEvent()
+ 
+ // This function implements Debugger interface and called from ManagedDebugger, 
+ // as callback function, in separate thread.
+-void CLIProtocol::EmitContinuedEvent(ThreadId threadId)
++void CLIProtocol::EmitContinuedEvent(ThreadId threadId, bool allThreadsContinued)
+ {
+     LogFuncEntry();
+ }
+diff --git a/src/protocols/cliprotocol.h b/src/protocols/cliprotocol.h
+index e9115cd..8423f0d 100644
+--- a/src/protocols/cliprotocol.h
++++ b/src/protocols/cliprotocol.h
+@@ -89,7 +89,7 @@ public:
+     void EmitStoppedEvent(const StoppedEvent &event) override;
+     void EmitExitedEvent(const ExitedEvent &event) override;
+     void EmitTerminatedEvent() override;
+-    void EmitContinuedEvent(ThreadId threadId) override;
++    void EmitContinuedEvent(ThreadId threadId, bool allThreadsContinued = true) override;
+     void EmitInteropDebuggingErrorEvent(const int error_n) override;
+     void EmitThreadEvent(const ThreadEvent &event) override;
+     void EmitModuleEvent(const ModuleEvent &event) override;
+diff --git a/src/protocols/miprotocol.cpp b/src/protocols/miprotocol.cpp
+index 6a8024c..0d3113a 100644
+--- a/src/protocols/miprotocol.cpp
++++ b/src/protocols/miprotocol.cpp
+@@ -458,7 +458,7 @@ void MIProtocol::EmitExitedEvent(const ExitedEvent &event)
+     MIProtocol::Printf("(gdb)\n");
+ }
+ 
+-void MIProtocol::EmitContinuedEvent(ThreadId threadId)
++void MIProtocol::EmitContinuedEvent(ThreadId threadId, bool allThreadsContinued)
+ {
+     LogFuncEntry();
+ }
+diff --git a/src/protocols/miprotocol.h b/src/protocols/miprotocol.h
+index 3a878ee..28ba21e 100644
+--- a/src/protocols/miprotocol.h
++++ b/src/protocols/miprotocol.h
+@@ -34,7 +34,7 @@ public:
+     void EmitStoppedEvent(const StoppedEvent &event) override;
+     void EmitExitedEvent(const ExitedEvent &event) override;
+     void EmitTerminatedEvent() override {}
+-    void EmitContinuedEvent(ThreadId threadId) override;
++    void EmitContinuedEvent(ThreadId threadId, bool allThreadsContinued = true) override;
+     void EmitThreadEvent(const ThreadEvent &event) override;
+     void EmitModuleEvent(const ModuleEvent &event) override;
+     void EmitOutputEvent(OutputCategory category, string_view output, string_view source = "", DWORD threadId = 0) override;
+diff --git a/src/protocols/vscodeprotocol.cpp b/src/protocols/vscodeprotocol.cpp
+index 7712318..596a0ee 100644
+--- a/src/protocols/vscodeprotocol.cpp
++++ b/src/protocols/vscodeprotocol.cpp
+@@ -146,7 +146,7 @@ static json FormJsonForExceptionDetails(const ExceptionDetails &details)
+     return result;
+ }
+ 
+-void VSCodeProtocol::EmitContinuedEvent(ThreadId threadId)
++void VSCodeProtocol::EmitContinuedEvent(ThreadId threadId, bool allThreadsContinued)
+ {
+     LogFuncEntry();
+ 
+@@ -155,7 +155,7 @@ void VSCodeProtocol::EmitContinuedEvent(ThreadId threadId)
+     if (threadId)
+         body["threadId"] = int(threadId);
+ 
+-    body["allThreadsContinued"] = true;
++    body["allThreadsContinued"] = allThreadsContinued;
+     EmitEvent("continued", body);
+ }
+ 
+@@ -421,6 +421,9 @@ static void AddCapabilitiesTo(json &capabilities)
+     capabilities["supportsSetExpression"] = true;
+     capabilities["supportsTerminateRequest"] = true;
+     capabilities["supportsCancelRequest"] = true;
++    // Craidd experiment only: one managed Step Over, with an owner-side lease.
++    // This is narrower than DAP supportsSingleThreadExecutionRequests.
++    capabilities["craiddManagedExclusiveNext"] = true;
+ 
+     capabilities["supportsExceptionInfoRequest"] = true;
+     capabilities["supportsExceptionFilterOptions"] = true;
+@@ -684,6 +687,14 @@ static HRESULT HandleCommand(std::shared_ptr<IDebugger> &sharedDebugger, std::st
+     { "stepOut", [&](const json &arguments, json &body){
+         return sharedDebugger->StepCommand(ThreadId{int(arguments.at("threadId"))}, IDebugger::StepType::STEP_OUT);
+     } },
++    // Experimental Craidd-owned request. Do not claim standard DAP single-thread
++    // capability until continue and the wider execution contract are implemented.
++    { "craiddExclusiveNext", [&](const json &arguments, json &body){
++        return sharedDebugger->StepCommand(ThreadId{int(arguments.at("threadId"))}, IDebugger::StepType::STEP_OVER, true);
++    } },
++    { "craiddReleaseManagedHolds", [&](const json &arguments, json &body){
++        return sharedDebugger->ReleaseThreadHolds();
++    } },
+     { "scopes", [&](const json &arguments, json &body){
+         HRESULT Status;
+         std::vector<Scope> scopes;
+diff --git a/src/protocols/vscodeprotocol.h b/src/protocols/vscodeprotocol.h
+index eeb1c14..c03b9ca 100644
+--- a/src/protocols/vscodeprotocol.h
++++ b/src/protocols/vscodeprotocol.h
+@@ -70,7 +70,7 @@ public:
+     void EmitStoppedEvent(const StoppedEvent &event) override;
+     void EmitExitedEvent(const ExitedEvent &event) override;
+     void EmitTerminatedEvent() override;
+-    void EmitContinuedEvent(ThreadId threadId) override;
++    void EmitContinuedEvent(ThreadId threadId, bool allThreadsContinued = true) override;
+     void EmitThreadEvent(const ThreadEvent &event) override;
+     void EmitModuleEvent(const ModuleEvent &event) override;
+     void EmitOutputEvent(OutputCategory category, string_view output, string_view source = "", DWORD threadId = 0) override;

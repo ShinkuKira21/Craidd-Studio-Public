@@ -6,7 +6,7 @@ use std::os::unix::process::CommandExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -41,6 +41,8 @@ struct Session {
     thread_id: AtomicI64,
     ldi_token: Option<u64>,
     multi_thread: bool,
+    exclusive_next_mode: AtomicU8,
+    exclusive_step_in_flight: AtomicBool,
     threads: Mutex<ThreadBook>,
     inspection_requests: Mutex<HashMap<u64, SelectionRequest>>,
     transport_busy: AtomicBool,
@@ -125,7 +127,7 @@ fn generic_thread_name(name: &str, id: i64) -> bool {
 impl ThreadBook {
     fn snapshot(&self, session: &Session) -> Value {
         json!({"status":"threads", "sessionKey":format!("{}:{}", session.pgid, session.birth),
-            "stale":self.stale,
+            "stale":self.stale, "allThreadsStopped":self.all_stopped,
             "threads":self.rows.iter().map(|(id, row)| json!({"id":id, "name":row.name,
                 "state":row.state, "reason":row.reason, "incarnation":row.incarnation,
                 "observedMs":row.first_seen.elapsed().as_millis(),
@@ -986,6 +988,10 @@ pub(crate) fn launch_prepared(
         super::ldi::configure_origin_launch_env(&app, &label, &executable, &mut env)?;
     }
     let adapter = adapter_path(language)?;
+    if language == "csharp" {
+        emit(&app, &label, json!({"status":"output",
+            "text":format!("C# debugger adapter: {}", adapter.display())}));
+    }
     let native_bindings = if language == "rust" {
         super::native_debug::prepare(&app, &label, &solution_path, &cwd, native_snapshot.unwrap_or_default())?
     } else { vec![] };
@@ -1024,6 +1030,8 @@ pub(crate) fn launch_prepared(
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
         ldi_token,
         multi_thread: !live_native,
+        exclusive_next_mode: AtomicU8::new(0),
+        exclusive_step_in_flight: AtomicBool::new(false),
         threads: Mutex::new(ThreadBook::default()),
         inspection_requests: Mutex::new(HashMap::new()),
         transport_busy: AtomicBool::new(false), pgid, birth, stopping: AtomicBool::new(false),
@@ -1122,6 +1130,7 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "stopped" => {
+                        session.exclusive_step_in_flight.store(false, Ordering::Release);
                         stop_generation += 1;
                         stop_reason = message["body"]["reason"].as_str().unwrap_or("").into();
                         super::native_debug::stopping(&app_reader, &label_reader, pgid, stop_generation);
@@ -1290,8 +1299,23 @@ pub(crate) fn launch_prepared(
                     pending.remove(&response_seq);
                     continue;
                 }
-                if matches!(message["command"].as_str(), Some("continue" | "pause" | "next" | "stepIn" | "stepOut")) {
+                if matches!(message["command"].as_str(), Some("continue" | "pause" | "next" | "stepIn" | "stepOut" | "craiddExclusiveNext" | "craiddReleaseManagedHolds")) {
                     session.transport_busy.store(false, Ordering::Release);
+                    if matches!(message["command"].as_str(), Some("next" | "craiddExclusiveNext"))
+                        && message["success"] == false
+                        && session.exclusive_step_in_flight.swap(false, Ordering::AcqRel) {
+                        emit_current_session(&app_reader, &label_reader, &session,
+                            json!({"status":"exclusiveStepRejected",
+                                "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                "text":message["message"].as_str().unwrap_or("Adapter rejected the one-thread step")}));
+                    }
+                    if message["command"] == "craiddReleaseManagedHolds" {
+                        emit_current_session(&app_reader, &label_reader, &session,
+                            json!({"status":"exclusiveReleaseResult",
+                                "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                "success":message["success"] == true,
+                                "text":message["message"].as_str().unwrap_or("Managed hold release failed")}));
+                    }
                     if auto_resume_after_control {
                         auto_resume_after_control = false;
                         let result = if message["success"] == true {
@@ -1344,6 +1368,20 @@ pub(crate) fn launch_prepared(
                     .or_else(|| message["command"].as_str().map(String::from)).unwrap_or_default();
                 match command.as_str() {
                     "initialize" => {
+                        // Standard DAP takes precedence. The custom mode is confined to
+                        // the user-supplied managed debugger experiment on this branch.
+                        let exclusive_next_mode = if session.multi_thread && session.ldi_token.is_none()
+                            && message["body"]["supportsSingleThreadExecutionRequests"] == true { 1 }
+                            else if language == "csharp" && session.multi_thread && session.ldi_token.is_none()
+                                && message["body"]["craiddManagedExclusiveNext"] == true { 2 }
+                            else { 0 };
+                        session.exclusive_next_mode.store(exclusive_next_mode, Ordering::Release);
+                        emit_current_session(&app_reader, &label_reader, &session,
+                            json!({"status":"capabilities",
+                                "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                "language":language,
+                                "exclusiveNext":exclusive_next_mode != 0,
+                                "exclusiveMethod":match exclusive_next_mode { 1 => "dap", 2 => "experimentalManaged", _ => "none" }}));
                         initialized_reader.store(true, Ordering::Release);
                         if let Ok(seq) = request(&session, "launch", launch.clone()) { pending.insert(seq, "launch".into()); }
                     }
@@ -1543,6 +1581,87 @@ pub async fn debug_control(window: WebviewWindow, app: AppHandle, action: String
 }
 
 #[tauri::command]
+pub async fn debug_step_thread_only(
+    window: WebviewWindow, app: AppHandle, session_key: String, thread_id: i64, incarnation: u64,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || super::ldi::with_control(&app, &label, "stepThreadOnly", || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(&label).cloned().ok_or("No debug session is active")?;
+        if format!("{}:{}", session.pgid, session.birth) != session_key {
+            return Err("Debugger session changed; select the thread again".into());
+        }
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+            return Err("Debugger session is ending".into());
+        }
+        let mode = session.exclusive_next_mode.load(Ordering::Acquire);
+        if mode == 0 {
+            return Err("This debugger session does not support Step This Thread Only".into());
+        }
+        {
+            let book = session.threads.lock().map_err(|error| error.to_string())?;
+            if !book.all_stopped || book.stale {
+                return Err("Wait for a verified all-thread stop before stepping one thread".into());
+            }
+            if book.selected_id != Some(thread_id) || !book.rows.get(&thread_id).is_some_and(|row|
+                row.state == "paused" && row.incarnation == incarnation) {
+                return Err("Selected thread changed or exited; select it again".into());
+            }
+        }
+        if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err("A debugger control is already in progress".into());
+        }
+        session.exclusive_step_in_flight.store(true, Ordering::Release);
+        let result = if mode == 1 {
+            request(&session, "next", json!({"threadId":thread_id, "singleThread":true}))
+        } else {
+            request(&session, "craiddExclusiveNext", json!({"threadId":thread_id}))
+        };
+        if let Err(error) = result {
+            session.exclusive_step_in_flight.store(false, Ordering::Release);
+            session.transport_busy.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    })).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn debug_release_thread_holds(
+    window: WebviewWindow, app: AppHandle, session_key: String,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || super::ldi::with_control(&app, &label, "releaseThreadHolds", || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(&label).cloned().ok_or("No debug session is active")?;
+        if format!("{}:{}", session.pgid, session.birth) != session_key {
+            return Err("Debugger session changed".into());
+        }
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire)
+            || session.exclusive_next_mode.load(Ordering::Acquire) != 2 {
+            return Err("Managed hold release is unavailable for this session".into());
+        }
+        {
+            let book = session.threads.lock().map_err(|error| error.to_string())?;
+            if !book.all_stopped || book.stale {
+                return Err("Pause all threads before releasing managed holds".into());
+            }
+        }
+        if session.exclusive_step_in_flight.load(Ordering::Acquire) {
+            return Err("Pause the active one-thread step first".into());
+        }
+        if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err("A debugger control is already in progress".into());
+        }
+        if let Err(error) = request(&session, "craiddReleaseManagedHolds", json!({})) {
+            session.transport_busy.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    })).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn debug_select_thread(window: WebviewWindow, app: AppHandle, thread_id: i64) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || select_thread_by_label(&app, window.label(), thread_id))
         .await.map_err(|error| error.to_string())?
@@ -1555,6 +1674,9 @@ fn select_thread_by_label(app: &AppHandle, label: &str, thread_id: i64) -> Resul
     if !session.multi_thread { return Err("Thread selection is unavailable for this linked debugging session".into()); }
     if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
         return Err("Debugger session ended".into());
+    }
+    if session.exclusive_step_in_flight.load(Ordering::Acquire) {
+        return Err("Finish or Pause the current one-thread Step before selecting another thread".into());
     }
     let selection = {
         let mut book = session.threads.lock().map_err(|error| error.to_string())?;
