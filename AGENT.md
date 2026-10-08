@@ -27,5 +27,5 @@ Every document in docs/ ends with two lines:
 
 The Author field names a Git contributor — a person whose username
 appears in this repository's commit history. An agent does not have
-a Git username, so an agent's name does not appear in a footer.=
+a Git username, so an agent's name does not appear in a footer.
 Author(s) can increase if a new contributor makes edits to the docs.
