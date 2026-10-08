@@ -7,6 +7,10 @@
 **Scope:** The toolbar configuration picker, Build/Run/Debug defaults, the
 Configurations dialog, and project-scoped NuGet package management.
 
+**Companion:** [Project-scoped tool selection and optional downloads](design-project-scoped-toolchain-manager.md)
+is a separate proposal for executable tools. NuGet package references and
+debugger/compiler acquisition have different ownership and acceptance gates.
+
 ## Decision
 
 The toolbar should select a **project configuration**, not a command. One
@@ -234,5 +238,5 @@ existing credential provider.
 
 ---
 
-*Last updated: Phase 3.x. Author: ShinkuKira21.*
-*This document is a proposal.*
+*Last updated: Phase 3.x, 8 October 2026. Author(s): ShinkuKira21.*
+*This document is a design.*

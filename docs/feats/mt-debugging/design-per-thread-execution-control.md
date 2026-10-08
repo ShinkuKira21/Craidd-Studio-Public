@@ -11,13 +11,45 @@ remains dependent on a capable installed debugger. No release phase is assigned.
 
 **Companions:** [MT implementation contract](design-multi-thread-debugging-implementation.md),
 [thread debugging and LDI](../ldi-debugging/design-thread-debugging-and-ldi.md),
-and the [MT lab](../../../workspaces/mt-lab/README.md). The archived
+the [MT lab](../../../workspaces/mt-lab/README.md), and the proposed
+[project-scoped toolchain manager](../configurations/design-project-scoped-toolchain-manager.md).
+The archived
 [conditional-breakpoint proposal](archives/design-thread-isolation.md) and
 [future-directions sketch](archives/design-thread-debugging-future-directions.md)
 record the earlier exploration; this plan replaces their execution-control
 direction.
 
 ## Decision after the C# feasibility prototype
+
+### Product choice, 8 October 2026
+
+Craidd keeps ordinary thread inspection and a focused Step target for C#,
+Rust, and C++. The tested stock netcoredbg and LLDB-DAP sessions resumed other
+workers on Step. **Exclusive Step is not a shipped Craidd capability**, and
+the patched netcoredbg experiment is not a supported debugger distribution.
+
+Craidd may add a generic DAP `singleThread` request path. It must be gated by
+the selected adapter's advertised capability, an independently qualified
+adapter build and platform, and a verified all-thread stop before requesting
+the step. A request acknowledgment or an unchanged stack is not proof that
+other workers stayed stopped; qualification needs observable worker side
+effects, thread switching, lock waits, release, and failure recovery. The
+qualification fixture runs separately and by explicit user choice, never by
+stepping a user's live program at session startup. An unknown or failed
+adapter keeps the ordinary Step behavior and an honest scope label.
+[DAP single-thread capability](https://microsoft.github.io/debug-adapter-protocol/changelog).
+
+There is no Samsung-specific toolbar path and no in-app prompt to download or
+build a patched debugger. An advanced user may select their own debugger
+binary, but that does not make its exclusive stepping a Craidd-supported
+configuration. CI may test stock and experimental builds for conformance;
+Craidd will not publish a patched netcoredbg binary or make its upstream
+acceptance a release gate. This leaves room for a future capable, installed
+adapter without promising that today's C# users can isolate threads.
+
+The separate toolchain-manager proposal may later make user-chosen tools
+easier to select or acquire per project. It does not change this execution
+gate or turn an optional patched debugger into a default dependency.
 
 The local prototype showed that a modified netcoredbg can hold other managed
 threads for a source-level Step. It also failed to step a selected worker whose
