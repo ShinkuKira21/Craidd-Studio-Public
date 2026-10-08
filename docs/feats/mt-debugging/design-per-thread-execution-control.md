@@ -25,12 +25,13 @@ current frame had no source line. The desktop screenshots established selection
 and stepping on both workers, but did not capture before/after counters for
 each step. These are feasibility results, not product acceptance.
 
-Craidd will **not** require users to build or download a Craidd-maintained
-netcoredbg, replace their system debugger, or silently attach a second
-controller. The experimental adapter and ⇥ control remain on the preserved
-feature branch; they are absent from `master`. The C# implementation track
-below records what was tested and what a capable owner would need to prove;
-it is no longer the active distribution plan.
+Craidd will **not** require users to build or download a Craidd-maintained or
+vendor-specific debugger for this feature, replace their system debugger, or
+silently attach a second controller. The experimental adapter and ⇥ control
+remain on the preserved feature branch; they are absent from `master`. Thread
+isolation is available only where a debugger the user has already chosen and
+installed exposes a verified control path. Otherwise Craidd keeps ordinary
+thread inspection and Step, without promising isolation.
 
 For native Rust and C++, investigate the installed LLDB owner's
 `thread step-over --run-mode this-thread` behavior directly. The installed
@@ -124,10 +125,9 @@ The provider must expose, or correctly implement through DAP, these actions:
 For standard DAP, `supportsSingleThreadExecutionRequests` permits a client to
 send `singleThread: true`; Craidd must verify reported continuation scope where
 the adapter provides it, and confirm behavior with independent workers. A Step
-response alone does not report which threads ran. If a custom
-adapter extension is needed, keep it inside the debugger owner and document
-its capability, scope, and cleanup contract. Do not infer support from the
-language name. [DAP execution requests](https://github.com/microsoft/debug-adapter-protocol/blob/main/specification.md).
+response alone does not report which threads ran. A custom adapter extension
+that requires Craidd to distribute or maintain a debugger is outside this
+plan. Do not infer support from the language name. [DAP execution requests](https://github.com/microsoft/debug-adapter-protocol/blob/main/specification.md).
 
 Holds are **one-step leases** in the first version: the provider clears them
 when the step reaches its next stop. A new step prepares a new lease. This
@@ -138,26 +138,29 @@ The feature does not pass acceptance without a demonstrated recovery path for
 the tested provider. A visible release action and owner-side cleanup remain
 mandatory.
 
-## First implementation track: C#
+## C# status: deferred on stock debugger capability
 
-Begin with an isolated, direct netcoredbg/CLR probe using the existing C# MT
-lab. Craidd's installed netcoredbg does not advertise single-thread execution;
-its current DAP Step resumes all workers. Do not change the desktop control
-until the debugger layer demonstrates a different result.
+Craidd's installed netcoredbg does not advertise single-thread execution; its
+current DAP Step resumes all workers. The modified-netcoredbg experiment is
+closed as a product route. Do not add a C# desktop control unless a debugger
+the user has already chosen and installed demonstrates the required behavior
+and release semantics through its supported interface.
 
-The CLR debugging API is a **candidate**, not a validated netcoredbg feature.
+The CLR debugging API explains what the experiment investigated; it is **not**
+an active Craidd implementation route or a validated stock-netcoredbg feature.
 `ICorDebugController::SetAllThreadsDebugState(THREAD_SUSPEND, selectedThread)`
 can suspend managed threads other than the selected one, while
 `ICorDebugThread::SetDebugState` can set an individual thread to `THREAD_RUN`.
 The same controller must restore `THREAD_RUN` for all affected managed threads;
 the bulk API can affect threads absent from enumeration. The debugger must
 drain queued callbacks before state changes. These operations belong inside
-the netcoredbg owner or another single CLR debugger owner, not in Craidd's UI
-process. [CLR bulk thread state](https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/icordebug/icordebugcontroller-setallthreadsdebugstate-method),
+the debugger owner, not in Craidd's UI process.
+[CLR bulk thread state](https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/icordebug/icordebugcontroller-setallthreadsdebugstate-method),
 [CLR thread state and risks](https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/icordebug/icordebugthread-setdebugstate-method).
 
-The C# proof must establish the DAP-to-CLR identity mapping, the precise
-managed-thread hold scope, stepping and callback order, and reliable release.
+If an installed debugger later exposes this capability, the C# proof must
+establish the DAP-to-CLR identity mapping, the precise managed-thread hold
+scope, stepping and callback order, and reliable release.
 It must test the currently selected thread, a different worker selected at the
 next stop, new and exiting workers, normal Continue, exception stops, Stop,
 disconnect, and adapter failure. Add a lock-wait and GC-pressure case: a held
@@ -182,11 +185,12 @@ feasibility lead, not a claim that Craidd's current DAP transport can use it.
 [LLDB thread API](https://lldb.llvm.org/python_api/lldb.SBThread.html),
 [LLDB-DAP capability table](https://lldb.llvm.org/use/lldbdap.html#supported-features).
 
-After C# establishes the UX and contract, first prove native holding directly
-at the LLDB owner level. Then decide whether a tested LLDB-DAP extension, a
-different capable adapter, or a Craidd-owned LLDB provider is the maintainable
-transport. Sending ad hoc debugger-console commands while the existing adapter
-also owns execution is not the control contract.
+The direct stock-LLDB source-position check above is the first native lead.
+Next determine whether the installed LLDB-DAP can expose the same behavior
+through a supported, single-owner interface. If it cannot, do not offer
+exclusive Step through Craidd for that adapter. Sending ad hoc
+debugger-console commands while the existing adapter also owns execution is
+not the control contract.
 
 **Rust gate:** Use the Rust console and GUI workers to verify a one-thread
 source Step, switch, release, thread exit, async-task caveat, and cleanup.
@@ -216,14 +220,15 @@ contract before claiming parity.
 ## Evidence and delivery order
 
 1. Preserve the existing selector behavior and record baseline two-worker
-   results for netcoredbg and LLDB-DAP, including `stopped` and `continued`
-   scope. This is adapter evidence, not desktop acceptance.
-2. Run the C# debugger-owner feasibility probe and decide the actual provider
-   path. Implement no Craidd toggle from an API signature alone.
+   results for installed netcoredbg and LLDB-DAP, including `stopped` and
+   `continued` scope. This is adapter evidence, not desktop acceptance.
+2. Investigate stock LLDB's single-owner control path for Rust and C++.
+   Complete worker-side-effect, blocked-step, release, and failure checks.
 3. Implement the session-qualified request, one-step lease, release path, and
-   UI only after the C# gate passes. Verify C# through the real desktop flow.
-4. Repeat the native owner proof for Rust, then C++, with separate real desktop
-   acceptance. Enable the control per verified provider/session.
+   UI only for an installed debugger with a verified supported interface.
+   Prove the native behavior in Craidd's real desktop flow before enabling it.
+4. Revisit managed C# only if an installed debugger gains a supported
+   single-thread capability. Apply the C# gate above before enabling it.
 
 The acceptance record must state the adapter version, platform, exact selected
 thread, stop/resume events, worker side effects, blocked-step recovery, and
