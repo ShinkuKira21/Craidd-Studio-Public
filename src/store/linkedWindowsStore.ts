@@ -333,7 +333,7 @@ export async function prepareLinkedWindow(targetLabel: string, decision: "save" 
   return prepareApplicationWindow(targetLabel, solutionPath, decision);
 }
 
-export async function prepareApplicationWindow(targetLabel: string, solutionPath: string, decision: "save" | "discard" | "inspect"): Promise<number> {
+export async function prepareApplicationWindow(targetLabel: string, solutionPath: string, decision: "save" | "discard" | "inspect", timeoutMs = 30_000): Promise<number> {
   const ownWindowLabel = useLinkedWindows.getState().ownWindowLabel;
   if (!ownWindowLabel) throw new Error("This IDE window is no longer registered");
   if (targetLabel === ownWindowLabel) {
@@ -355,7 +355,7 @@ export async function prepareApplicationWindow(targetLabel: string, solutionPath
       unlisten?.();
       if (error) reject(new Error(error)); else resolve(dirtyCount);
     };
-    const timer = window.setTimeout(() => finish("The IDE window did not respond"), 30_000);
+    const timer = window.setTimeout(() => finish("The IDE window did not respond"), timeoutMs);
     try {
       unlisten = await getCurrentWebviewWindow().listen<{ requestId: string; error: string | null; dirtyCount: number }>("craidd:linked-prepare-result", (event) => {
         if (event.payload.requestId === requestId) finish(event.payload.error, event.payload.dirtyCount);

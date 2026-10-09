@@ -520,31 +520,65 @@ fn application_members(registry: &Registry) -> Vec<LinkedMember> {
     windows
 }
 
+/// Any Craidd window may ask. Exit must not depend on the caller still being
+/// registered: a crash restore can wipe the registry while the window lives on.
 #[tauri::command]
-pub fn get_application_windows(window: WebviewWindow, state: tauri::State<'_, LinkedWindowRegistry>) -> Result<Vec<LinkedMember>, String> {
+pub fn get_application_windows(state: tauri::State<'_, LinkedWindowRegistry>) -> Result<Vec<LinkedMember>, String> {
     let registry = state.0.lock().map_err(|error| error.to_string())?;
-    if !registry.windows.contains_key(window.label()) { return Err("This IDE window is no longer registered".into()); }
     Ok(application_members(&registry))
 }
 
+/// Windows that would block a normal exit, by name. Stale `restoring` flags
+/// are reported by the frontend, which can offer Exit anyway for them.
+fn exit_blockers(registry: &Registry) -> Vec<String> {
+    let mut names = registry.windows.values().filter(|item| item.dirty_count > 0)
+        .map(|item| format!("{}: CS{} has {} unsaved file(s)",
+            item.selected_config_name.as_deref().or(item.project_name.as_deref()).unwrap_or("Window"),
+            item.window_id, item.dirty_count))
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// Exit → This Application. Without `force`, unsaved files recorded in the
+/// registry refuse the exit by name. With `force` (Exit anyway / Discard and
+/// exit) nothing refuses. Sessions are cancelled on a worker thread with a
+/// bounded wait, never on the event loop; the process supervisor still ends
+/// supervised children when the app exits.
 #[tauri::command]
-pub fn exit_application(window: WebviewWindow, app: AppHandle, state: tauri::State<'_, LinkedWindowRegistry>) -> Result<(), String> {
-    let labels = {
+pub fn exit_application(app: AppHandle, state: tauri::State<'_, LinkedWindowRegistry>, force: Option<bool>) -> Result<(), String> {
+    let registered = {
         let registry = state.0.lock().map_err(|error| error.to_string())?;
-        if !registry.windows.contains_key(window.label()) { return Err("This IDE window is no longer registered".into()); }
-        if registry.windows.values().any(|item| item.dirty_count > 0 || item.restoring) {
-            return Err("Save every open IDE window and wait for windows to finish opening before exiting".into());
+        if !force.unwrap_or(false) {
+            let blockers = exit_blockers(&registry);
+            if !blockers.is_empty() { return Err(blockers.join("; ")); }
         }
         registry.windows.keys().cloned().collect::<Vec<_>>()
     };
-    for label in labels {
-        super::build_order::cancel(&app, &label);
-        super::build::cancel_build_by_label(&app, &label);
-        super::runner::cancel_run_by_label(&app, &label);
-        super::debug::cancel_debug_by_label(&app, &label);
-    }
-    app.exit(0);
+    let mut labels = registry_labels_and_windows(&app, registered);
+    labels.sort();
+    labels.dedup();
+    std::thread::spawn(move || {
+        let (done, finished) = std::sync::mpsc::channel();
+        let worker = app.clone();
+        std::thread::spawn(move || {
+            for label in labels {
+                super::build_order::cancel(&worker, &label);
+                super::build::cancel_build_by_label(&worker, &label);
+                super::runner::cancel_run_by_label(&worker, &label);
+                super::debug::cancel_debug_by_label(&worker, &label);
+            }
+            let _ = done.send(());
+        });
+        let _ = finished.recv_timeout(std::time::Duration::from_secs(2));
+        app.exit(0);
+    });
     Ok(())
+}
+
+fn registry_labels_and_windows(app: &AppHandle, mut labels: Vec<String>) -> Vec<String> {
+    labels.extend(app.webview_windows().into_keys());
+    labels
 }
 
 #[tauri::command]
@@ -2192,6 +2226,21 @@ pub fn reset_linked_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_blockers_name_only_windows_with_unsaved_files() {
+        let mut registry = Registry::default();
+        assert!(exit_blockers(&registry).is_empty());
+        let mut item = participant("/lab/lab.cln", "/lab/Server", "application");
+        item.window_id = 2;
+        item.selected_config_name = Some("Server".into());
+        item.restoring = true;
+        registry.windows.insert("a".into(), item.clone());
+        assert!(exit_blockers(&registry).is_empty(), "a stale restoring flag alone must not block exit");
+        item.dirty_count = 3;
+        registry.windows.insert("a".into(), item);
+        assert_eq!(exit_blockers(&registry), vec!["Server: CS2 has 3 unsaved file(s)".to_string()]);
+    }
 
     fn participant(solution: &str, project: &str, kind: &str) -> Participant {
         Participant { solution_path: solution.into(), window_id: 1, project_path: Some(project.into()),

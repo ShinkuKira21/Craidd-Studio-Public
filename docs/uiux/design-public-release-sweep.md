@@ -346,6 +346,29 @@ keep a recoverable copy of dirty buffers, so that Discard and exit, or a
 crash, never loses unsaved work. That is out of scope for this sweep and is
 recorded here so the D9 behaviour can be revisited when it exists.
 
+**Delivered (slice D):**
+
+- `get_application_windows` and `exit_application` accept any caller.
+  `exit_application(force)` refuses only on unsaved files recorded in the
+  registry, by window name, unless forced.
+- Cancellation runs on a worker thread with a 2-second wait, and then the app
+  exits.
+- Before inspecting, an unregistered window tries to register itself again.
+- Each visible window must answer within 5 s. A stale opening flag or no
+  answer becomes a named blocker in a new "Craidd can't check every window"
+  dialog. It offers Cancel, Review unsaved, and Exit anyway (two clicks).
+- The unsaved-files prompt gains Discard and exit (two clicks, D9).
+- A new exit request replaces a stuck flow.
+- Tests: `tests/exitBlockers.test.mjs`, and `exit_blockers` in
+  `linked_windows.rs`.
+
+**Limitations:**
+
+- If re-registration fails, an unregistered window's own unsaved tabs are
+  listed as a blocker rather than prompted with Save All. Cancel, save in
+  that window, and exit again.
+- The crash-restore reproduction has not been run against this change.
+
 ## 7. Other public-release items found during the sweep
 
 | # | Item | Where |
