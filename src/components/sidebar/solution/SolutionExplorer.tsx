@@ -17,6 +17,7 @@ import ToolchainConfigurationDialog from "../../dialogs/ToolchainConfigurationDi
 import { useBuild } from "../../../store/buildStore";
 import { useLinkedWindows } from "../../../store/linkedWindowsStore";
 import PathActions from "../PathActions";
+import { openInSideGroup } from "../../../store/splitStore";
 
 export default function SolutionExplorer() {
   const rootPath = useSolution((s) => s.rootPath);
@@ -375,7 +376,8 @@ export default function SolutionExplorer() {
             className="fixed z-50 min-w-[220px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 text-xs"
           >
             <PathActions path={buildAbsFromNode(treeCtxMenu.basePath, treeCtxMenu.node)} isFile={treeCtxMenu.node.kind !== "folder"}
-              onDone={() => setTreeCtxMenu(null)} />
+              onDone={() => setTreeCtxMenu(null)}
+              onOpenToSide={() => openInSideGroup(buildAbsFromNode(treeCtxMenu.basePath, treeCtxMenu.node))} />
             <div className="my-1 h-px bg-zinc-800" />
             <button
               onClick={() => {

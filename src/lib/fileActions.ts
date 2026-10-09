@@ -35,10 +35,15 @@ export async function requestFileSave(fileId: string, force = false, onSaved?: (
 }
 
 export async function saveActiveFile(): Promise<void> {
+  const fileId = useSolution.getState().activeFileId;
+  if (fileId) await saveOpenFile(fileId);
+}
+
+/** Save one open tab, prompting first when the file changed or vanished on disk. */
+export async function saveOpenFile(fileId: string): Promise<void> {
   if (useSessionFeedback.getState().savePrompt) return;
   const state = useSolution.getState();
-  if (!state.activeFileId) return;
-  const tab = state.tabs.find((t) => t.fileId === state.activeFileId);
+  const tab = state.tabs.find((t) => t.fileId === fileId);
   if (!tab) return;
   if (tab.diskState === "deleted" || tab.diskState === "newer") {
     state.setPendingSave({ fileId: tab.fileId, kind: tab.diskState });

@@ -1,13 +1,14 @@
 import { useEffect } from "react";
 import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
-import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
+import { saveActiveFile, saveActiveFileAs, saveOpenFile } from "../lib/fileActions";
+import { useSplit } from "../store/splitStore";
 import { useLinkedWindows } from "../store/linkedWindowsStore";
 import { debugKeyViewed, debugOrContinueViewed, startViewedAction, stopViewedAction } from "../lib/viewedActions";
 import { useSessionFeedback } from "../store/sessionFeedbackStore";
 import { focusAreaOf, isChordPrefix, matchShortcut, type ShortcutId } from "../lib/shortcuts";
 import { openFolderDialog, openSolutionDialog } from "../lib/workspaceActions";
-import { getActiveEditor } from "../lib/activeEditor";
+import { getActiveEditor, getActiveEditorFile } from "../lib/activeEditor";
 import { useBreakpoints } from "../store/breakpointStore";
 
 const CHORD_WINDOW_MS = 1500;
@@ -45,7 +46,7 @@ export function useKeyboardShortcuts(
           try { await debugKeyViewed(id); } catch (error) { report("Debug control", error); }
           return;
         case "toggleBreakpoint": {
-          const file = useSolution.getState().activeFileId;
+          const file = getActiveEditorFile() ?? useSolution.getState().activeFileId;
           const line = getActiveEditor()?.getPosition()?.lineNumber;
           if (!file || !line) return;
           // Red breakpoints only. LDI blue markers keep their gutter and context-menu flow.
@@ -54,7 +55,10 @@ export function useKeyboardShortcuts(
         }
         case "save":
           if (!canEditViewed()) return;
-          try { await saveActiveFile(); } catch (error) { report("Save", error); }
+          try {
+            const side = useSplit.getState();
+            if (side.sideFocused && side.sideFileId) await saveOpenFile(side.sideFileId); else await saveActiveFile();
+          } catch (error) { report("Save", error); }
           return;
         case "saveAs":
           if (!canEditViewed()) return;
@@ -83,6 +87,8 @@ export function useKeyboardShortcuts(
         case "toggleSidebar": usePreferences.getState().toggleSidebar(); return;
         case "togglePanel": usePreferences.getState().toggleBottomPanel(); return;
         case "closeTab": {
+          // Ctrl+W in the side group closes the group, not the tab.
+          if (useSplit.getState().sideFocused && useSplit.getState().sideFileId) { useSplit.getState().closeSide(); return; }
           // A dirty or deleted tab goes through the pane's close prompt.
           const s = useSolution.getState();
           if (!s.activeFileId) return;

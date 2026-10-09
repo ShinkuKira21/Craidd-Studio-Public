@@ -178,6 +178,23 @@ panel. Failures are reported to the user.
 **Limitations:** clipboard and file-manager reveal depend on WebKitGTK and the
 desktop's `FileManager1` service. Neither has been verified in the running app yet.
 
+**Delivered (slice F):**
+
+- Open in Side Window opens the file in a second editor group to the right
+  of the main editor (D4). The group shows one file.
+- The side group shares the file's Monaco model with the main editor, so
+  both views stay identical, and it writes to the same tab for dirty
+  tracking and Save.
+- Ctrl+S saves the focused group's file. Ctrl+W in the side group closes
+  the group. Closing the file's tab closes the group too.
+
+**Limitations:**
+
+- The side group has no breakpoint gutter, paused-line marker or LDI call
+  sites. F9 there still toggles a breakpoint for the side file at its cursor.
+- Its width is a fixed half of the editor area.
+- Not yet exercised in the running app.
+
 ## 5. Keyboard shortcuts
 
 **Found** in `src/hooks/useKeyboardShortcuts.ts` and `src/components/menu/MenuBar.tsx`:

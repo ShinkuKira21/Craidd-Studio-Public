@@ -7,6 +7,7 @@ import NewFileDialog from "../../dialogs/NewFileDialog";
 import NewFolderDialog from "../../dialogs/NewFolderDialog";
 import DeleteConfirmDialog from "../../dialogs/DeleteConfirmDialog";
 import PathActions from "../PathActions";
+import { openInSideGroup } from "../../../store/splitStore";
 
 type DialogState =
   | { kind: "make-project"; node: FileNode }
@@ -72,7 +73,8 @@ export default function FileDiscovery() {
           <div className="fixed inset-0 z-40" onClick={() => setCtxMenu(null)} />
           <div style={{ left: ctxMenu.x, top: ctxMenu.y }}
                className="fixed z-50 min-w-[220px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 text-xs">
-            <PathActions path={absPathFor(ctxMenu.node)} isFile={ctxMenu.node.kind !== "folder"} onDone={() => setCtxMenu(null)} />
+            <PathActions path={absPathFor(ctxMenu.node)} isFile={ctxMenu.node.kind !== "folder"} onDone={() => setCtxMenu(null)}
+              onOpenToSide={() => openInSideGroup(absPathFor(ctxMenu.node))} />
             <div className="my-1 h-px bg-zinc-800" />
             {ctxMenu.node.kind === "folder" ? (
               <>
