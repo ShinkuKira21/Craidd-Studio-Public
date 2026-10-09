@@ -114,6 +114,25 @@ features are disabled with the reason given, never faked. Watch for LDI follows
 the window being viewed. Origin A and partner B keep separate watch
 evaluations; no cross-process expression is implied.
 
+**Delivered (slice E, items 1–2):**
+
+- `debug_inspect` sends DAP `variables` or `evaluate` to the session that owns
+  the displayed frames: this window, the viewed window, or the Rust origin
+  during native inspection. Responses are matched by sequence number.
+- Variables expand lazily.
+- A Watch section evaluates each expression against the displayed top frame
+  on every stop, shows errors inline, and stores the list per solution in
+  browser storage (D2).
+
+**Limitations:**
+
+- Variables are still one list across scopes, with no Locals/Arguments
+  grouping, because the reader merges scopes before the frontend sees them.
+- Two consecutive stops with identical frames and values keep the previous
+  expansion state.
+- Items 3–5 (hover, console, smaller items) are not started.
+- Not yet run against `netcoredbg` or `lldb-dap`.
+
 ## 3. Profiling: layout only
 
 The profiling track is Phase 3.5 ([profile markers](../feats/profiling/design-profile-markers.md)).
