@@ -71,12 +71,29 @@ policy before implementation. Reading Markdown must work offline with local
 assets. Mermaid, mathematics, GitHub-specific alerts and richer embeds can be
 considered separately; none is promised by the phrase “GitHub-level”.
 
-Craidd's [working protocol](../../working-protocol.md) records `+++` as a
-documentation block convention, while existing documents also contain
-standard backtick fences. Before choosing a renderer, test both against this
-repository. Decide explicitly whether to support `+++` as a local extension
-or migrate those blocks in a separate documentation change. Do not silently
-rewrite documents just to make their preview work.
+### Optional `+++` compatibility for AI-chat copy and paste
+
+The user's `+++` notation is a workaround for exchanging documentation with
+different AI models in web chats. When an AI wraps a whole Markdown document
+in a fenced response, an inner triple-backtick block can prematurely close
+the outer block and make copying the document awkward. Using three plus signs
+for the inner block avoids that problem. This remains useful for people using
+free models to expand documentation or discuss decisions. An assistant writing
+directly to disk can use ordinary Markdown fences without that copy/paste issue.
+
+Craidd does not format documents or enforce an authoring style. Standard
+Markdown is the default rendering contract; users can keep ordinary `.md`
+files. The [working protocol](../../working-protocol.md) describes an AI-chat
+handoff practice, not a product formatting requirement.
+
+For convenience, consider an optional preview compatibility setting that
+treats paired standalone `+++` lines as code fences equivalent to triple
+backticks. Apply that interpretation only when rendering; preserve the exact
+source on edit/save and do not normalize or migrate files automatically.
+Keep it opt-in so literal plus signs in ordinary Markdown retain their usual
+meaning. Decide language labels, nesting and unmatched-fence behavior before
+implementation, and test standard Markdown plus the user's copied AI-chat
+examples. This extension is proposed, not implemented.
 
 ## A: Make `docs/` into a project
 
@@ -135,7 +152,7 @@ Proposed tree behavior:
 
 Illustrative layout, using this repository's actual root agent filename:
 
-+++
+```text
 Docs                              [Filter by name/path] [Refresh]
   AGENT.md
   > docs/
@@ -145,7 +162,7 @@ Docs                              [Filter by name/path] [Refresh]
       > roadmaps/
   > workspaces/
   README.md
-+++
+```
 
 **Recommendation for consideration:** B is the stronger default navigation
 option because it exposes documentation without adding projects. Keep A in
@@ -222,13 +239,15 @@ implementation work. This proposal adds no dependencies and assigns no phase.
 
 Before implementation, settle the opening default and preference scope; A,
 B or both; the discovery root/exclusions and indexing strategy; B0's initial
-action set; rendering syntax/HTML/assets; and whether direct rendered editing
-has enough value to justify its own design.
+action set; rendering syntax/HTML/assets and optional `+++` compatibility;
+and whether direct rendered editing has enough value to justify its own design.
 
 Future acceptance must exercise the running IDE:
 
 1. Open real Craidd docs through each supported tree and relative links. Verify
    headings, tables, nested lists, code blocks, images and fragment navigation.
+   With optional `+++` compatibility enabled, verify copied AI-chat blocks;
+   with it disabled, preserve literal plus signs. Neither mode rewrites files.
 2. Edit source, switch to Preview, save, undo and close with unsaved changes.
    Confirm the preview reflects the same buffer and external changes/conflicts
    retain the existing editor behavior, including linked windows.
