@@ -39,6 +39,14 @@ full window, command and source identity. The diagnostic for a genuinely changed
 selected config names the old and new Rust configurations. A stale Rust build
 has not been established as the cause.
 
+That saved-config behavior is an **interim implementation**, not the intended
+UX. It fails when two Power Configs legitimately reach the same source call:
+the user would have to fight or duplicate Blue markers to test both. The
+target is one source-site Blue whose eligibility is re-resolved for the
+selected setup: normal Blue when compatible, Blue with a Gold border when
+proven unreachable, and a separate pending state when evidence is missing.
+See [Blue Native Breakpoints across Power Configs](design-blue-breakpoint-reachability.md).
+
 ## Who owns the threads?
 
 | Pair | Window A | Window B | Execution and thread identity |

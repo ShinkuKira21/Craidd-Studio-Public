@@ -12,7 +12,8 @@ callbacks and richer Rust debugging remain proposals.
 **Companion:** [LDI debugging](design-ldi-debugging.md),
 [Linked solution windows](../linked-windows/design-linked-solution-windows.md),
 [Mixed debugging](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md),
-[Shared native consumers](design-native-shared-consumers.md).
+[Shared native consumers](design-native-shared-consumers.md),
+[Blue breakpoint reachability across Power Configs](design-blue-breakpoint-reachability.md).
 
 **Governs:** Rust↔C++ live debugging, per-window Power Config ownership,
 and where Native Breakpoint pairing selects a live or reproduction provider.
