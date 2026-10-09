@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(RustStepNative LANGUAGES C CXX)
+add_library(step_c SHARED step.c)
+add_library(step_cpp SHARED step.cpp)
+target_compile_options(step_c PRIVATE -O0 -g)
+target_compile_options(step_cpp PRIVATE -O0 -g)

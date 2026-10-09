@@ -1,5 +1,18 @@
 # Direct adapter results — 9 October 2026
 
+## Cross-language extension on `feat/mt-debugging-cross-language-labs`
+
+The `rust-c` and `rust-cpp` direct DAP probes passed with installed
+LLDB-DAP 23.1.1 on 9 October. Each used a real Rust executable linked to the
+corresponding C or C++ shared library. Each stepped worker 1 three times and
+worker 2 three times with the other known threads suspended. The other
+worker's instruction address and file counter stayed fixed; the counters
+ended at `1001/2001` before Continue and `1060/2060` after. Traces are in
+ignored `.runs/probes/rust-c-ihsr6elg/` and
+`.runs/probes/rust-cpp-mg5sqc10/`. This proves the direct LLDB path through
+these FFI calls, not Blue presentation or Craidd desktop controls.
+
+
 Environment: Linux x86-64, installed `/usr/bin/lldb-dap` 23.1.1. This is a
 direct DAP test, not a Craidd desktop acceptance record. The LLDB-DAP
 initialize response did not advertise `supportsSingleThreadExecutionRequests`.

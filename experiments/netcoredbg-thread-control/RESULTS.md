@@ -34,3 +34,13 @@ The isolated `dep/` branch passed `npm run build`, `cargo check`, and the
 direct patched-adapter probe. The combined branch has passed frontend and
 Rust checks, but has no fresh Craidd desktop C# run. The standard DAP
 `singleThread` route also has no qualified adapter or live result yet.
+
+# Cross-language extension — 9 October 2026
+
+The new `LinkedCSharpStep` program and both C/C++ shared libraries build.
+Direct uninstrumented execution completed both native variants with managed
+worker counters `1040/2040`. Source-recognition checks identify both Blue
+call sites, the C export without C++ linkage syntax, and the C++ export.
+The two-process LDI reproduction and ⇥ in its native partner remain to be
+checked in Craidd desktop. The local patched netcoredbg binary was absent,
+but that binary is not needed for ⇥ in B's LLDB process.

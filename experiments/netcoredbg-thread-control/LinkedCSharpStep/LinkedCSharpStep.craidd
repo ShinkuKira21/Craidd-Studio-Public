@@ -1,0 +1,5 @@
+[project]
+name = "C# Native Library Thread Step"
+language = "csharp"
+root = "."
+kind = "application"

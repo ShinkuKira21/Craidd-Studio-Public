@@ -1,7 +1,8 @@
 # C# managed-thread control experiment
 
 This is an **experimental C# debugger extension and Craidd control** on
-`feat/mt-debugging-control`, alongside the separate installed-LLDB native
+`feat/mt-debugging-control` and its cross-language experiment branch, alongside
+the separate installed-LLDB native
 experiment. It is not a default C# debugger feature.
 The tracked patch applies to upstream netcoredbg commit
 `9744e1f051866215611b8440c638042aa2aa2f72` (3.2.0-1). No debugger binary
@@ -29,8 +30,9 @@ state marked unverified for another attempt.
 
 This does not implement standard DAP `supportsSingleThreadExecutionRequests`:
 the patch has not implemented single-thread Continue or the full execution
-contract. It does not control native threads, mixed-mode debugging, LDI, Rust,
-or C++. A separate Craidd control sends `craiddReleaseManagedHolds` at a
+contract. The managed request does not control native threads, mixed-mode
+debugging, LDI, Rust, or C++. A separate Craidd control sends
+`craiddReleaseManagedHolds` at a
 verified all-thread stop; that request clears managed holds but does not
 resume execution.
 
@@ -157,3 +159,47 @@ new/exiting threads, exception stops, detach from an attached process, adapter
 crash, repeated lock/GC pressure, a deliberate release failure, and a real
 combined-branch Craidd desktop interaction. Keep the control experimental
 until those recovery paths and the desktop behavior have passed.
+
+## C# calling a C or C++ library through linked LDI
+
+The same `thread-control.cln` now contains **C# + C Lib** and **C# + C++
+Lib** Power Configs. Each starts two managed workers that call a shared
+library. `Prepare C# Linked` builds and installs both libraries beside the
+.NET executable. **Native Libraries · C# LDI** is the Power Config for the
+second Craidd window. The C and C++ exports have distinct names and their
+corresponding Blue calls are marked in `LinkedCSharpStep/Program.cs`.
+
+This is a **two-process LDI reproduction**. At Blue, the original C# thread
+in A is held. B runs the native call with its own LLDB-DAP debugger and
+native thread IDs. B creates two native workers; its `c_worker_beat` or
+`cpp_worker_beat` array is visible for inspection. ⇥ in B requests one
+native-thread Step Over while other B threads are held. It does **not** step
+the held managed thread in A or synchronize A's and B's thread identities.
+Only after B finishes or is explicitly released can A continue. The optional
+patched netcoredbg is needed only to test one-managed-thread ⇥ in the
+ordinary C# lab; B's native ⇥ uses the installed LLDB-DAP.
+
+1. Open this solution in A and B. Select **C# + C Lib** in A and **Native
+   Libraries · C# LDI** in B. Link the windows with Gold. In A, put Blue on
+   `BLUE_C_CALL` and a red breakpoint on `BREAK_MANAGED`. In B, open
+   `Native/step.c`. Start Gold Debug. Repeat later with **C# + C++ Lib**,
+   `BLUE_CPP_CALL`, and `Native/step.cpp`.
+2. When A reaches Blue, confirm its selected managed thread is held and B
+   has stopped in `BREAK_C_ENTRY` or `BREAK_CPP_ENTRY`. Step in B until both
+   native workers exist. Put red on `BREAK_C_WORKER` or `BREAK_CPP_WORKER`
+   if the second worker has no source frame yet, then Continue B to a source
+   stop. Select a paused native worker in B and use ⇥ at a verified
+   all-thread stop; compare the worker beats or current instruction locations
+   before and after. Switch native workers and repeat.
+3. Return to A after the B reproduction finishes. The selected C# worker's
+   result appears under `LinkedCSharpStep/runs/c/` or `runs/cpp/`. The other
+   managed worker can continue when the LDI hold is released, so these files
+   are **not** evidence of native thread isolation inside B.
+
+If a Blue binding is rejected, record its warning and the selected Native
+Power Config. If ⇥ is absent in B, record the installed LLDB-DAP version;
+this branch qualifies the control only for 23.1.1 with scripting. Build,
+source-recognition, and uninstrumented C#/native execution checks have passed,
+but neither C# LDI variant has a
+Craidd desktop thread-step acceptance record yet. Do not infer that the
+patched netcoredbg controls B or that a native B step advances A.

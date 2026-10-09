@@ -354,18 +354,24 @@ fn managed_scalar_call(source: &str, call: &regex::Captures<'_>) -> Result<Call,
     })
 }
 
-fn native_signature(export: &str, kind: CallKind) -> Arc<Regex> {
+fn native_signature_for_language(export: &str, kind: CallKind, c_source: bool) -> Arc<Regex> {
     let arguments = match kind {
         CallKind::ScalarI32 => r"(?:int32_t|int)\s+\w+\s*,\s*(?:int32_t|int)\s+\w+",
         CallKind::Utf8Bytes => r"const\s+char\s*\*\s*\w+\s*,\s*const\s+uint8_t\s*\*\s*\w+\s*,\s*size_t\s+\w+",
     };
-    regex(&format!(r#"(?m)^[ \t]*extern\s+"C"\s+(?:int32_t|int)\s+{}\s*\(\s*{}\s*\)\s*\{{"#,
-        regex::escape(export), arguments))
+    let linkage = if c_source { "" } else { r#"extern\s+"C"\s+"# };
+    regex(&format!(r#"(?m)^[ \t]*{}(?:int32_t|int)\s+{}\s*\(\s*{}\s*\)\s*\{{"#,
+        linkage, regex::escape(export), arguments))
 }
 
+#[cfg(test)]
 fn native_contains(source: &str, line: u32, export: &str, kind: CallKind) -> bool {
+    native_contains_language(source, line, export, kind, false)
+}
+
+fn native_contains_language(source: &str, line: u32, export: &str, kind: CallKind, c_source: bool) -> bool {
     let Ok(source) = without_comments(source) else { return false; };
-    let signature = native_signature(export, kind);
+    let signature = native_signature_for_language(export, kind, c_source);
     let contains = signature.find_iter(&source).any(|found| {
         let start = source[..found.start()].lines().count() as u32 + 1;
         let mut depth = 1;
@@ -400,7 +406,8 @@ fn native_points(call: &Call, selection: &LdiSelection) -> Result<Vec<Breakpoint
                 .canonicalize()
                 .is_ok_and(|file| file.starts_with(&root))
                 && fs::read_to_string(path)
-                    .is_ok_and(|source| native_contains(&source, point.line, &call.entry_point, call.kind))
+                    .is_ok_and(|source| native_contains_language(&source, point.line, &call.entry_point, call.kind,
+                        path.extension().and_then(|value| value.to_str()) == Some("c")))
         })
         .collect::<Vec<_>>();
     Ok(matches)
@@ -413,7 +420,6 @@ fn native_definition(call: &Call, selection: &LdiSelection) -> Result<Breakpoint
     let mut folders = VecDeque::from([(root.clone(), 0usize)]);
     let mut definitions = vec![];
     let mut scanned = 0usize;
-    let signature = native_signature(&call.entry_point, call.kind);
     while let Some((folder, depth)) = folders.pop_front() {
         for entry in fs::read_dir(&folder).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
@@ -432,6 +438,8 @@ fn native_definition(call: &Call, selection: &LdiSelection) -> Result<Breakpoint
             if scanned > 2000 { return Err("Native source tree is too large for automatic LDI entry; set an explicit red breakpoint".into()); }
             let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
             let Ok(source) = without_comments(&source) else { continue; };
+            let signature = native_signature_for_language(&call.entry_point, call.kind,
+                path.extension().and_then(|value| value.to_str()) == Some("c"));
             for found in signature.find_iter(&source) {
                 definitions.push(Breakpoint { file: path.to_string_lossy().into_owned(),
                     line: source[..found.start()].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1,
@@ -1158,8 +1166,9 @@ pub(crate) fn on_frame(
     }) {
         let source = frame["source"]["path"].as_str().map(Path::new);
         if source.is_some_and(|source| same_source(source, Path::new(&pair.binding.native.file)))
-            && frame["line"].as_u64().is_some_and(|line| native_contains(&pair.binding.native_source, line as u32,
-                    &pair.binding.call.entry_point, pair.binding.call.kind)) {
+            && frame["line"].as_u64().is_some_and(|line| native_contains_language(&pair.binding.native_source, line as u32,
+                    &pair.binding.call.entry_point, pair.binding.call.kind,
+                    Path::new(&pair.binding.native.file).extension().and_then(|value| value.to_str()) == Some("c"))) {
             pair.native_entered = true;
         }
         let driver = pair
@@ -2400,6 +2409,26 @@ mod tests {
             assert_eq!(call.entry_point, export);
             assert_eq!(call.locals, ["left", "right"]);
             assert!(native_contains(native, red, &call.entry_point, call.kind));
+        }
+    }
+    #[test]
+    fn linked_csharp_lab_recognizes_c_and_cpp_calls() {
+        let managed = include_str!("../../../experiments/netcoredbg-thread-control/LinkedCSharpStep/Program.cs");
+        let c = include_str!("../../../experiments/netcoredbg-thread-control/Native/step.c");
+        let cpp = include_str!("../../../experiments/netcoredbg-thread-control/Native/step.cpp");
+        for (marker, export, source, c_source) in [
+            ("BLUE_C_CALL", "step_add_c", c, true),
+            ("BLUE_CPP_CALL", "step_add_cpp", cpp, false),
+        ] {
+            let blue = managed.lines().position(|line| line.contains(marker)).unwrap() as u32 + 1;
+            let call = managed_call(managed, blue).unwrap();
+            assert_eq!(call.entry_point, export);
+            assert_eq!(call.locals, ["marker", "zero"]);
+            let entry = source.lines().position(|line| line.contains("BREAK_") && line.contains("ENTRY")).unwrap() as u32 + 1;
+            assert!(native_contains_language(source, entry, export, call.kind, c_source));
+            let worker = source.lines().position(|line| line.contains("BREAK_") && line.contains("WORKER")).unwrap() as u32 + 1;
+            assert!(native_contains_language(source, worker, export, call.kind, c_source));
+            if c_source { assert!(!native_contains(source, entry, export, call.kind)); }
         }
     }
     #[test]

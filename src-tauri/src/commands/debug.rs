@@ -1128,7 +1128,9 @@ pub(crate) fn launch_prepared(
         writer,
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
         ldi_token,
-        multi_thread: !live_native,
+        // A Rust/native pairing still uses this one LLDB process. Keep its
+        // thread book available in the owning Rust window.
+        multi_thread: !live_native || language == "rust",
         native_single_step: AtomicBool::new(false),
         native_step_request: Mutex::new(None),
         exclusive_next_mode: AtomicU8::new(0),
@@ -1621,7 +1623,10 @@ pub(crate) fn launch_prepared(
                 match command.as_str() {
                     "initialize" => {
                         let native_single_step = matches!(language, "rust" | "cpp")
-                            && session.multi_thread && session.ldi_token.is_none()
+                            && session.multi_thread
+                            // The LDI native partner is a separate LLDB process.
+                            // A held C# origin is still blocked by with_control.
+                            && (session.ldi_token.is_none() || language == "cpp")
                             && message["body"]["$__lldb_version"] == "lldb version 23.1.1";
                         session.native_single_step.store(native_single_step, Ordering::Release);
                         // Keep the standard DAP path separate from the optional

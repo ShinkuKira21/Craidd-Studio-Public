@@ -88,24 +88,33 @@ class Dap:
 
 def worker_lines(text):
     rows = {}
-    for match in re.finditer(r"thread #\d+: tid = (\d+), (0x[0-9a-f]+) .*?at (?:main\.cpp|main\.rs|main\.c):(\d+):\d+, name = '(?:cpp|rust|c) step (\d)'", text):
+    for match in re.finditer(r"thread #\d+: tid = (\d+), (0x[0-9a-f]+) .*?at (?:main\.cpp|main\.rs|main\.c):(\d+):\d+, name = '(?:cpp|rust|c) (?:step|linked) (\d)'", text):
         rows[int(match.group(4))] = (int(match.group(1)), int(match.group(3)), match.group(2))
     return rows
 
 
 def run(language, debugger, suspend_others):
+    linked = language in ("rust-c", "rust-cpp")
     if language == "cpp":
         program = ROOT / "CppExclusiveStep/build/cpp-exclusive-step"
         source = ROOT / "CppExclusiveStep/main.cpp"
     elif language == "c":
         program = ROOT / "CExclusiveStep/build/c-exclusive-step"
         source = ROOT / "CExclusiveStep/main.c"
+    elif linked:
+        cargo = ["cargo", "build", "--offline", "--manifest-path", str(ROOT / "RustLinkedStep/Cargo.toml")]
+        if language == "rust-cpp":
+            cargo.extend(["--features", "cpp"])
+        subprocess.run(cargo, check=True)
+        program = ROOT / "RustLinkedStep/target/debug/rust-linked-step"
+        source = ROOT / "RustLinkedStep/src/main.rs"
     else:
         program = ROOT / "RustExclusiveStep/target/debug/rust-exclusive-step"
         source = ROOT / "RustExclusiveStep/src/main.rs"
     if not program.exists():
         raise FileNotFoundError(f"Build the {language} fixture first: {program}")
-    line = next(index for index, text in enumerate(source.read_text().splitlines(), 1) if "// BREAK_NATIVE" in text)
+    line = next(index for index, text in enumerate(source.read_text().splitlines(), 1)
+                if "// BREAK_RUST" in text) if linked else next(index for index, text in enumerate(source.read_text().splitlines(), 1) if "// BREAK_NATIVE" in text)
     run_dir = ROOT / ".runs/probes"
     run_dir.mkdir(parents=True, exist_ok=True)
     directory = tempfile.mkdtemp(prefix=f"{language}-", dir=run_dir)
@@ -134,7 +143,7 @@ def run(language, debugger, suspend_others):
                 ready_threads = dap.request("threads", {}).get("threads", [])
                 print(f"{language}: LLDB scripting={dap.cli('script print(lldb.debugger.GetSelectedTarget().GetProcess().GetNumThreads())').strip()}")
 
-                for number in (1, 1, 2, 2):
+                for number in ((1, 1, 1, 2, 2, 2) if linked else (1, 1, 2, 2)):
                     before = len(dap.messages)
                     selected_tid = rows[number][0]
                     previous = read_counts(output)
@@ -169,7 +178,7 @@ def run(language, debugger, suspend_others):
                 dap.request("setBreakpoints", {"source": {"path": str(source)}, "breakpoints": []})
                 dap.request("continue", {"threadId": rows[2][0]})
                 dap.wait(lambda m: m.get("type") == "event" and m.get("event") == "terminated", timeout=10)
-                assert read_counts(output) == (1012, 2012), read_counts(output)
+                assert read_counts(output) == ((1060, 2060) if linked else (1012, 2012)), read_counts(output)
                 print(f"{language}: PASS; initial DAP threads={initial_threads}; ready DAP threads={ready_threads}; final counters={read_counts(output)}")
             finally:
                 dap.close()
@@ -183,7 +192,7 @@ def read_counts(path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("language", choices=("rust", "cpp", "c"))
+    parser.add_argument("language", choices=("rust", "cpp", "c", "rust-c", "rust-cpp"))
     parser.add_argument("--debugger", default="/usr/bin/lldb-dap")
     parser.add_argument("--without-suspension", action="store_true", help="Diagnostic comparison; does not claim isolation")
     options = parser.parse_args()

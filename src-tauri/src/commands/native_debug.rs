@@ -306,8 +306,13 @@ fn definition(root: &str, symbol: &str) -> Result<Native, String> {
     let root = Path::new(root)
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let signature = regex(&format!(
+    let cpp_signature = regex(&format!(
         r#"(?m)^[ \t]*extern\s+"C"\s+[^;{{}}\n]+?\b{}\s*\([^;{{}}]*\)\s*(?:noexcept\s*)?\{{"#,
+        regex::escape(symbol)
+    ));
+    // C source exports its symbol without a C++ linkage declaration.
+    let c_signature = regex(&format!(
+        r#"(?m)^[ \t]*[^;{{}}\n]+?\b{}\s*\([^;{{}}]*\)\s*\{{"#,
         regex::escape(symbol)
     ));
     let mut folders = VecDeque::from([(root, 0)]);
@@ -349,6 +354,9 @@ fn definition(root: &str, symbol: &str) -> Result<Native, String> {
                 return Err("Native source file exceeds 1 MB".into());
             }
             let clean = super::ldi::without_comments(&source)?;
+            let signature = if path.extension().and_then(|v| v.to_str()) == Some("c") {
+                &c_signature
+            } else { &cpp_signature };
             for found in signature.find_iter(&clean) {
                 let end = end_brace(&clean, found.end() - 1).ok_or("Unclosed native export")?;
                 definitions.push(Native {
@@ -361,7 +369,7 @@ fn definition(root: &str, symbol: &str) -> Result<Native, String> {
         }
     }
     if definitions.len() != 1 {
-        return Err(format!("Native Breakpoint requires one extern C definition of {symbol} in the selected Native project; found {}", definitions.len()));
+        return Err(format!("Native Breakpoint requires one C definition or extern C C++ definition of {symbol} in the selected Native project; found {}", definitions.len()));
     }
     Ok(definitions.remove(0))
 }
@@ -1270,6 +1278,19 @@ mod tests {
         for call in calls {
             let native = definition(root.join("Native").to_str().unwrap(), &call.symbol).unwrap();
             assert!(native.end > native.start);
+        }
+    }
+    #[test]
+    fn linked_rust_lab_resolves_c_and_cpp_exports() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let rust = fs::read_to_string(root.join("RustLinkedStep/src/main.rs")).unwrap();
+        let calls = calls(&rust).unwrap();
+        assert_eq!(calls.len(), 2);
+        for call in calls {
+            let native = definition(root.join("Native").to_str().unwrap(), &call.symbol).unwrap();
+            assert!(native.end > native.start);
+            assert_eq!(native.file.ends_with(".c"), call.symbol == "step_add_c");
         }
     }
     #[test]
