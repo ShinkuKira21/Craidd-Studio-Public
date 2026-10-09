@@ -243,27 +243,64 @@ steps and zoom. `tests/shortcuts.test.mjs` checks the table against the menu.
 
 **Reported:** it does not always close everything.
 
-**Found** (candidates; there is no reproduction yet):
+**Reproduced (user, 9 October 2026):** after a bug refreshes the window
+states, **Gold Stop or White Stop stays shown** although nothing is running,
+and Exit → This Application then does not exit. There may be other variants.
 
-- `exit_application` refuses while any window reports `dirty_count > 0` or
-  `restoring`. A stale `restoring` or dirty count leaves exit permanently
-  refused with an error instead of a prompt.
-  (`src-tauri/src/commands/linked_windows.rs:555`)
-- Frontend inspection throws if a *hidden window in another solution* has
-  unsaved files. (`src/components/layout/WindowManager.tsx` `promptNext`)
-- Sessions are cancelled only for windows in the linked registry. The Get
-  Started window and unregistered folder windows are not visited, although
-  `app.exit(0)` still ends them.
-- Child processes go through `process_supervisor`. A debuggee that an adapter
-  starts in its own session or process group, or a program GUI that re-parents
-  (for example through D-Bus activation), may survive the supervisor's tree
-  cancel.
+**Principle.** Exit → This Application is the last escape hatch. It must not
+depend on the IDE's own bookkeeping being correct. Unsaved files are the only
+thing that may stop it, and even then the user decides. A stale Stop button
+is a bug in its own right, but it must never trap the user in the app.
 
-**Proposed:** first reproduce with each lab, recording which windows and
-processes remain. Then: make exit always reach a decision (a prompt, or a
-named blocker with a "Force exit" option), and record surviving processes in
-the bug record. The fix follows the evidence; this document does not presume
-the cause.
+**Found** (inspection of the paths a stale busy state can reach):
+
+| # | Path | Effect with stale state |
+| --- | --- | --- |
+| 6.1 | `exit_application` refuses while any registry entry reports `dirty_count > 0` or `restoring` (`linked_windows.rs`). | A refresh that leaves `restoring` or a dirty count stale makes exit fail permanently. The error says "Save every open IDE window…", which names no window. |
+| 6.2 | The frontend flow throws `Wait for {window} to finish opening` for any target with `restoring` (`WindowManager.tsx` `inspectScope`). | Same stale flag; exit stops before any prompt. |
+| 6.3 | Each visible window is asked to report its dirty count, with a 30-second timeout (`prepareApplicationWindow`). | A window whose frontend is wedged makes exit wait 30 s, then fail with "The IDE window did not respond". |
+| 6.4 | `beginExitScope` returns silently while a previous flow is still set (`if (!own \|\| flow \|\| inFlow.current) return`). | After an earlier failed attempt, Ctrl+Alt+Q and the menu item do nothing, with no message. |
+| 6.5 | `exit_application` is a synchronous command, so it runs on the main event loop. It takes the registry, LDI and debug manager locks, one after another, before calling `app.exit(0)`. | If a stuck teardown thread holds one of those locks, the event loop blocks and the app appears frozen instead of exiting. Window close already avoids this by tearing down on a separate thread. |
+
+Which path the reproduction hits is not yet known. The user's report doesn't
+say whether a dialog or error appears. The proposed fix covers all five.
+
+**Proposed fix:**
+
+1. **One blocker list, shown to the user.** Exit collects every reason not
+   to exit: unsaved files per window, windows still opening, and windows that
+   didn't answer. It shows them by window name in the existing exit dialog.
+   Unsaved files keep today's Save All / review flow.
+2. **"Exit anyway".** Everything except unsaved files that the user hasn't
+   resolved offers **Exit anyway**. It calls `force_exit_application`, which
+   ignores the registry flags, cancels every known build/run/debug/LDI session,
+   and exits. Unsaved files offer it too, after an explicit "Discard and exit"
+   confirmation.
+3. **Never on the event loop.** Session cancellation runs on a worker thread
+   with a bounded wait (2 s). After that the app exits anyway; the process
+   supervisor's shutdown still terminates supervised children at exit.
+4. **No silent no-op.** If a previous flow is stuck, a new exit request
+   replaces it instead of returning silently (6.4).
+5. **Unresponsive windows time out in 5 s, not 30 s** during exit, and are
+   listed as blockers rather than failing the whole flow.
+
+**Separate bug, not fixed here:** the stale Stop state itself. It gets its own
+record in `docs/bugs/` once the refresh bug is identified. The exit fix makes
+Craidd exit correctly even while that bug still exists.
+
+**Verification:**
+
+- A unit test of the blocker classification (stale `restoring`, dirty,
+  unresponsive, clean) and of force-exit being offered.
+- Your reproduction: with Gold Stop or White Stop stale, Exit → This
+  Application exits, or names the blocker and exits on "Exit anyway".
+- Afterwards, `ps` shows no Craidd-supervised children left behind.
+
+**Open decision:**
+
+- **D9.** Should "Exit anyway" also be offered for unsaved files, behind a
+  "Discard and exit" confirmation (proposed)? Or must unsaved files always be
+  saved or reviewed first?
 
 ## 7. Other public-release items found during the sweep
 
@@ -299,7 +336,7 @@ subagents.
 | A | Shortcut table and fixes (§5) | none |
 | B | Window titles (§1) | none |
 | C | Context menu: copy paths, Explorer, VS Code, terminal placeholder (§4 without Side Window) | none |
-| D | Exit reproduction, then fix (§6) | a reproduction |
+| D | Exit escape hatch (§6) | D9 |
 | E | Debug: expandable variables, then Watch (§2.1–2.2) | none |
 | F | Split editor group and Open in Side Window | none |
 | G | Profiler layout (§3) | none |
