@@ -19,6 +19,7 @@ The rest of the docs are grouped by purpose:
 | [roadmaps/](roadmaps/README.md) | Current roadmap, source map, phase plans and archive |
 | [bugs/](bugs/README.md) | Review findings, fixes and remaining runtime acceptance |
 | [feats/](feats/) | Feature designs, including [multi-thread debugging](feats/mt-debugging/design-multi-thread-debugging-implementation.md), [LDI debugging](feats/ldi-debugging/), [linked windows](feats/linked-windows/), and the proposed [Git workspaces architecture](feats/version-control/git-workspaces/design-worktree-workspaces.md) |
+| [uiux/](uiux/design-public-release-sweep.md) | UI/UX designs that justify interface changes, starting with the public-release sweep |
 | [philosophies/](philosophies/README.md) | Design principles and reasoning, including the proposed [Git workspaces philosophy](philosophies/version-control/git-workspaces/philosophy-workspaces.md) |
 | [future/](future/) | Deferred ideas and language considerations |
 | [handoffs/](handoffs/) | Historical session handoffs and prompts |
