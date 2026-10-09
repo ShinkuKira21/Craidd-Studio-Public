@@ -243,9 +243,19 @@ steps and zoom. `tests/shortcuts.test.mjs` checks the table against the menu.
 
 **Reported:** it does not always close everything.
 
-**Reproduced (user, 9 October 2026):** after a bug refreshes the window
-states, **Gold Stop or White Stop stays shown** although nothing is running,
-and Exit → This Application then does not exit. There may be other variants.
+**Reproduced (user, 9 October 2026):**
+
+1. The whole IDE crashes.
+2. On restart, Craidd opens Get Started instead of restoring the windows,
+   and all window state is wiped.
+3. Reopening the previously opened window shows Gold Stop or White Stop,
+   but the buttons are not wired to anything.
+4. Exit → This Application then does nothing.
+
+The restored window's controls and the backend's registry have come apart:
+the window believes a session exists, and the registry has no entry for the
+window. The user is fixing the crash-restore bug (steps 2–3) separately.
+This section covers only step 4.
 
 **Principle.** Exit → This Application is the last escape hatch. It must not
 depend on the IDE's own bookkeeping being correct. Unsaved files are the only
@@ -261,12 +271,17 @@ is a bug in its own right, but it must never trap the user in the app.
 | 6.3 | Each visible window is asked to report its dirty count, with a 30-second timeout (`prepareApplicationWindow`). | A window whose frontend is wedged makes exit wait 30 s, then fail with "The IDE window did not respond". |
 | 6.4 | `beginExitScope` returns silently while a previous flow is still set (`if (!own \|\| flow \|\| inFlow.current) return`). | After an earlier failed attempt, Ctrl+Alt+Q and the menu item do nothing, with no message. |
 | 6.5 | `exit_application` is a synchronous command, so it runs on the main event loop. It takes the registry, LDI and debug manager locks, one after another, before calling `app.exit(0)`. | If a stuck teardown thread holds one of those locks, the event loop blocks and the app appears frozen instead of exiting. Window close already avoids this by tearing down on a separate thread. |
+| 6.6 | **Reproduced cause.** `get_application_windows` and `exit_application` both reject a caller that is not in the registry ("This IDE window is no longer registered"). | After the wipe, the reopened window is not registered, so both the inspection and the final exit fail. Exit depends on the very state the crash destroyed. |
 
-Which path the reproduction hits is not yet known. The user's report doesn't
-say whether a dialog or error appears. The proposed fix covers all five.
+The reproduction hits 6.6. Rows 6.1–6.5 are other ways stale state can block
+exit, and the fix covers them too.
 
 **Proposed fix:**
 
+0. **Exit never requires the caller to be registered.** `exit_application`
+   and the application-wide inspection accept any Craidd window. An
+   unregistered caller simply has no registry entry to inspect, and its own
+   unsaved tabs are checked locally (6.6).
 1. **One blocker list, shown to the user.** Exit collects every reason not
    to exit: unsaved files per window, windows still opening, and windows that
    didn't answer. It shows them by window name in the existing exit dialog.
@@ -284,16 +299,19 @@ say whether a dialog or error appears. The proposed fix covers all five.
 5. **Unresponsive windows time out in 5 s, not 30 s** during exit, and are
    listed as blockers rather than failing the whole flow.
 
-**Separate bug, not fixed here:** the stale Stop state itself. It gets its own
-record in `docs/bugs/` once the refresh bug is identified. The exit fix makes
-Craidd exit correctly even while that bug still exists.
+**Separate bug, not fixed here:** the crash-restore wipe and the unwired Stop
+buttons. The user is fixing these. The exit fix makes Craidd exit correctly
+even if a similar disassociation happens again.
 
 **Verification:**
 
 - A unit test of the blocker classification (stale `restoring`, dirty,
   unresponsive, clean) and of force-exit being offered.
-- Your reproduction: with Gold Stop or White Stop stale, Exit → This
-  Application exits, or names the blocker and exits on "Exit anyway".
+- Your reproduction: crash, reopen from Get Started, then Exit → This
+  Application exits. An unregistered window with unsaved tabs is prompted
+  first.
+- A Rust test checks that `exit_application`'s blocker check accepts an
+  unregistered caller.
 - Afterwards, `ps` shows no Craidd-supervised children left behind.
 
 **Open decision:**
