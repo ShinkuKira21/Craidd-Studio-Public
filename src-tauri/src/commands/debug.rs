@@ -393,6 +393,28 @@ fn native_eval_error(message: &Value) -> Option<String> {
     result.strip_prefix("error:").map(|text| text.trim().to_string())
 }
 
+fn secondary_native_stop(message: &Value, pending: Option<&NativeStepRequest>,
+    recent: Option<&(i64, Vec<i64>)>) -> bool {
+    if !matches!(message["body"]["reason"].as_str(), Some("step" | "breakpoint")) {
+        return false;
+    }
+    let Some(reported) = message["body"]["threadId"].as_i64() else { return false; };
+    if let Some(step) = pending {
+        return step.holds_known
+            && matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop | NativeStepPhase::Releasing)
+            && reported != step.thread_id && step.held_ids.contains(&reported);
+    }
+    // This LLDB-DAP build can report the previously selected, held thread as
+    // a second process-wide stop after the requested thread already stopped.
+    recent.is_some_and(|(target, held)| reported != *target && held.contains(&reported)
+        && message["body"]["allThreadsStopped"] == true)
+}
+
+fn native_receipt_output(body: &Value) -> bool {
+    body["category"] == "console" && body["output"].as_str().is_some_and(|output|
+        output.starts_with("CRAIDD_HOLDS:") || output.starts_with("CRAIDD_RELEASE:"))
+}
+
 fn request_native_eval(session: &Session, expression: String) -> Result<u64, String> {
     request(session, "evaluate", json!({"expression":expression, "context":"repl"}))
 }
@@ -1162,6 +1184,7 @@ pub(crate) fn launch_prepared(
         let mut terminated_emitted = false;
         let mut stop_generation = 0u64;
         let mut stop_reason = String::new();
+        let mut recent_native_stop: Option<(i64, Vec<i64>)> = None;
         let mut inspection_generations: HashMap<u64, u64> = HashMap::new();
         let mut inspection_selection_epochs: HashMap<u64, u64> = HashMap::new();
         let mut selected_variables: HashMap<u64, (usize, Vec<Value>)> = HashMap::new();
@@ -1201,6 +1224,18 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "stopped" => {
+                        let (secondary, requested_stop) = session.native_step_request.lock().ok()
+                            .map(|pending| {
+                                let step = pending.as_ref();
+                                let requested = step.filter(|step| step.holds_known
+                                    && matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop)
+                                    && matches!(message["body"]["reason"].as_str(), Some("step" | "breakpoint"))
+                                    && message["body"]["threadId"].as_i64() == Some(step.thread_id))
+                                    .map(|step| (step.thread_id, step.held_ids.clone()));
+                                (secondary_native_stop(&message, step, recent_native_stop.as_ref()), requested)
+                            }).unwrap_or((false, None));
+                        if secondary { continue; }
+                        if let Some(requested) = requested_stop { recent_native_stop = Some(requested); }
                         let mut release_error = None;
                         if let Ok(mut pending) = session.native_step_request.lock() {
                             if let Some(mut step) = pending.take() {
@@ -1260,6 +1295,9 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "continued" => {
+                        if session.native_step_request.lock().is_ok_and(|pending| pending.is_none()) {
+                            recent_native_stop = None;
+                        }
                         // This LLDB-DAP build reports allThreadsContinued=true and can
                         // report the previously selected thread even when our LLDB
                         // owner has suspended every other native thread.
@@ -1308,7 +1346,11 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "module" => super::native_debug::module(&app_reader, &label_reader, pgid, &message["body"]),
-                    "output" => emit(&app_reader, &label_reader, json!({"status":"output", "text":message["body"]["output"]})),
+                    "output" => {
+                        if !native_receipt_output(&message["body"]) {
+                            emit(&app_reader, &label_reader, json!({"status":"output", "text":message["body"]["output"]}));
+                        }
+                    }
                     "exited" => {
                         emit(&app_reader, &label_reader, json!({"status":"terminated"}));
                         terminated_emitted = true;
@@ -2377,6 +2419,33 @@ mod tests {
         assert!(parse_native_ids("CRAIDD_HOLDS:101;FAILED:broken", "CRAIDD_HOLDS:").is_err());
         assert!(parse_native_ids("thread list output", "CRAIDD_HOLDS:").is_err());
         assert!(parse_native_ids("CRAIDD_HOLDS:-1;FAILED:", "CRAIDD_HOLDS:").is_err());
+    }
+
+    #[test]
+    fn queued_lldb_stop_for_held_worker_does_not_replace_selected_step_stop() {
+        let mut step = NativeStepRequest { sequence: 7, thread_id: 3,
+            phase: NativeStepPhase::Stepping, held_ids: vec![1, 2], holds_known: true, failure: None };
+        let old_step = json!({"body":{"reason":"step","threadId":2,"allThreadsStopped":true}});
+        let old_breakpoint = json!({"body":{"reason":"breakpoint","threadId":2}});
+        let target_step = json!({"body":{"reason":"step","threadId":3}});
+        assert!(secondary_native_stop(&old_step, Some(&step), None));
+        assert!(secondary_native_stop(&old_breakpoint, Some(&step), None));
+        assert!(!secondary_native_stop(&target_step, Some(&step), None));
+        assert!(!secondary_native_stop(&json!({"body":{"reason":"exception","threadId":2}}), Some(&step), None));
+        assert!(!secondary_native_stop(&json!({"body":{"reason":"step","threadId":4}}), Some(&step), None),
+            "a newly created thread was not in the confirmed hold set");
+        step.phase = NativeStepPhase::Releasing;
+        assert!(secondary_native_stop(&old_step, Some(&step), None));
+        assert!(secondary_native_stop(&old_step, None, Some(&(3, vec![1, 2]))));
+        assert!(!secondary_native_stop(&old_breakpoint, None, Some(&(3, vec![1, 2]))));
+    }
+
+    #[test]
+    fn internal_hold_receipts_do_not_hide_debuggee_output() {
+        assert!(native_receipt_output(&json!({"category":"console","output":"CRAIDD_HOLDS:1;FAILED:\n"})));
+        assert!(native_receipt_output(&json!({"category":"console","output":"CRAIDD_RELEASE:1;FAILED:\n"})));
+        assert!(!native_receipt_output(&json!({"category":"stdout","output":"CRAIDD_HOLDS:my app log\n"})));
+        assert!(!native_receipt_output(&json!({"category":"console","output":"LLDB error: release failed\n"})));
     }
 
     #[test]

@@ -54,3 +54,14 @@ snapshot omitted `allThreadsStopped`; the frontend consequently defaulted it
 to `false`. The snapshot now sends that field. A focused frontend test checks
 that a paused, selected source frame can dispatch the experimental command
 after the all-thread snapshot. The live desktop step still awaits retest.
+
+The next desktop report showed that selecting Rust worker 2 and pressing ⇥
+returned the inspection focus to worker 1. The direct DAP trace has the
+matching sequence: for worker 2, LLDB-DAP emits `stopped(step, worker 2)` and
+then `stopped(step, previous worker 1, allThreadsStopped=true)`. In the direct
+probe, worker 1's file counter and instruction address did not move during
+worker 2's step. The backend now ignores secondary step/breakpoint stop reports
+only when that thread is in the confirmed LLDB hold set; exception reports and
+new threads remain visible. It also keeps internal `CRAIDD_HOLDS` and
+`CRAIDD_RELEASE` receipts out of the user Output panel. The user's live
+counter result after this fix is still needed before claiming desktop success.
