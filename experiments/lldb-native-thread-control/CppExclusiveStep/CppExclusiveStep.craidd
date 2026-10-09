@@ -1,0 +1,5 @@
+[project]
+name = "C++ Exclusive Step"
+language = "cpp"
+root = "."
+kind = "application"

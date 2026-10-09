@@ -3,11 +3,13 @@
 **Roadmap track:** Phase 3.x debugger investigation, after the ordinary thread
 selector baseline. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Retained design investigation, 8 October 2026. No per-thread hold or
+**Status:** Retained design investigation, 9 October 2026. No per-thread hold or
 exclusive step is implemented or accepted on `master`. A local C# feasibility
 prototype on `feat/mt-debugging-thread-control` is not a product dependency.
-Native Rust and C++ are the next bounded investigation; ordinary managed C#
-remains dependent on a capable installed debugger. No release phase is assigned.
+The isolated `feat/mt-debugging-rustc` branch now contains an installed-LLDB
+native control experiment with direct Rust, C++, and C results. Its desktop
+flow has not been accepted. Ordinary managed C# remains dependent on a
+capable installed debugger. No release phase is assigned.
 
 **Companions:** [MT implementation contract](design-multi-thread-debugging-implementation.md),
 [thread debugging and LDI](../ldi-debugging/design-thread-debugging-and-ldi.md),
@@ -217,22 +219,45 @@ feasibility lead, not a claim that Craidd's current DAP transport can use it.
 [LLDB thread API](https://lldb.llvm.org/python_api/lldb.SBThread.html),
 [LLDB-DAP capability table](https://lldb.llvm.org/use/lldbdap.html#supported-features).
 
-The direct stock-LLDB source-position check above is the first native lead.
-Next determine whether the installed LLDB-DAP can expose the same behavior
-through a supported, single-owner interface. If it cannot, do not offer
-exclusive Step through Craidd for that adapter. Sending ad hoc
-debugger-console commands while the existing adapter also owns execution is
-not the control contract.
+The direct stock-LLDB source-position check above was the first native lead.
+The next probe used the installed LLDB-DAP's `evaluate` REPL in the **same
+debugger session**. It found that `thread step-over -m this-thread` alone did
+not isolate execution: an unselected Rust worker moved from the source line
+into a sleep syscall, although its output file did not change. Explicit
+`SBThread.Suspend()` calls on the other currently known threads, followed by
+one selected-thread Step and `SBThread.Resume()` for the recorded holds, kept
+the unselected worker's instruction pointer and counter fixed. Direct
+two-worker probes passed for Rust, C++, and C with LLDB-DAP 23.1.1. The
+blocked C++ probe showed a mutex wait could be interrupted by Pause, although
+LLDB reported that stop as `exception` and completed the interrupted step at
+a later stop after release and Continue. See the isolated
+[experiment and result record](../../../experiments/lldb-native-thread-control/RESULTS.md).
+
+This is a single-owner LLDB control path through its built-in scripting API;
+it does not require another debugger binary, adapter fork, or second attach.
+It is still **experimental**. Published LLDB-DAP capabilities do not advertise
+DAP single-thread execution, so Craidd cannot infer this route from the DAP
+capability bit. The branch gates its UI to the tested LLDB-DAP version, Linux,
+ordinary Rust/CMake sessions, a current all-thread stop, and a selected source
+frame. It blocks concurrent control while holds are pending, releases the
+recorded holds after the next qualified stop, and leaves Stop available if
+release cannot be verified. A scripting-disabled build, new threads born after
+the hold snapshot, non-source frames, and unusual stop ordering need further
+qualification. The direct probe is not proof that the Craidd desktop flow
+works, and neither this experiment nor a version string is a stable general
+support contract.
 
 **Rust gate:** Use the Rust console and GUI workers to verify a one-thread
 source Step, switch, release, thread exit, async-task caveat, and cleanup.
 Native Rust-to-C++ inspection stays in its original LLDB session; it does not
 acquire the managed LDI reproduction lifecycle.
 
-**C++ gate:** Reuse the proven native provider contract, then validate it on
-the C++ console and GUI workers, including `std::thread`, lock contention,
-exceptions, and a worker blocked in a native call. Sharing LLDB does not make
-the C++ acceptance result automatic.
+**C++/C gate:** Reuse the native owner contract, then validate it on the C++
+console and GUI workers and C pthread workers, including lock contention,
+exceptions, thread creation, and a worker blocked in a native call. The direct
+C fixture currently uses Craidd's CMake/C++ project route; a separate C project
+model is outside this branch. Sharing LLDB does not make the desktop C++ or C
+acceptance result automatic.
 
 ## Future arrivals
 
@@ -254,8 +279,9 @@ contract before claiming parity.
 1. Preserve the existing selector behavior and record baseline two-worker
    results for installed netcoredbg and LLDB-DAP, including `stopped` and
    `continued` scope. This is adapter evidence, not desktop acceptance.
-2. Investigate stock LLDB's single-owner control path for Rust and C++.
-   Complete worker-side-effect, blocked-step, release, and failure checks.
+2. Investigate stock LLDB's single-owner control path for Rust, C++, and C.
+   Direct worker-side-effect and one blocked-step release checks have passed
+   on the tested LLDB build; continue failure and lifecycle qualification.
 3. Implement the session-qualified request, one-step lease, release path, and
    UI only for an installed debugger with a verified supported interface.
    Prove the native behavior in Craidd's real desktop flow before enabling it.
@@ -270,5 +296,5 @@ works. Do not update the roadmap to "shipped" before those gates are recorded.
 
 ---
 
-*Last updated: Phase 3.x, 8 October 2026. Author(s): ShinkuKira21.*
+*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
 *This document is a design.*

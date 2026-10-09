@@ -29,6 +29,12 @@ export default function ThreadDropdown() {
   const threads = useDebug((state) => state.threads);
   const completed = useDebug((state) => state.completedThreads);
   const sessionKey = useDebug((state) => state.threadSessionKey);
+  const nativeSingleStepSessionKey = useDebug((state) => state.nativeSingleStepSessionKey);
+  const nativeStepTarget = useDebug((state) => state.nativeStepTarget);
+  const nativeStepOutcome = useDebug((state) => state.nativeStepOutcome);
+  const nativeReleaseFailed = useDebug((state) => state.nativeReleaseFailed);
+  const nativeCanRetryRelease = useDebug((state) => state.nativeCanRetryRelease);
+  const allThreadsStopped = useDebug((state) => state.allThreadsStopped);
   const selectedId = useDebug((state) => state.selectedThreadId);
   const frames = useDebug((state) => state.frames);
   const stale = useDebug((state) => state.threadsStale);
@@ -142,7 +148,7 @@ export default function ThreadDropdown() {
     const duration = thread.runObserved ? `ran for ${ranFor}`
       : paused ? "running time unavailable" : `observed for ${observedFor}`;
     const heldOrigin = Boolean(ldi?.held && ldi.originLabel === ownLabel && thread.id === ldi.originThreadId);
-    return <button key={thread.id} type="button" disabled={!paused}
+    return <button key={thread.id} type="button" disabled={!paused || Boolean(nativeStepTarget) || nativeReleaseFailed}
       onClick={() => void selectThread(thread.id).catch((error) => alert(`Could not inspect thread: ${String(error)}`))}
       className={`block w-full text-left rounded px-1.5 py-1 ${paused ? "hover:bg-zinc-800" : "cursor-default opacity-75"} ${selectedId === thread.id ? "bg-zinc-800" : ""}`}
       aria-label={`${thread.name}, ID ${thread.id}, ${exception ? "exception, paused" : thread.state} ${duration}${paused ? ", inspect" : ", pause to inspect"}`}>
@@ -176,7 +182,19 @@ export default function ThreadDropdown() {
       <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
       <div role="dialog" aria-label="Threads in this debugger session"
         className="absolute top-full left-0 mt-1 w-[320px] max-h-[min(60vh,440px)] overflow-y-auto rounded border border-zinc-700 bg-zinc-900 shadow-2xl z-50 p-2 text-xs">
-        <div className="px-1 pb-2 text-zinc-500">Select a paused thread to inspect it. Step targets that thread when its current instruction has a source line. This debugger can resume all threads, so another worker may hit a breakpoint first.</div>
+        <div className="px-1 pb-2 text-zinc-500">{sessionKey && nativeSingleStepSessionKey === sessionKey
+          ? "Select a paused thread to inspect it. ⇥ requests one native-thread Step Over on this experimental LLDB-DAP path. Continue and ordinary Step may resume other threads."
+          : "Select a paused thread to inspect it. Step targets that thread when its current instruction has a source line. This debugger can resume all threads, so another worker may hit a breakpoint first."}</div>
+        {nativeStepTarget?.sessionKey === sessionKey &&
+          <div role="status" className="px-1 pb-2 text-amber-300">Stepping {nativeStepTarget.name} #{nativeStepTarget.id}. If another thread stopped first or the step blocks, use Pause or Stop to recover.</div>}
+        {nativeStepOutcome && !nativeStepTarget &&
+          <div role="status" className="px-1 pb-2 text-zinc-400">{nativeStepOutcome}</div>}
+        {(nativeStepTarget || nativeCanRetryRelease) && sessionKey && nativeSingleStepSessionKey === sessionKey &&
+          <button type="button" disabled={stale || !allThreadsStopped}
+            onClick={() => void useDebug.getState().releaseNativeHolds().catch((error) => alert(`Could not release native holds: ${String(error)}`))}
+            className="mb-2 w-full rounded border border-zinc-700 px-2 py-1 text-left text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">
+            {nativeCanRetryRelease ? "Retry native hold release" : "Release native holds"}
+          </button>}
         {nativeReproduction && ldi && <div className="mb-2 rounded border border-blue-900/70 bg-blue-950/20 p-1.5 text-blue-300">
           LDI #{ldi.token} · B reproduces A {remoteOriginLabel}
           <div className="text-[10px] text-zinc-500 mt-1">These native threads belong to this reproduction. The original C# call remains held in A.</div>

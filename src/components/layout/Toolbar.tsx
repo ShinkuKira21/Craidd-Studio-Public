@@ -33,6 +33,11 @@ function Toolbar() {
   const debugInspectionError = useDebug((s) => s.inspectionError);
   const selectedThreadId = useDebug((s) => s.selectedThreadId);
   const threadSessionKey = useDebug((s) => s.threadSessionKey);
+  const nativeSingleStepSessionKey = useDebug((s) => s.nativeSingleStepSessionKey);
+  const nativeStepTarget = useDebug((s) => s.nativeStepTarget);
+  const nativeReleaseFailed = useDebug((s) => s.nativeReleaseFailed);
+  const threadsStale = useDebug((s) => s.threadsStale);
+  const allThreadsStopped = useDebug((s) => s.allThreadsStopped);
   const nativeContext = useNativeDebug((s) => s.context);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [startupSetupRequested, setStartupSetupRequested] = useState(false);
@@ -53,6 +58,8 @@ function Toolbar() {
     && item.windowLabel !== linked.ownWindowLabel);
   const heldByLdi = Boolean(ldi?.held && ldi.phase !== "stopped" && ldi.originLabel === (remote?.windowLabel ?? linked.ownWindowLabel));
   const native = !remote ? nativeContext : null;
+  const hasNativeSingleStep = !remote && !native && Boolean(threadSessionKey)
+    && nativeSingleStepSessionKey === threadSessionKey;
   const showGold = linked.windows.length > 1 || linked.linked || Boolean(linked.activeAction);
   const liveOwner = !remote && blues.some((blue) => blue.mode === "live-native"
     && blue.originLabel === linked.ownWindowLabel && !blue.warning)
@@ -79,6 +86,8 @@ function Toolbar() {
     .catch((error) => alert(`Could not stop the viewed window: ${String(error)}`));
   const debugViewed = (action: "continue" | "pause" | "stepOver" | "stepInto" | "stepOut") => void controlViewedDebug(action)
     .catch((error) => alert(`Debug ${action} failed: ${String(error)}`));
+  const stepNativeThreadOnly = () => void useDebug.getState().stepNativeThreadOnly()
+    .catch((error) => alert(`Could not step this thread only: ${String(error)}`));
   const onChipSelect = (name: string) => void selectViewedConfiguration(name)
     .catch((error) => alert(`Could not select configuration: ${String(error)}`));
 
@@ -134,16 +143,28 @@ function Toolbar() {
       {(native || (remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {viewedStatus === "paused"
           ? (!native || native.nativeStop)
-            ? <DebugTransport label={heldByLdi ? "Continue C# · stop this native reproduction" : "Continue"}
+            ? <DebugTransport disabled={Boolean(nativeStepTarget) || nativeReleaseFailed}
+                disabledReason={nativeReleaseFailed ? "Native hold release is unverified; retry release or Stop" : "Wait for native holds to be released"}
+                label={heldByLdi ? "Continue C# · stop this native reproduction" : "Continue"}
                 icon="▶" onClick={() => debugViewed("continue")} />
             : <button type="button" className="px-2 text-blue-300 hover:text-blue-200"
               onClick={() => void linked.selectWindow(native.originLabel).catch((error) => alert(String(error)))}>Paused in Rust · show owner</button>
           : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
         {!remote && !native && (threadSessionKey || (ldi?.held && ldi.originLabel === linked.ownWindowLabel)) && <ThreadDropdown />}
         {viewedStatus === "paused" && (!native || native.nativeStop) && <>
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable) || Boolean(nativeStepTarget) || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : nativeStepTarget ? "Wait for native holds to be released" : heldByLdi ? undefined : localStepReason}
+            label="Step Over · may resume all threads" icon="↷" onClick={() => debugViewed("stepOver")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable) || Boolean(nativeStepTarget) || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : nativeStepTarget ? "Wait for native holds to be released" : heldByLdi ? undefined : localStepReason}
+            label="Step Into · may resume all threads" icon="↓" onClick={() => debugViewed("stepInto")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable) || Boolean(nativeStepTarget) || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : nativeStepTarget ? "Wait for native holds to be released" : heldByLdi ? undefined : localStepReason}
+            label="Step Out · may resume all threads" icon="↑" onClick={() => debugViewed("stepOut")} />
+          {hasNativeSingleStep && <DebugTransport
+            disabled={heldByLdi || threadsStale || !allThreadsStopped || Boolean(localStepUnavailable) || Boolean(nativeStepTarget) || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : threadsStale ? "Wait for the current thread list" : !allThreadsStopped ? "Pause all threads before stepping one" : nativeStepTarget ? "Wait for the current one-thread Step to stop; use Pause if it is blocked" : heldByLdi ? undefined : localStepReason}
+            label="Experimental: Step selected native thread only" icon="⇥" onClick={stepNativeThreadOnly} />}
         </>}
       </div>}
 

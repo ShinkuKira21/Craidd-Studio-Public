@@ -11,7 +11,7 @@ export interface DebugVariable { name: string; value: string; type?: string; var
 export interface DebugThread { id: number; name: string; state: "running" | "paused" | "unknown"; reason?: string | null; incarnation: number; observedMs: number; ranMs: number; runObserved: boolean; receivedAt?: number }
 export interface CompletedDebugThread { id: number; name: string; incarnation: number; observedMs: number; ranMs: number; runObserved: boolean }
 interface DebugEvent {
-  status: DebugStatus | "output" | "scopes" | "variables" | "threads" | "threadSelected" | "inspection";
+  status: DebugStatus | "output" | "scopes" | "variables" | "threads" | "threadSelected" | "inspection" | "capabilities" | "nativeStepRejected" | "nativeHoldsReleased" | "nativeReleaseFailed";
   text?: string;
   reason?: string;
   file?: string;
@@ -26,6 +26,9 @@ interface DebugEvent {
   completed?: CompletedDebugThread[];
   stale?: boolean;
   error?: string;
+  allThreadsStopped?: boolean;
+  nativeSingleStep?: boolean;
+  retryable?: boolean;
 }
 
 interface DebugState {
@@ -39,7 +42,13 @@ interface DebugState {
   threads: DebugThread[];
   completedThreads: CompletedDebugThread[];
   threadsStale: boolean;
+  allThreadsStopped: boolean;
   threadSessionKey: string | null;
+  nativeSingleStepSessionKey: string | null;
+  nativeStepTarget: { sessionKey: string; id: number; name: string } | null;
+  nativeStepOutcome: string | null;
+  nativeReleaseFailed: boolean;
+  nativeCanRetryRelease: boolean;
   selectedThreadId: number | null;
   selectionEpoch: number;
   inspectionError: string | null;
@@ -47,16 +56,22 @@ interface DebugState {
   control: (action: "continue" | "pause" | "stepOver" | "stepInto" | "stepOut" | "stop") => Promise<void>;
   selectThread: (threadId: number) => Promise<void>;
   refreshThreads: () => Promise<void>;
+  stepNativeThreadOnly: () => Promise<void>;
+  releaseNativeHolds: () => Promise<void>;
 }
 
 export const useDebug = create<DebugState>((set, get) => ({
   status: "idle", output: "", reason: null, file: null, line: null, frames: [], variables: [],
-  threads: [], completedThreads: [], threadsStale: false, threadSessionKey: null, selectedThreadId: null, selectionEpoch: 0, inspectionError: null,
+  threads: [], completedThreads: [], threadsStale: false, allThreadsStopped: false, threadSessionKey: null, nativeSingleStepSessionKey: null,
+  nativeStepTarget: null, nativeStepOutcome: null, nativeReleaseFailed: false, nativeCanRetryRelease: false,
+  selectedThreadId: null, selectionEpoch: 0, inspectionError: null,
   start: async (method, cwd, profile, commandArgs = [], env = {}, order) => {
     if (["building", "starting", "running", "paused"].includes(get().status)) return;
     const language = method === "cargo" ? "Rust" : method === "dotnet" ? "C#" : "C++";
     set({ status: "building", output: `Building a debuggable ${language} executable…\n`, frames: [], variables: [], file: null, line: null,
-      threads: [], completedThreads: [], threadsStale: false, threadSessionKey: null, selectedThreadId: null, selectionEpoch: 0, inspectionError: null });
+      threads: [], completedThreads: [], threadsStale: false, allThreadsStopped: false, threadSessionKey: null,
+      nativeSingleStepSessionKey: null, nativeStepTarget: null, nativeStepOutcome: null, nativeReleaseFailed: false, nativeCanRetryRelease: false,
+      selectedThreadId: null, selectionEpoch: 0, inspectionError: null });
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const solutionPath = useSolution.getState().clnPath;
@@ -82,6 +97,34 @@ export const useDebug = create<DebugState>((set, get) => ({
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("debug_refresh_threads");
   },
+  stepNativeThreadOnly: async () => {
+    const state = get();
+    const sessionKey = state.threadSessionKey;
+    const selected = state.threads.find((thread) => thread.id === state.selectedThreadId);
+    if (!sessionKey || state.nativeSingleStepSessionKey !== sessionKey || state.status !== "paused"
+      || state.threadsStale || !state.allThreadsStopped || state.nativeStepTarget || state.nativeReleaseFailed
+      || !selected || selected.state !== "paused" || !state.frames[0]?.source?.path || !state.frames[0]?.line) {
+      throw new Error("Select a paused native thread at a source line after all threads have stopped");
+    }
+    set({ nativeStepTarget: { sessionKey, id: selected.id, name: selected.name }, nativeStepOutcome: null });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("debug_step_native_thread_only", { sessionKey, threadId: selected.id, incarnation: selected.incarnation });
+    } catch (error) {
+      set({ nativeStepTarget: null, nativeStepOutcome: `One-thread Step failed: ${String(error)}` });
+      throw error;
+    }
+  },
+  releaseNativeHolds: async () => {
+    const state = get();
+    const sessionKey = state.threadSessionKey;
+    if (!sessionKey || state.nativeSingleStepSessionKey !== sessionKey || state.status !== "paused"
+      || state.threadsStale || !state.allThreadsStopped || (!state.nativeStepTarget && !state.nativeCanRetryRelease)) {
+      throw new Error("Wait for an all-thread stop with native holds pending");
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("debug_release_native_holds", { sessionKey });
+  },
 }));
 
 export async function listenToDebug(): Promise<() => void> {
@@ -94,6 +137,33 @@ export async function listenToDebug(): Promise<() => void> {
       useDebug.setState((state) => ({ output: appendOutput(state.output, message.text ?? "") }));
       return;
     }
+    if (message.status === "capabilities") {
+      useDebug.setState((state) => {
+        if (!message.sessionKey || (state.threadSessionKey && state.threadSessionKey !== message.sessionKey)) return state;
+        return { threadSessionKey: message.sessionKey,
+          nativeSingleStepSessionKey: message.nativeSingleStep ? message.sessionKey : null };
+      });
+      return;
+    }
+    if (message.status === "nativeStepRejected") {
+      useDebug.setState((state) => message.sessionKey === state.threadSessionKey
+        ? { nativeStepTarget: null, nativeReleaseFailed: false, nativeCanRetryRelease: false,
+          nativeStepOutcome: `One-thread Step failed: ${message.text ?? "LLDB rejected the request"}` }
+        : state);
+      return;
+    }
+    if (message.status === "nativeHoldsReleased") {
+      useDebug.setState((state) => message.sessionKey === state.threadSessionKey
+        ? { nativeStepTarget: null, nativeReleaseFailed: false, nativeCanRetryRelease: false } : state);
+      return;
+    }
+    if (message.status === "nativeReleaseFailed") {
+      useDebug.setState((state) => message.sessionKey === state.threadSessionKey
+        ? { nativeStepTarget: null, nativeReleaseFailed: true, nativeCanRetryRelease: message.retryable === true,
+          nativeStepOutcome: `Native hold release is unverified: ${message.text ?? "LLDB did not confirm release"}. ${message.retryable ? "Retry release or Stop." : "Stop this debugger session."}` }
+        : state);
+      return;
+    }
     if (message.status === "threads") {
       const receivedAt = performance.now();
       useDebug.setState((state) => ({
@@ -101,6 +171,7 @@ export async function listenToDebug(): Promise<() => void> {
         threads: (message.threads ?? []).map((thread) => ({ ...thread, receivedAt })),
         completedThreads: message.completed ?? [],
         threadsStale: message.stale ?? false,
+        allThreadsStopped: message.allThreadsStopped ?? false,
         selectedThreadId: state.selectedThreadId != null && (message.threads ?? []).some((thread) => thread.id === state.selectedThreadId)
           ? state.selectedThreadId : null,
         ...((state.selectedThreadId != null && !(message.threads ?? []).some((thread) => thread.id === state.selectedThreadId))
@@ -149,7 +220,19 @@ export async function listenToDebug(): Promise<() => void> {
       threads: ["terminated", "error", "building", "starting"].includes(message.status) ? [] : state.threads,
       completedThreads: ["terminated", "error", "building", "starting"].includes(message.status) ? [] : state.completedThreads,
       threadsStale: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.threadsStale,
+      allThreadsStopped: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.allThreadsStopped,
       threadSessionKey: ["terminated", "error", "building", "starting"].includes(message.status) ? null : state.threadSessionKey,
+      nativeSingleStepSessionKey: ["terminated", "error", "building", "starting"].includes(message.status) ? null : state.nativeSingleStepSessionKey,
+      nativeStepTarget: ["terminated", "error", "building", "starting"].includes(message.status) ? null : state.nativeStepTarget,
+      nativeReleaseFailed: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.nativeReleaseFailed,
+      nativeCanRetryRelease: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.nativeCanRetryRelease,
+      nativeStepOutcome: active && state.nativeStepTarget?.sessionKey === state.threadSessionKey
+        && (message.reason === "step" || message.reason === "pause" || message.reason === "exception"
+          || (message.reason === "breakpoint" && message.threadId === state.nativeStepTarget.id))
+        ? message.threadId === state.nativeStepTarget.id && message.reason === "step"
+          ? null
+          : `One-thread Step requested ${state.nativeStepTarget.name} #${state.nativeStepTarget.id}, but stopped on #${message.threadId ?? "?"} (${message.reason ?? "stop"}).`
+        : ["terminated", "error", "building", "starting"].includes(message.status) ? null : state.nativeStepOutcome,
       selectedThreadId: active ? message.threadId ?? state.selectedThreadId : null,
       inspectionError: null,
       output: message.text ? appendOutput(state.output, message.text) : state.output,

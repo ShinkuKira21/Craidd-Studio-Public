@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.18)
+project(c-exclusive-step C)
+set(CMAKE_C_STANDARD 11)
+add_executable(c-exclusive-step main.c)
+target_compile_options(c-exclusive-step PRIVATE -g -O0)
+target_link_libraries(c-exclusive-step PRIVATE pthread)

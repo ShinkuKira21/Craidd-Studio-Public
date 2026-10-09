@@ -1,0 +1,5 @@
+[project]
+name = "Rust Exclusive Step"
+language = "rust"
+root = "."
+kind = "application"

@@ -1,0 +1,27 @@
+[solution]
+name = "Native Thread Control Experiment"
+version = "1.0"
+projects = ["RustExclusiveStep/RustExclusiveStep.craidd", "CppExclusiveStep/CppExclusiveStep.craidd", "CExclusiveStep/CExclusiveStep.craidd"]
+default_project = "RustExclusiveStep/RustExclusiveStep.craidd"
+default_config = "Rust Exclusive Step"
+
+[[config]]
+name = "Rust Exclusive Step"
+kind = "debug"
+target = "RustExclusiveStep/RustExclusiveStep.craidd"
+method = "cargo"
+command = "cargo run -- runs/rust"
+
+[[config]]
+name = "C++ Exclusive Step"
+kind = "debug"
+target = "CppExclusiveStep/CppExclusiveStep.craidd"
+method = "cmake"
+command = "cmake --build build --target cpp-exclusive-step -- runs/cpp"
+
+[[config]]
+name = "C Exclusive Step"
+kind = "debug"
+target = "CExclusiveStep/CExclusiveStep.craidd"
+method = "cmake"
+command = "cmake --build build --target c-exclusive-step -- runs/c"
