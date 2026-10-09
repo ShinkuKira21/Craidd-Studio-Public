@@ -8,13 +8,14 @@ const source = await readFile(new URL("../src/store/debugStore.ts", import.meta.
 let { outputText } = ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
 } });
-const listener = { callback: null };
+const listener = { callback: null, calls: [] };
 const modules = {
   zustand: import.meta.resolve("zustand"),
   "../lib/debugSource": url("export async function revealDebugSource() {}"),
   "./breakpointStore": url("export const useBreakpoints={getState:()=>({points:[]})};"),
   "./solutionStore": url("export const useSolution={getState:()=>({clnPath:null})};"),
   "../lib/outputPresentation": url("export const appendOutput=(before,text)=>before+text;"),
+  "@tauri-apps/api/core": url("export async function invoke(command,args){globalThis.__nativeStepListener.calls.push({command,args});}"),
   "@tauri-apps/api/webviewWindow": url("export function getCurrentWebviewWindow(){return {listen:async (_name,callback)=>{globalThis.__nativeStepListener.callback=callback;return ()=>{globalThis.__nativeStepListener.callback=null;};}};}"),
 };
 globalThis.__nativeStepListener = listener;
@@ -33,9 +34,17 @@ test("native capability remains in the same session across LLDB's later starting
   assert.equal(useDebug.getState().nativeSingleStepSessionKey, sessionKey);
   emit({ status: "starting", text: "Debugger connected; waiting for native execution" });
   emit({ status: "threads", sessionKey, threads: [], allThreadsStopped: false });
+  emit({ status: "threads", sessionKey, threads: [{ id: 123, name: "rust step 1", state: "paused", incarnation: 1 }],
+    stale: false, allThreadsStopped: true });
   emit({ status: "paused", reason: "breakpoint", threadId: 123 });
+  emit({ status: "inspection", sessionKey, threadId: 123, selectionEpoch: 0,
+    frames: [{ id: 1, name: "worker", line: 21, source: { path: "/lab/main.rs" } }] });
   assert.equal(useDebug.getState().threadSessionKey, sessionKey);
   assert.equal(useDebug.getState().nativeSingleStepSessionKey, sessionKey);
+  assert.equal(useDebug.getState().allThreadsStopped, true);
+  await useDebug.getState().stepNativeThreadOnly();
+  assert.deepEqual(listener.calls, [{ command: "debug_step_native_thread_only",
+    args: { sessionKey, threadId: 123, incarnation: 1 } }]);
   emit({ status: "terminated" });
   assert.equal(useDebug.getState().nativeSingleStepSessionKey, null);
   unlisten();

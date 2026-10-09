@@ -138,8 +138,12 @@ fn generic_thread_name(name: &str, id: i64) -> bool {
 
 impl ThreadBook {
     fn snapshot(&self, session: &Session) -> Value {
-        json!({"status":"threads", "sessionKey":format!("{}:{}", session.pgid, session.birth),
-            "stale":self.stale,
+        self.snapshot_for(format!("{}:{}", session.pgid, session.birth))
+    }
+
+    fn snapshot_for(&self, session_key: String) -> Value {
+        json!({"status":"threads", "sessionKey":session_key,
+            "stale":self.stale, "allThreadsStopped":self.all_stopped,
             "threads":self.rows.iter().map(|(id, row)| json!({"id":id, "name":row.name,
                 "state":row.state, "reason":row.reason, "incarnation":row.incarnation,
                 "observedMs":row.first_seen.elapsed().as_millis(),
@@ -2200,6 +2204,19 @@ mod tests {
         assert!(book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]));
         assert!(!book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]));
         assert!(!book.rows.contains_key(&3), "a second omission retires the missing worker");
+    }
+
+    #[test]
+    fn native_thread_snapshot_reports_all_thread_stop_scope() {
+        let mut book = ThreadBook::default();
+        book.started(1);
+        book.started(2);
+        book.stopped(1, "breakpoint", true);
+        let paused = book.snapshot_for("session".into());
+        assert_eq!(paused["allThreadsStopped"], true);
+        assert_eq!(paused["threads"][1]["state"], "paused");
+        book.continued(1, true);
+        assert_eq!(book.snapshot_for("session".into())["allThreadsStopped"], false);
     }
 
     #[test]

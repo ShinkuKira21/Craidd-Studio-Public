@@ -47,3 +47,10 @@ on a later `starting` status from the same LLDB launch. The branch now keeps
 the session capability across that status, with a focused event-order test.
 The user must restart the debug session and repeat the desktop sequence; this
 record does not claim the in-app control has passed yet.
+
+The next user report showed ⇥ present but disabled while three Rust threads
+were paused. The backend thread book tracked the all-thread stop, but its
+snapshot omitted `allThreadsStopped`; the frontend consequently defaulted it
+to `false`. The snapshot now sends that field. A focused frontend test checks
+that a paused, selected source frame can dispatch the experimental command
+after the all-thread snapshot. The live desktop step still awaits retest.
