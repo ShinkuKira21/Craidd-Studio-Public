@@ -9,22 +9,21 @@ const LAST_TYPING_KEY = "craidd:last-typing";
 export async function listenForBreakpointFocus(): Promise<() => void> {
   const current = getCurrentWindow();
   let lastRecorded = 0;
-  let originalTitle: string | null = null;
-  let badgeRequest = 0;
+  // The backend owns the title text; this only asks for the paused badge.
+  let badged = false;
   let disposed = false;
+  const setBadge = (badge: boolean) => {
+    if (badged === badge) return;
+    badged = badge;
+    void import("@tauri-apps/api/core").then(({ invoke }) => invoke("set_title_badge", { badge })).catch(() => {});
+  };
   const onKeyDown = () => {
     const now = Date.now();
     if (now - lastRecorded < 250) return;
     lastRecorded = now;
     try { localStorage.setItem(LAST_TYPING_KEY, String(now)); } catch { /* Best effort. */ }
   };
-  const clearBadge = () => {
-    badgeRequest += 1;
-    if (originalTitle === null) return;
-    const title = originalTitle;
-    originalTitle = null;
-    void current.setTitle(title).catch(() => {});
-  };
+  const clearBadge = () => setBadge(false);
   window.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("focus", clearBadge);
   const unlisten = await listen("craidd:debug-paused", () => {
@@ -36,14 +35,7 @@ export async function listenForBreakpointFocus(): Promise<() => void> {
       void current.setFocus().catch(() => {});
       return;
     }
-    if (originalTitle === null) {
-      const request = ++badgeRequest;
-      void current.title().then((title) => {
-        if (disposed || request !== badgeRequest || originalTitle !== null) return;
-        originalTitle = title;
-        return current.setTitle(`● ${title}`);
-      }).catch(() => {});
-    }
+    setBadge(true);
   });
   const unlistenResume = await listen("craidd:debug-resumed", clearBadge);
   return () => {

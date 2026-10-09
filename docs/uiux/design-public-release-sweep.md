@@ -64,11 +64,30 @@ filled in from real observations; until then they stay empty.
 
 | Case | Expected title | GNOME Wayland | ChromeOS |
 | --- | --- | --- | --- |
-| Linked solution window, config selected | `{Config}: CS1 - Craidd Studio - {Solution}` from first paint | | |
+| Linked solution window, config selected | `Craidd Studio - {Solution}` while opening, then `{Config}: CS1 - Craidd Studio - {Solution}` once registered (segments are only prepended) | | |
 | Duplicate linked window | `{Config}: CS2 - Craidd Studio - {Solution}`; CS1 unchanged | | |
 | Folder window (no `.cln`) | `{Folder} - Craidd Studio` | | |
 | Get Started | `Craidd Studio` | | |
 | Paused badge, then an incoming title update (config change while badged) | `● {new title}`; after focus or resume, `{new title}`, never the old one | | |
+
+**Delivered (slice B):**
+
+- `src-tauri/src/commands/window_title.rs` holds the canonical title and the
+  badge for each window. It is the only code that sets titles.
+- The frontend calls `set_title_badge`, and the `craidd:linked-title` event is removed.
+- Titles use the declared solution name.
+- Solution windows open as `Craidd Studio - {Solution}`, folder windows as
+  `{Folder} - Craidd Studio`, and Get Started as `Craidd Studio`.
+- `productName` and the default window title are now `Craidd Studio`.
+
+**Limitations:**
+
+- The window ID is assigned when the window registers, which happens after
+  the window is first shown. Until then the title has no `{Config}: CS{n}`
+  prefix.
+- Shell-level naming (dock, Alt+Tab, shelf) still depends on a `.desktop`
+  entry for dev builds. Not verified.
+- The acceptance table has not been run yet.
 
 ## 2. Debugging
 

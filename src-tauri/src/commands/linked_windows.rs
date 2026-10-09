@@ -13,28 +13,11 @@ use super::runner::RunSpec;
 const STATE_EVENT: &str = "craidd:linked-state";
 const COMMAND_EVENT: &str = "craidd:linked-command";
 
-const TITLE_EVENT: &str = "craidd:linked-title";
 
-/// Build the canonical window title for a participant.
-/// Format: {Project Configuration}: {WindowId} - Craidd Studio - {Solution Name}
-/// When no project/config is selected yet, the first segment is dropped
-/// and the title is: {WindowId} - Craidd Studio - {Solution Name}
-pub fn canonical_title(item: &Participant, solution_name: &str) -> String {
-    let config_seg = item.selected_config_name.clone()
-        .or_else(|| item.project_name.clone());
-    match config_seg {
-        Some(seg) if !seg.is_empty() => format!(
-            "{}: CS{} - Craidd Studio - {}",
-            seg, item.window_id, solution_name
-        ),
-        _ => format!("CS{} - Craidd Studio - {}", item.window_id, solution_name),
-    }
-}
-
-/// Emit the canonical title to one window.
+/// Apply the canonical window title for a participant (see window_title).
 fn emit_window_title(app: &AppHandle, label: &str, item: &Participant, solution_name: &str) {
-    let title = canonical_title(item, solution_name);
-    let _ = app.emit_to(label, TITLE_EVENT, serde_json::json!({ "title": title }));
+    let segment = item.selected_config_name.as_deref().or(item.project_name.as_deref());
+    super::window_title::set_canonical(app, label, super::window_title::linked_title(segment, item.window_id, solution_name));
 }
 
 
@@ -289,13 +272,6 @@ struct LinkedCommand {
     kind: String,
     action: Option<String>,
     action_id: u64,
-}
-
-fn solution_name_of(solution_path: &str) -> String {
-    std::path::Path::new(solution_path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Solution".into())
 }
 
 fn is_application(kind: Option<&str>) -> bool {
@@ -714,7 +690,7 @@ pub fn update_linked_window(
     registry.sequence += 1;
     broadcast(&app, &registry);
     if let Some(item) = registry.windows.get(window.label()) {
-        let name = solution_name_of(&item.solution_path);
+        let name = super::window_title::solution_display_name(&item.solution_path);
         emit_window_title(&app, window.label(), item, &name);
     }
     let selection_changed = previous_selection.is_some()
@@ -1263,6 +1239,7 @@ fn close_linked_window_inner(
     registry.parked_entries.remove(&target_label);
     registry.view_targets.retain(|viewer, viewed| viewer != &target_label && viewed != &target_label);
     registry.last_titles.remove(&target_label);
+    super::window_title::forget(&target_label);
     for action in registry.actions.values_mut() {
         action.pending.remove(&target_label);
         action.unfinished.remove(&target_label);
@@ -2171,6 +2148,7 @@ pub fn prepare_native_close(window: &tauri::Window) -> bool {
     let label = window.label();
     registry.windows.remove(label);
     registry.last_titles.remove(label);
+    super::window_title::forget(label);
     registry.parked_entries.remove(label);
     registry.close_in_flight.remove(label);
     registry.view_targets.retain(|viewer, viewed| viewer != label && viewed != label);

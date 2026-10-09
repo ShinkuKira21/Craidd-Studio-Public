@@ -207,9 +207,6 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   useLinkedWindows.setState((state) => ({ ownWindowLabel, viewedWindowLabel: ownWindowLabel,
     ownInstanceId: state.ownInstanceId ?? crypto.randomUUID() }));
   const unlistenState = await currentWindow.listen<LinkedSnapshot>("craidd:linked-state", (event) => applySnapshot(event.payload));
-  const unlistenTitle = await currentWindow.listen<{ title: string }>("craidd:linked-title", (event) => {
-    void currentWindow.setTitle(event.payload.title).catch(() => { /* best effort */ });
-  });
   const stopLocalAction = () => ["building", "starting", "running", "paused"].includes(useDebug.getState().status)
     ? useDebug.getState().control("stop") : useBuild.getState().stop();
   const unlistenCommand = await currentWindow.listen<{ kind: "start" | "stop" | "cancel_member"; action: Action | null; actionId: number }>(
@@ -306,7 +303,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
     .then(() => invoke("show_main_window"))
     .then(() => invoke("mark_linked_window_ready"))
     .catch((error) => console.error("[craidd] Could not register linked window:", error));
-  return () => { unlistenState(); unlistenCommand(); unlistenReveal(); unlistenTarget(); unlistenPrepare(); unlistenTitle(); };
+  return () => { unlistenState(); unlistenCommand(); unlistenReveal(); unlistenTarget(); unlistenPrepare(); };
 }
 
 async function prepareOwnWindow(decision: "save" | "discard"): Promise<void> {

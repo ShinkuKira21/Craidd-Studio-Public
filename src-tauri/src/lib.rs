@@ -96,6 +96,7 @@ pub fn run() {
             delete_path,
             rename_path,
             show_main_window,
+            commands::window_title::set_title_badge,
             commands::window::abort_initial_hidden_window,
             commands::ldi::set_ldi_blue,
             commands::ldi::list_ldi_call_sites,

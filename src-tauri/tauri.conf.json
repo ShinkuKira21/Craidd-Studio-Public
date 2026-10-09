@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "craidd-studio",
+  "productName": "Craidd Studio",
   "version": "0.1.0",
   "identifier": "com.skira24.craidd-studio",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "craidd-studio",
+        "title": "Craidd Studio",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
