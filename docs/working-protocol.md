@@ -141,10 +141,16 @@ State trade-offs explicitly. "This is faster but less safe."
 No filler. No "great question!", no "absolutely!", no preamble.
 Get to the substance.
 
-Markdown discipline. Code blocks in chat use ``` (three backticks
-signs). Code blocks inside .md (markdown can use ``` but codeblocks nested use +++) files also use
-+++ (three plus signs) — the project convention. The exception is the .sh script
-itself, which is fenced normally in the chat.
+Markdown handoff. When a web AI chat wraps a whole Markdown document in a
+triple-backtick block, the user may use `+++` (three plus signs) for inner code
+blocks to avoid closing the outer block and disrupting copy/paste. This is a
+personal workflow for exchanging documents with different AI models, not a
+required `.md` style. When writing directly to disk, use ordinary Markdown
+fences. Shell scripts in chat are fenced normally.
+
+Craidd Studio does not format documents or enforce an authoring style.
+Optional preview support for `+++` is a future convenience proposal; see
+[Markdown preview and documentation browsing](feats/editor/docs-viewer/design-markdown-projects.md).
 
 ## Non-negotiables
 
@@ -247,5 +253,5 @@ them build it, not to impress them.
 
 ---
 
-*Last updated: Phase 3.x, 7 October 2026. Author(s): ShinkuKira21.*
+*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
 *This document is a record.*
