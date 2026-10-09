@@ -7,9 +7,11 @@ selector baseline. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 exclusive step is implemented or accepted on `master`. A local C# feasibility
 prototype on `feat/mt-debugging-thread-control` is not a product dependency.
 The isolated `feat/mt-debugging-rustc` branch now contains an installed-LLDB
-native control experiment with direct Rust, C++, and C results. Its desktop
-flow has not been accepted. Ordinary managed C# remains dependent on a
-capable installed debugger. No release phase is assigned.
+native control experiment with direct Rust, C++, and C results. The user has
+reported that its Craidd desktop thread control works for all three languages
+in the lab. Broader lifecycle and wait cases remain unqualified. Ordinary
+managed C# remains dependent on a capable installed debugger. No release
+phase is assigned.
 
 **Companions:** [MT implementation contract](design-multi-thread-debugging-implementation.md),
 [thread debugging and LDI](../ldi-debugging/design-thread-debugging-and-ldi.md),
@@ -244,7 +246,8 @@ recorded holds after the next qualified stop, and leaves Stop available if
 release cannot be verified. A scripting-disabled build, new threads born after
 the hold snapshot, non-source frames, and unusual stop ordering need further
 qualification. The direct probe is not proof that the Craidd desktop flow
-works, and neither this experiment nor a version string is a stable general
+works; the user has since reported a working desktop lab flow for Rust, C++,
+and C. Neither this experiment nor a version string is a stable general
 support contract.
 
 **Rust gate:** Use the Rust console and GUI workers to verify a one-thread
@@ -257,7 +260,9 @@ console and GUI workers and C pthread workers, including lock contention,
 exceptions, thread creation, and a worker blocked in a native call. The direct
 C fixture currently uses Craidd's CMake/C++ project route; a separate C project
 model is outside this branch. Sharing LLDB does not make the desktop C++ or C
-acceptance result automatic.
+acceptance result automatic. The user has now reported working C++ and C
+desktop thread control in the lab; the remaining gate cases above still need
+their own evidence.
 
 ## Future arrivals
 

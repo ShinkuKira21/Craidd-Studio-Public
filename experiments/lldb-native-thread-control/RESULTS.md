@@ -35,8 +35,9 @@ Trace directories (ignored generated data):
 
 Craidd integration is source-present on this branch. Frontend and Rust build
 checks plus focused unit checks are separate from these direct adapter probes.
-The desktop sequence in `README.md` remains to be accepted by a human user;
-do not label this shipped or merge it into `master` on the direct results.
+The user has since reported that the desktop thread control works for Rust,
+C++, and C in this lab. That report is recorded below, separately from the
+direct probe evidence. This experimental branch is not a shipped feature.
 
 ## Desktop feedback, 9 October 2026
 
@@ -64,4 +65,20 @@ worker 2's step. The backend now ignores secondary step/breakpoint stop reports
 only when that thread is in the confirmed LLDB hold set; exception reports and
 new threads remain visible. It also keeps internal `CRAIDD_HOLDS` and
 `CRAIDD_RELEASE` receipts out of the user Output panel. The user's live
-counter result after this fix is still needed before claiming desktop success.
+counter result after this fix was still needed at this point in the record.
+
+## Desktop acceptance report, 9 October 2026
+
+After the held-thread stop filtering fix, the user reported that switching
+between Rust workers and stepping the selected worker with ⇥ works in Craidd.
+The user then reported that C++ thread selection, Step Over, and ⇥ all work,
+followed by a successful first C debugging/build test with the same thread
+control. This is user-reported desktop acceptance of the lab flow for Rust,
+C++, and C on `feat/mt-debugging-rustc`. Exact desktop counter values and a
+replay trace were not separately archived with those reports.
+
+The earlier failures above are the chronological record before these fixes.
+The broader gate cases in the design, including new-thread races and unusual
+waits, remain unqualified. Stock netcoredbg does not provide the C# exclusive
+step route used by this experiment. Nothing here claims release readiness or
+acceptance on `master`.
