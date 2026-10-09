@@ -413,7 +413,9 @@ marker.
 
 ### The Profile tab
 
-A new tab in the bottom panel, next to Output, Problems, and Terminal.
+A **Profiler** tab in the right panel, beside the Debugger, in the style of
+Visual Studio 2019's Diagnostic Tools. This was moved from the bottom panel on
+9 October 2026; see [UI/UX sweep D3](../../uiux/design-public-release-sweep.md#decisions).
 Lists every marker, sorted by total time, total allocation, or call
 count. Each row shows the marker name, its source location, and its
 numbers. Clicking a row navigates to the region.

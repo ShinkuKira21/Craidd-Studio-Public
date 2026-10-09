@@ -141,7 +141,23 @@ and placeholders for the regions and timings it will show. It must state on
 screen that profiling is not implemented yet. It starts no tools, spawns no
 processes and displays no fake data.
 
-The view lives in the right panel beside Debug (D3).
+The view lives in the right panel. **Debugger** and **Profiler** are tabs at
+the top of the panel, like Visual Studio 2019's Diagnostic Tools window
+docked beside the debugger (D3).
+
+The layout follows the [Profile tab design](../feats/profiling/design-profile-markers.md#the-profile-tab)
+and moves it into that tab:
+
+| Region | Content once profiling exists | Shown now |
+| --- | --- | --- |
+| Session bar | Run selector, record state, elapsed time | "No profiling session", and the run selector disabled |
+| Timeline | Wall-clock strip with marker hits and breakpoint stops | An empty strip labelled "Timeline" |
+| Sub-tabs: Summary · Markers · CPU · Memory | Summary: the totals. Markers: the marker list sorted by time, allocation or calls; clicking a row navigates to it. CPU and Memory: per-marker metrics. | Each sub-tab says what will appear there and that profiling arrives in Phase 3.5 |
+| Comparison | Two runs side by side, with the change per marker | Hidden until there are runs |
+
+It records nothing, and there are no Record or Start buttons. The design
+doc's cross-window aggregation (a window column and filter) belongs to the
+Markers sub-tab when it is built.
 
 ## 4. File Discovery context menu
 
@@ -314,11 +330,13 @@ even if a similar disassociation happens again.
   unregistered caller.
 - Afterwards, `ps` shows no Craidd-supervised children left behind.
 
-**Open decision:**
+**Decision D9:** unsaved files also offer "Discard and exit", behind its own
+confirmation. Save All and Review stay the default.
 
-- **D9.** Should "Exit anyway" also be offered for unsaved files, behind a
-  "Discard and exit" confirmation (proposed)? Or must unsaved files always be
-  saved or reviewed first?
+**Future:** recovering unsaved work. A later version-control feature should
+keep a recoverable copy of dirty buffers, so that Discard and exit, or a
+crash, never loses unsaved work. That is out of scope for this sweep and is
+recorded here so the D9 behaviour can be revisited when it exists.
 
 ## 7. Other public-release items found during the sweep
 
@@ -354,7 +372,7 @@ subagents.
 | A | Shortcut table and fixes (§5) | none |
 | B | Window titles (§1) | none |
 | C | Context menu: copy paths, Explorer, VS Code, terminal placeholder (§4 without Side Window) | none |
-| D | Exit escape hatch (§6) | D9 |
+| D | Exit escape hatch (§6) | none |
 | E | Debug: expandable variables, then Watch (§2.1–2.2) | none |
 | F | Split editor group and Open in Side Window | none |
 | G | Profiler layout (§3) | none |
@@ -368,7 +386,10 @@ Settled by the user on 9 October 2026.
   back to the project name. This is the current code's behaviour and matches
   "Project Configuration" in the spec.
 - **D2.** Watch expressions are stored per solution.
-- **D3.** The Profiler layout is a right-panel view beside Debug.
+- **D3.** The Profiler layout is a right-panel tab beside the Debugger, in the
+  style of Visual Studio 2019's Diagnostic Tools. This moves the Profile tab
+  from the bottom panel, where the profile-markers design placed it.
+- **D9.** Unsaved files also offer "Discard and exit" behind a confirmation.
 - **D4.** "Side Window" means a split editor group in the same IDE window,
   with at most two groups for now.
 - **D5.** Open in VS Code covers VS Code only, shown when `code` is found on `PATH`.
