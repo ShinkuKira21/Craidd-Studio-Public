@@ -26,7 +26,9 @@ The rest of the docs are grouped by purpose:
 
 The philosophy documents are grouped by topic. Start with the [philosophy index](philosophies/README.md); feature designs live under `feats/`. The Git workspaces documents are proposals, not implemented behavior.
 
+The proposed [Markdown preview and documentation browser](feats/editor/design-markdown-projects.md) records the viewer/source toggle, docs-as-project and Docs sidebar alternatives, and the open question of document management in a filtered tree. It is unscheduled design work.
+
 ---
 
-*Last updated: Phase 3.x. Author: ShinkuKira21.*
-*This document is a index.*
+*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
+*This document is a record.*
