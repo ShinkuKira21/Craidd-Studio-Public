@@ -99,6 +99,37 @@ take turns; the example does not run seven independent LDI reproductions at
 once. Selecting a thread chooses what to inspect and where to send Step, but
 the debugger adapter may resume other threads too.
 
+### Step by Thread experiments
+
+The ⇥ control requests **one Step Over on the selected thread** from an
+all-thread stop at a source line. Ordinary ↷, ↓, ↑ and Continue keep their
+debugger-dependent scope. A waiting thread can still block progress, so Pause,
+the experiment recovery controls, and Stop remain important.
+
+**Rust, C and C++:** The [native thread-control experiment](experiments/lldb-native-thread-control/README.md)
+uses the installed `lldb-dap` and LLDB's built-in scripting API. It needs no
+custom debugger build. Direct two-worker probes passed, and the user reported
+working thread switching and stepping in the Craidd desktop lab on Linux with
+LLDB-DAP 23.1.1. This is a bounded experiment, not a guarantee for every
+program or LLDB version. The C fixture currently uses Craidd's CMake/C++
+project route.
+
+**Craidd Studio — C# Step by Thread:** The C# experiment works with an
+experiment-specific build of [Samsung's netcoredbg](https://github.com/Samsung/netcoredbg)
+made from a pinned upstream revision and the tracked Craidd experiment patch.
+The ordinary installed `netcoredbg` did not provide this control in our tests.
+Craidd does not supply or maintain the patched debugger binary. If you choose
+to build it, select its executable in **File → User Preferences → Toolchain →
+C# → Debugger**. The [C# experiment guide](experiments/netcoredbg-thread-control/README.md)
+contains the example local path, build steps and recovery procedure. The C#
+desktop A/B counter check on the combined branch still needs a fresh run.
+Compatibility is limited to the tested patched revision; users own that
+optional build and its updates. A future standard debugger capability could
+remove the need for this patch.
+
+The [per-thread execution design](docs/feats/mt-debugging/design-per-thread-execution-control.md)
+records the control boundaries and remaining validation work.
+
 ## What to expect from this alpha
 
 Craidd currently concentrates on project and solution workflows, external

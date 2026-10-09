@@ -25,6 +25,7 @@ for (const [name, replacement] of Object.entries(modules)) {
 const { useDebug, listenToDebug } = await import(url(outputText));
 
 test("native capability remains in the same session across LLDB's later starting update", async () => {
+  listener.calls.length = 0;
   const unlisten = await listenToDebug();
   const emit = (payload) => listener.callback({ payload });
   const sessionKey = "28030:100";
@@ -47,5 +48,30 @@ test("native capability remains in the same session across LLDB's later starting
     args: { sessionKey, threadId: 123, incarnation: 1 } }]);
   emit({ status: "terminated" });
   assert.equal(useDebug.getState().nativeSingleStepSessionKey, null);
+  unlisten();
+});
+
+test("managed experiment capability survives startup and dispatches its own thread step", async () => {
+  listener.calls.length = 0;
+  const unlisten = await listenToDebug();
+  const emit = (payload) => listener.callback({ payload });
+  const sessionKey = "28031:101";
+  emit({ status: "building" });
+  emit({ status: "starting" });
+  emit({ status: "capabilities", sessionKey, language: "csharp", nativeSingleStep: false,
+    exclusiveNext: true, exclusiveMethod: "experimentalManaged" });
+  emit({ status: "starting", text: "Debugger connected" });
+  emit({ status: "threads", sessionKey, threads: [{ id: 30192, name: "exclusive worker 2", state: "paused", incarnation: 2 }],
+    stale: false, allThreadsStopped: true });
+  emit({ status: "paused", reason: "breakpoint", threadId: 30192 });
+  emit({ status: "inspection", sessionKey, threadId: 30192, selectionEpoch: 0,
+    frames: [{ id: 2, name: "worker", line: 21, source: { path: "/lab/Program.cs" } }] });
+  assert.equal(useDebug.getState().exclusiveNextSessionKey, sessionKey);
+  assert.equal(useDebug.getState().nativeSingleStepSessionKey, null);
+  await useDebug.getState().stepThreadOnly();
+  assert.deepEqual(listener.calls, [{ command: "debug_step_thread_only",
+    args: { sessionKey, threadId: 30192, incarnation: 2 } }]);
+  emit({ status: "terminated" });
+  assert.equal(useDebug.getState().exclusiveNextSessionKey, null);
   unlisten();
 });

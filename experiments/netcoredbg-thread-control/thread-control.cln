@@ -1,0 +1,39 @@
+[solution]
+name = "C# Thread Control Experiment"
+version = "1.0"
+projects = ["CSharpExclusiveStep/CSharpExclusiveStep.craidd"]
+default_project = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+default_config = "C# Exclusive Step"
+
+[[config]]
+name = "C# Exclusive Step"
+kind = "run"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+[config.slots]
+build = "C# Exclusive Step · Build"
+run = "C# Exclusive Step · Run"
+debug = "C# Exclusive Step · Debug"
+
+[[config]]
+name = "C# Exclusive Step · Build"
+kind = "build"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+method = "dotnet"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "C# Exclusive Step · Run"
+kind = "run"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+method = "dotnet"
+command = "dotnet run --project ThreadControlExperiment.csproj --no-launch-profile -- runs/basic"
+
+[[config]]
+name = "C# Exclusive Step · Debug"
+kind = "debug"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+method = "dotnet"
+command = "dotnet run --project ThreadControlExperiment.csproj --no-launch-profile -- runs/basic"

@@ -1,0 +1,5 @@
+[project]
+name = "C# Exclusive Step Experiment"
+language = "csharp"
+root = "."
+kind = "application"

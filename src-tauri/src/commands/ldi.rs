@@ -2011,7 +2011,8 @@ pub(crate) fn with_control(
             return Ok(());
         }
         if origin == label && pair.held
-            && matches!(action, "stepOver" | "stepInto" | "stepOut" | "stepNativeThreadOnly" | "releaseNativeHolds" | "pause") {
+            && matches!(action, "stepOver" | "stepInto" | "stepOut" | "stepNativeThreadOnly" | "releaseNativeHolds"
+                | "stepThreadOnly" | "releaseThreadHolds" | "pause") {
             return Err(format!(
                 "A is held by LDI. CS{} must finish or explicitly release this reproduction.",
                 pair.binding.blue.partner_window_id

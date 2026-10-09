@@ -3,15 +3,15 @@
 **Roadmap track:** Phase 3.x debugger investigation, after the ordinary thread
 selector baseline. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Retained design investigation, 9 October 2026. No per-thread hold or
-exclusive step is implemented or accepted on `master`. A local C# feasibility
-prototype on `feat/mt-debugging-thread-control` is not a product dependency.
-The isolated `feat/mt-debugging-rustc` branch now contains an installed-LLDB
-native control experiment with direct Rust, C++, and C results. The user has
-reported that its Craidd desktop thread control works for all three languages
-in the lab. Broader lifecycle and wait cases remain unqualified. Ordinary
-managed C# remains dependent on a capable installed debugger. No release
-phase is assigned.
+**Status:** Combined experiment on `feat/mt-debugging-control`, 9 October 2026.
+This branch joins the installed-LLDB native route from
+`feat/mt-debugging-rustc` with the optional patched-netcoredbg C# route from
+`dep/mt-debugging-thread-control`. No exclusive Step is accepted on `master`.
+Direct two-worker probes passed for Rust, C++, C and patched C#. The user
+reported working Craidd desktop thread control for Rust, C++, and C before
+the merge. The combined branch needs fresh desktop Rust and C# checks,
+including before/after worker counters. Broader lifecycle and wait cases
+remain unqualified. No release phase is assigned.
 
 **Companions:** [MT implementation contract](design-multi-thread-debugging-implementation.md),
 [thread debugging and LDI](../ldi-debugging/design-thread-debugging-and-ldi.md),
@@ -32,8 +32,13 @@ Rust, and C++. The tested stock netcoredbg and LLDB-DAP sessions resumed other
 workers on Step. **Exclusive Step is not a shipped Craidd capability**, and
 the patched netcoredbg experiment is not a supported debugger distribution.
 
-Craidd may add a generic DAP `singleThread` request path. It must be gated by
-the selected adapter's advertised capability, an independently qualified
+The 9 October combined branch retains both bounded experiments as optional
+controls. The ordinary installed C# debugger still uses ordinary Step;
+native Rust/C/C++ uses an installed LLDB-DAP build with scripting enabled.
+Neither route changes the default toolchain or bundles a debugger.
+
+The combined branch also has a generic DAP `singleThread` request path. It is
+gated by the selected adapter's advertised capability, an independently qualified
 adapter build and platform, and a verified all-thread stop before requesting
 the step. A request acknowledgment or an unchanged stack is not proof that
 other workers stayed stopped; qualification needs observable worker side
@@ -41,6 +46,7 @@ effects, thread switching, lock waits, release, and failure recovery. The
 qualification fixture runs separately and by explicit user choice, never by
 stepping a user's live program at session startup. An unknown or failed
 adapter keeps the ordinary Step behavior and an honest scope label.
+No adapter has yet qualified this generic DAP path for a product claim.
 [DAP single-thread capability](https://microsoft.github.io/debug-adapter-protocol/changelog).
 
 There is no Samsung-specific toolbar path and no in-app prompt to download or
@@ -51,9 +57,25 @@ Craidd will not publish a patched netcoredbg binary or make its upstream
 acceptance a release gate. This leaves room for a future capable, installed
 adapter without promising that today's C# users can isolate threads.
 
-The separate toolchain-manager proposal may later make user-chosen tools
-easier to select or acquire per project. It does not change this execution
-gate or turn an optional patched debugger into a default dependency.
+Users can already choose a debugger executable in **File → User Preferences →
+Toolchain**. The separate project-scoped toolchain-manager proposal may later
+make user-chosen tools easier to select or acquire per project. It does not
+change this execution gate or turn an optional patched debugger into a default
+dependency.
+
+### Optional C# path from `dep/mt-debugging-thread-control`
+
+The combined branch carries the earlier Craidd thread selector, an
+experimental ⇥ Step Over control, the C# lab solution, and a patch against a
+pinned Samsung netcoredbg revision. The debugger binary remains user-built,
+local and ignored by Git. Stock adapters keep ordinary Step; ⇥ appears only when
+the active adapter advertises standard DAP
+`supportsSingleThreadExecutionRequests` or the experimental managed request.
+The standard path sends `next` with `singleThread: true`; the patched C# path
+sends `craiddExclusiveNext`. Neither path is a general promise to isolate
+threads: capability claims still need independent behavior and recovery tests
+on the selected build and platform. The combined desktop C# counter check is
+still pending; a general support claim requires the broader gates below.
 
 The local prototype showed that a modified netcoredbg can hold other managed
 threads for a source-level Step. It also failed to step a selected worker whose
@@ -61,20 +83,19 @@ current frame had no source line. The desktop screenshots established selection
 and stepping on both workers, but did not capture before/after counters for
 each step. These are feasibility results, not product acceptance.
 
-Craidd will **not** require users to build or download a Craidd-maintained or
-vendor-specific debugger for this feature, replace their system debugger, or
-silently attach a second controller. The experimental adapter and ⇥ control
-remain on the preserved feature branch; they are absent from `master`. Thread
-isolation is available only where a debugger the user has already chosen and
-installed exposes a verified control path. Otherwise Craidd keeps ordinary
-thread inspection and Step, without promising isolation.
+Craidd will **not** require users to build or download the experimental C#
+debugger, replace their system debugger, or silently attach a second
+controller. The user may opt into their own build through Toolchain preferences;
+Craidd neither supplies nor maintains that binary. The experimental ⇥ control
+is absent from `master`. Otherwise Craidd keeps ordinary thread inspection and
+Step, without promising isolation.
 
-For native Rust and C++, investigate the installed LLDB owner's
-`thread step-over --run-mode this-thread` behavior directly. The installed
-`lldb-dap` does not advertise DAP single-thread execution, so a direct LLDB
-result alone cannot justify a Craidd toolbar control. Any transport must keep
-one debugger owner and prove its stop, release, and failure semantics before
-the UI offers isolation. [LLDB-DAP capabilities](https://lldb.llvm.org/use/lldbdap.html#supported-features).
+For native Rust, C++ and C, the earlier lead was the installed LLDB owner's
+`thread step-over --run-mode this-thread` behavior. The installed `lldb-dap`
+does not advertise DAP single-thread execution, so that direct LLDB result
+alone could not justify a Craidd toolbar control. The later same-session
+suspension and release probe below provided the bounded implementation route.
+[LLDB-DAP capabilities](https://lldb.llvm.org/use/lldbdap.html#supported-features).
 
 An initial direct check with the installed LLDB 23.1.1 and the C++ MT Console
 stopped both workers at `main.cpp:37`. `thread step-over -m this-thread` moved
@@ -174,16 +195,18 @@ The feature does not pass acceptance without a demonstrated recovery path for
 the tested provider. A visible release action and owner-side cleanup remain
 mandatory.
 
-## C# status: deferred on stock debugger capability
+## C# status: optional custom build; stock debugger remains ordinary
 
 Craidd's installed netcoredbg does not advertise single-thread execution; its
-current DAP Step resumes all workers. The modified-netcoredbg experiment is
-closed as a product route. Do not add a C# desktop control unless a debugger
-the user has already chosen and installed demonstrates the required behavior
-and release semantics through its supported interface.
+current DAP Step resumes all workers. The combined branch exposes ⇥ only for
+an adapter that advertises standard DAP single-thread execution or the custom
+`craiddManagedExclusiveNext` request. The latter requires an experimental
+user-built netcoredbg from the [C# experiment](../../../experiments/netcoredbg-thread-control/README.md).
+Craidd does not distribute or maintain this build, and its use remains an
+opt-in experiment rather than a stock C# capability.
 
-The CLR debugging API explains what the experiment investigated; it is **not**
-an active Craidd implementation route or a validated stock-netcoredbg feature.
+The CLR debugging API explains what the patch uses; it is **not** a validated
+stock-netcoredbg feature.
 `ICorDebugController::SetAllThreadsDebugState(THREAD_SUSPEND, selectedThread)`
 can suspend managed threads other than the selected one, while
 `ICorDebugThread::SetDebugState` can set an individual thread to `THREAD_RUN`.
@@ -194,7 +217,7 @@ the debugger owner, not in Craidd's UI process.
 [CLR bulk thread state](https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/icordebug/icordebugcontroller-setallthreadsdebugstate-method),
 [CLR thread state and risks](https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/icordebug/icordebugthread-setdebugstate-method).
 
-If an installed debugger later exposes this capability, the C# proof must
+Before claiming general C# support, the proof must
 establish the DAP-to-CLR identity mapping, the precise managed-thread hold
 scope, stepping and callback order, and reliable release.
 It must test the currently selected thread, a different worker selected at the
@@ -211,13 +234,14 @@ the direct adapter proof. If the debugger owner cannot complete and clean up
 this sequence reliably, retain Step focused thread and mark exclusive Step
 unsupported for that provider.
 
-## Native track: Rust, then C++
+## Native track: Rust, C++ and C
 
-Rust and C++ currently use LLDB-DAP for ordinary native debugging. LLDB's
+Rust, C++ and C use LLDB-DAP for native debugging on this branch. LLDB's
 underlying `SBThread` API exposes suspension and stepping modes that can hold
 other threads, but published LLDB-DAP capabilities list
-`supportsSingleThreadExecutionRequests` as unsupported. The engine API is a
-feasibility lead, not a claim that Craidd's current DAP transport can use it.
+`supportsSingleThreadExecutionRequests` as unsupported. The combined branch
+uses the tested LLDB-DAP session's built-in scripting path, gated separately
+from the standard DAP capability and the optional managed adapter path.
 [LLDB thread API](https://lldb.llvm.org/python_api/lldb.SBThread.html),
 [LLDB-DAP capability table](https://lldb.llvm.org/use/lldbdap.html#supported-features).
 
@@ -287,11 +311,14 @@ contract before claiming parity.
 2. Investigate stock LLDB's single-owner control path for Rust, C++, and C.
    Direct worker-side-effect and one blocked-step release checks have passed
    on the tested LLDB build; continue failure and lifecycle qualification.
-3. Implement the session-qualified request, one-step lease, release path, and
-   UI only for an installed debugger with a verified supported interface.
-   Prove the native behavior in Craidd's real desktop flow before enabling it.
-4. Revisit managed C# only if an installed debugger gains a supported
-   single-thread capability. Apply the C# gate above before enabling it.
+3. The isolated native branch implemented the session-qualified one-step
+   lease, release path and gated UI; the user reported a working desktop lab
+   flow. Repeat Rust on the combined branch, then check the remaining native
+   lifecycle cases.
+4. The optional patched C# experiment implements a separate managed lease
+   path. Repeat a two-worker desktop counter check on the combined branch,
+   then check the remaining C# recovery and lifecycle cases. Stock netcoredbg
+   remains on ordinary Step unless it gains a proven supported route.
 
 The acceptance record must state the adapter version, platform, exact selected
 thread, stop/resume events, worker side effects, blocked-step recovery, and
