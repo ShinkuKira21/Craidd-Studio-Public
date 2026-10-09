@@ -1,0 +1,42 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import ts from "typescript";
+
+const url = (source) => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+const source = await readFile(new URL("../src/store/debugStore.ts", import.meta.url), "utf8");
+let { outputText } = ts.transpileModule(source, { compilerOptions: {
+  target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
+} });
+const listener = { callback: null };
+const modules = {
+  zustand: import.meta.resolve("zustand"),
+  "../lib/debugSource": url("export async function revealDebugSource() {}"),
+  "./breakpointStore": url("export const useBreakpoints={getState:()=>({points:[]})};"),
+  "./solutionStore": url("export const useSolution={getState:()=>({clnPath:null})};"),
+  "../lib/outputPresentation": url("export const appendOutput=(before,text)=>before+text;"),
+  "@tauri-apps/api/webviewWindow": url("export function getCurrentWebviewWindow(){return {listen:async (_name,callback)=>{globalThis.__nativeStepListener.callback=callback;return ()=>{globalThis.__nativeStepListener.callback=null;};}};}"),
+};
+globalThis.__nativeStepListener = listener;
+for (const [name, replacement] of Object.entries(modules)) {
+  outputText = outputText.replaceAll(JSON.stringify(name), JSON.stringify(replacement));
+}
+const { useDebug, listenToDebug } = await import(url(outputText));
+
+test("native capability remains in the same session across LLDB's later starting update", async () => {
+  const unlisten = await listenToDebug();
+  const emit = (payload) => listener.callback({ payload });
+  const sessionKey = "28030:100";
+  emit({ status: "building" });
+  emit({ status: "starting" });
+  emit({ status: "capabilities", sessionKey, nativeSingleStep: true });
+  assert.equal(useDebug.getState().nativeSingleStepSessionKey, sessionKey);
+  emit({ status: "starting", text: "Debugger connected; waiting for native execution" });
+  emit({ status: "threads", sessionKey, threads: [], allThreadsStopped: false });
+  emit({ status: "paused", reason: "breakpoint", threadId: 123 });
+  assert.equal(useDebug.getState().threadSessionKey, sessionKey);
+  assert.equal(useDebug.getState().nativeSingleStepSessionKey, sessionKey);
+  emit({ status: "terminated" });
+  assert.equal(useDebug.getState().nativeSingleStepSessionKey, null);
+  unlisten();
+});

@@ -37,3 +37,13 @@ Craidd integration is source-present on this branch. Frontend and Rust build
 checks plus focused unit checks are separate from these direct adapter probes.
 The desktop sequence in `README.md` remains to be accepted by a human user;
 do not label this shipped or merge it into `master` on the direct results.
+
+## Desktop feedback, 9 October 2026
+
+The first user screenshots showed the Rust workers paused and selectable, but
+the ⇥ control was absent and the dropdown still described ordinary Step. The
+frontend received the native capability during `initialize`, then cleared it
+on a later `starting` status from the same LLDB launch. The branch now keeps
+the session capability across that status, with a focused event-order test.
+The user must restart the debug session and repeat the desktop sequence; this
+record does not claim the in-app control has passed yet.

@@ -221,8 +221,10 @@ export async function listenToDebug(): Promise<() => void> {
       completedThreads: ["terminated", "error", "building", "starting"].includes(message.status) ? [] : state.completedThreads,
       threadsStale: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.threadsStale,
       allThreadsStopped: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.allThreadsStopped,
-      threadSessionKey: ["terminated", "error", "building", "starting"].includes(message.status) ? null : state.threadSessionKey,
-      nativeSingleStepSessionKey: ["terminated", "error", "building", "starting"].includes(message.status) ? null : state.nativeSingleStepSessionKey,
+      // LLDB capability arrives at initialize, before launch/configuration
+      // finishes. A later "starting" update belongs to that same session.
+      threadSessionKey: ["terminated", "error", "building"].includes(message.status) ? null : state.threadSessionKey,
+      nativeSingleStepSessionKey: ["terminated", "error", "building"].includes(message.status) ? null : state.nativeSingleStepSessionKey,
       nativeStepTarget: ["terminated", "error", "building", "starting"].includes(message.status) ? null : state.nativeStepTarget,
       nativeReleaseFailed: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.nativeReleaseFailed,
       nativeCanRetryRelease: ["terminated", "error", "building", "starting"].includes(message.status) ? false : state.nativeCanRetryRelease,

@@ -302,6 +302,7 @@ const toolbarURL = await load("../src/components/layout/Toolbar.tsx", {
   "../dialogs/configurations/ConfigurationsDialog":url("export default function C(){return null;}"),
   "../dialogs/LinkedLaunchPlanDialog":url("export default function C(){return null;}"),
   "./WindowManager":url("export default function C(){return null;}"),
+  "./ThreadDropdown":url("export default function ThreadDropdown(){return null;}"),
 });
 const {default:Toolbar}=await import(toolbarURL);
 test("Native+Rust keeps disabled Gold presence and no standalone Native Debug launch", () => {
