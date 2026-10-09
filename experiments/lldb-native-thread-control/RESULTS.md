@@ -34,6 +34,17 @@ release, all four native counters reached 12 and both Rust counters reached
 `.runs/probes/rust-native-cpp-0x8fwthg/`. Craidd's Blue routing and B-window
 control for those child frames remain unverified.
 
+In a later Craidd desktop run, the user showed **Rust + C++ Threads** paused
+in B at `step_pair_cpp`, with the Rust caller in the stack. This verifies the
+paired source view for that call. B had no thread dropdown, so the requested
+native-child switch and one-thread Step in B could not be tested. A screenshot
+of Gold's launch plan showed three solution windows, including two runnable
+Rust caller windows; Gold offered to start both. With one Rust caller and one
+Native library view, White Debug in A remains the intended launch. A Blue
+marker displayed a Rust Power Config mismatch after the caller selection
+changed, and resetting Blue restored it. The brief Welcome-screen behavior
+was not reproducible; no cause or fix is claimed.
+
 
 Environment: Linux x86-64, installed `/usr/bin/lldb-dap` 23.1.1. This is a
 direct DAP test, not a Craidd desktop acceptance record. The LLDB-DAP

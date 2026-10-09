@@ -420,9 +420,16 @@ fn validate(app: &AppHandle, binding: &Binding) -> Result<(), String> {
         } else {
             "resolved command"
         };
-        return Err(
-            format!("Native pairing changed ({side} {changed}). Set the Rust Native Breakpoint again for these Power Configs"),
-        );
+        if side == "Rust" && changed == "Power Config" {
+            return Err(format!(
+                "Rust Native Breakpoint was set for '{}' but this window now uses '{}'. Set Blue again for the selected Rust Power Config",
+                saved.configuration.as_deref().unwrap_or("an unnamed Power Config"),
+                current.configuration.as_deref().unwrap_or("an unnamed Power Config"),
+            ));
+        }
+        return Err(format!(
+            "Native pairing changed ({side} {changed}). Set the Rust Native Breakpoint again for these Power Configs"
+        ));
     }
     Ok(())
 }

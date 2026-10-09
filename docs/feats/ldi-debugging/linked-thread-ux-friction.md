@@ -15,6 +15,23 @@ the native source repeatedly while iterating Rust workers; sometimes they
 would prefer to remain at the Rust call site. No native-child-thread desktop
 result was recorded in that report.
 
+A later Rust+C++ Threads screenshot shows a verified native pause in B at
+`step_pair_cpp`, with the original Rust call on its stack. It does not show a
+native-child-thread selection or a B thread dropdown. Another screenshot's
+Gold launch plan lists **three** solution windows, including two Rust caller
+windows. Gold correctly offers to start both executable Rust windows there;
+with only one Rust caller and one Native library window, Gold has no second
+process to start. A transient return to the Welcome screen was reported but
+could not be reproduced, so its cause is not established.
+
+After switching Rust Power Configs, an existing Blue marker reported “Native
+pairing changed (Rust Power Config)”. That marker is intentionally bound to
+the original Cargo Debug selection: the C Threads and C++ Threads commands
+select different Cargo features and FFI exports. Re-setting Blue under the
+new selection restored the pairing. The diagnostic now names the old and new
+Rust configurations instead of implying that B's Native build selection
+changed. A stale Rust build has not been established as the cause.
+
 ## Who owns the threads?
 
 | Pair | Window A | Window B | Execution and thread identity |
