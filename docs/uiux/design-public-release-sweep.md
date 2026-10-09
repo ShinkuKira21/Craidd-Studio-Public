@@ -239,6 +239,17 @@ the cause.
 | 7.4 | Errors are shown with native `alert()`, which looks foreign on GNOME and blocks the window. | `useKeyboardShortcuts.ts`, others |
 | 7.5 | The Solution Explorer and File Discovery context menus should offer the same open/copy actions. | D6 |
 
+**Delivered (slice H):**
+
+- Project → Add → New Blank Project… opens the Solution Explorer's New
+  Project dialog, so the README instruction is now true.
+- Add → Existing Project…, File → New Solution… and the terminal item are
+  disabled with "(Coming soon)" (D7).
+- Help → About Craidd Studio is a dialog showing the app version.
+
+**Not done:** 7.4. Replacing `alert()` across the app is a separate pass, and
+needs a shared notice/toast component designed first.
+
 ---
 
 ## Delivery slices

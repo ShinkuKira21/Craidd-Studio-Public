@@ -38,6 +38,12 @@ export default function SolutionExplorer() {
   const [newFileTarget, setNewFileTarget] = useState<{ parentPath: string; language: Language | null; mode: NewFileMode } | null>(null);
   const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
+  // Project → Add → New Blank Project… in the menu bar.
+  useEffect(() => {
+    const open = () => setNewOpen(true);
+    window.addEventListener("craidd:new-project", open);
+    return () => window.removeEventListener("craidd:new-project", open);
+  }, []);
   const [declareTarget, setDeclareTarget] = useState<CraiddProject | null>(null);
   const [treeCtxMenu, setTreeCtxMenu] = useState<{
     x: number; y: number;

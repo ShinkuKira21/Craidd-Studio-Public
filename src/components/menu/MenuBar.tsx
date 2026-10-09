@@ -11,6 +11,8 @@ import { shouldShowDuplicate } from "../../lib/duplicateWindowPolicy";
 import { openFolderDialog, openSolutionDialog } from "../../lib/workspaceActions";
 import { shortcutLabel as key } from "../../lib/shortcuts";
 import { triggerEditorCommand } from "../../lib/activeEditor";
+import { useLayout } from "../../store/layoutStore";
+import AboutDialog from "../dialogs/AboutDialog";
 
 interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; submenu?: MenuItem[]; }
 interface MenuSeparator { separator: true; }
@@ -20,10 +22,12 @@ interface Menu { label: string; items: MenuEntry[]; }
 export default function MenuBar({ openCommandPalette, openPreferences }: { openCommandPalette: () => void; openPreferences: () => void }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
   const activeFileId = useSolution((s) => s.activeFileId);
   const clnPath = useSolution((s) => s.clnPath);
+  const rootPath = useSolution((s) => s.rootPath);
   const selectedConfigName = useBuild((s) => s.selectedConfigName);
   const solution = useSolution((s) => s.solution);
   const selectedProfileName = useBuild((s) => s.selectedProfileName);
@@ -72,6 +76,13 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         await useLinkedWindows.getState().selectWindow(label);
       }
     } catch (error) { alert(`Could not duplicate window: ${String(error)}`); }
+  };
+  // The dialog lives in the Solution Explorer, which owns the Fine Tune
+  // follow-up, so make sure it is mounted before asking it to open.
+  const openNewProject = () => {
+    if (!usePreferences.getState().sidebarVisible) usePreferences.getState().toggleSidebar();
+    useLayout.getState().setActiveView("solution");
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent("craidd:new-project")), 0);
   };
   const exitScope = (scope: "window" | "solution" | "ide") =>
     window.dispatchEvent(new CustomEvent("craidd:exit-scope", { detail: scope }));
@@ -142,8 +153,8 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     {
       label: "Project",
       items: [
-        { label: "Add → New Blank Project…", disabled: true },
-        { label: "Add → Existing Project…", disabled: true },
+        { label: "Add → New Blank Project…", disabled: !rootPath, action: openNewProject },
+        { label: "Add → Existing Project… (Coming soon)", disabled: true },
       ],
     },
     {
@@ -163,7 +174,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     {
       label: "Help",
       items: [
-        { label: "About Craidd", action: () => alert("Craidd-Studio\nPhase 2.0.6.1\n\nA polyglot IDE.\nOne workspace. Many entrances.") },
+        { label: "About Craidd Studio", action: () => setAboutOpen(true) },
       ],
     },
   ];
@@ -224,6 +235,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
           </div>
         );
       })}
+      {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
     </div>
   );
 }
