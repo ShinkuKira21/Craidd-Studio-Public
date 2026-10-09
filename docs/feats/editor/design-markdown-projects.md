@@ -2,11 +2,47 @@
 
 **Roadmap track:** Future editor/documentation feature, unassigned. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Proposal, 9 October 2026. No renderer, Docs sidebar or Markdown project is implemented by this document. The user selected the View Source / View Preview interaction with editable Preview; options A and B and other recommendations remain open for consideration.
+**Status:** Proposal, 9 October 2026. No renderer, Docs sidebar or Markdown project is implemented by this document. The user selected the View Source / View Preview interaction with editable Preview and leans toward B, the Docs sidebar. B is the preferred direction for discussion, not a final implementation decision; A and other recommendations remain available for consideration.
 
 **Design owner:** ShinkuKira21. This records the user's idea for reading and working with a repository's documentation inside Craidd.
 
 **Companion:** [The project model](../../craidd-cln-model.md), especially the distinction between File Discovery and Solution Explorer.
+
+## Direction for public review
+
+The intended experience is a Docs entry in the activity bar, a collapsible
+Markdown tree in the sidebar, and an editable document in the editor area.
+The same file can be viewed and edited through `View Source / View Preview`.
+This is the preferred B direction: make repository documentation easy to
+find, read and maintain through the IDE's existing file/editor foundations.
+
+| Topic | Position |
+| --- | --- |
+| View Source / View Preview, with editable Preview | User-selected interaction; technical editing coverage still needs definition |
+| B: Docs sidebar backed by File Discovery | User's current preference; proposed default direction |
+| A: Declare a docs project in Solution Explorer | Retained alternative; no project/schema change approved |
+| B0: Create, rename and delete from Docs | Open scope decision, especially for folders containing hidden non-Markdown files |
+| `+++` preview compatibility and Split view | Optional proposals |
+| Delivery phase, renderer and discovery strategy | Unassigned / undecided |
+
+### Example user journey for B
+
+1. Open a repository folder or solution, then select Docs in the activity bar.
+2. See the root agent document first and expand Markdown-containing folders.
+   Filter by filename/path to locate a document outside `docs/` as well.
+3. Select a file to open it in the document tab. The proposed opening default
+   is Preview, with an explicit Source action; that default remains to be settled.
+4. Edit a supported rendered block in Preview, then use View Source to see
+   the corresponding Markdown edit. Changes in either view share the same
+   dirty state, save behavior and undo history.
+5. Follow a relative document link in the IDE, or switch back to the code
+   sidebar while retaining the document tab. Use Reveal in File Discovery
+   for file operations outside the agreed Docs action set.
+
+The tree represents files at their real paths. Browsing does not create a
+documentation project or change solution/build membership. Standard Markdown
+remains the normal format, and Craidd applies no authoring-style enforcement.
+This journey describes the proposed feature; it is not current product behavior.
 
 ## The idea
 
@@ -173,10 +209,10 @@ Docs                              [Filter by name/path] [Refresh]
   README.md
 ```
 
-**Recommendation for consideration:** B is the stronger default navigation
-option because it exposes documentation without adding projects. Keep A in
-the design discussion if a declared docs collection has value beyond browsing.
-Both routes should use the same preview/editor behavior.
+**Preferred direction for consideration:** The user now leans toward B. It
+exposes documentation without adding projects. Keep A in the design discussion
+if a declared docs collection has value beyond browsing. Both routes should
+use the same preview/editor behavior; choosing B does not require implementing A.
 
 ### Reusing discovery requires more than filtering visible rows
 
@@ -246,10 +282,24 @@ implementation work. This proposal adds no dependencies and assigns no phase.
 
 ## Decisions and future acceptance
 
-Before implementation, settle the opening default and preference scope; A,
-B or both; the discovery root/exclusions and indexing strategy; B0's initial
-action set; rendering syntax/HTML/assets and optional `+++` compatibility;
-and how editable Preview preserves Markdown across both editing surfaces.
+Public review can proceed with B as the preferred direction. Before committing
+to implementation, resolve the following within this design rather than
+requiring readers to reconstruct decisions from chat screenshots:
+
+| Decision | What needs to be recorded |
+| --- | --- |
+| Navigation and opening behavior | Confirm B's initial scope, Preview versus Source on open, and where the user's opening preference applies |
+| Editable Preview coverage | Name the initially editable constructs, including the treatment of tables, code blocks, links, task lists, HTML and unsupported syntax; explain the route to Source when visual editing is unavailable |
+| Markdown preservation | Define how Preview edits update the shared source while preserving untouched content and optional `+++` blocks; demonstrate switch/edit/save/undo with real repository documents before claiming fidelity |
+| B0 file management | Choose browse/edit only, Markdown file actions or folder actions; record dirty-tab handling and the full disk scope of filtered-folder operations |
+| Discovery and rendering | Confirm root/exclusions, discovery completeness and performance limits, rendering syntax, HTML/assets and whether optional `+++` support is in the first scope |
+
+The editable-Preview decision is the largest technical uncertainty. A focused
+prototype should exercise actual Markdown edits and preservation, as well as
+docs in unopened folders. Record what it proves and what it cannot yet
+preserve. A renderer library choice alone does not establish editable-Preview
+fidelity. These checks inform the implementation design; they assign no release
+date and do not change current roadmap priorities.
 
 Future acceptance must exercise the running IDE:
 
