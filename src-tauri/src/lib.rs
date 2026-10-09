@@ -97,6 +97,8 @@ pub fn run() {
             rename_path,
             show_main_window,
             commands::window_title::set_title_badge,
+            commands::external_tools::find_vscode,
+            commands::external_tools::open_in_vscode,
             commands::window::abort_initial_hidden_window,
             commands::ldi::set_ldi_blue,
             commands::ldi::list_ldi_call_sites,

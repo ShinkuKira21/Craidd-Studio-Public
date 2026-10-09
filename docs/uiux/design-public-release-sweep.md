@@ -142,8 +142,22 @@ no split view. The `tauri-plugin-opener` plugin is already a dependency.
 | Copy Path | Copies the absolute path. | |
 | Copy Relative Path | Copies the path relative to the solution root (or the folder root if there is no `.cln`). | |
 
-Every action is shown in the Output panel when it launches an external
-program ("no silent mutation").
+None of these actions changes a file, so they are not logged to the Output
+panel. Failures are reported to the user.
+
+**Delivered (slice C):**
+
+- `PathActions` adds Open in File Explorer, Open in VS Code, the disabled
+  Integrated Terminal item, Copy Path and Copy Relative Path. They appear on
+  File Discovery files and folders, on Solution Explorer tree rows, and on
+  Solution Explorer project rows.
+- VS Code is found once per window through `find_vscode` and started in its own
+  process group, so it outlives Craidd. Restart Craidd after installing VS Code.
+- Copy Relative Path is relative to the window's root and falls back to the
+  absolute path for items outside it.
+
+**Limitations:** clipboard and file-manager reveal depend on WebKitGTK and the
+desktop's `FileManager1` service. Neither has been verified in the running app yet.
 
 ## 5. Keyboard shortcuts
 

@@ -92,7 +92,7 @@ fn language_table_mut<'a>(prefs: &'a mut toml::Value, language: &str) -> &'a mut
         .as_table_mut().expect("language is a table")
 }
 
-fn find_executable(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_executable(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     // Desktop launches often do not inherit the interactive shell's PATH.
