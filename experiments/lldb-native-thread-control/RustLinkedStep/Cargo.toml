@@ -6,3 +6,4 @@ edition = "2024"
 [features]
 default = []
 cpp = []
+native_threads = []

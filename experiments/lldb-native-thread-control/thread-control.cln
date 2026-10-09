@@ -134,3 +134,95 @@ command = "cargo run --offline --features cpp -- runs/cpp"
 target = "RustLinkedStep/RustLinkedStep.craidd"
 [config.order]
 before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C Threads"
+kind = "run"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.slots]
+build = "Rust + C Threads · Build"
+run = "Rust + C Threads · Run"
+debug = "Rust + C Threads · Debug"
+
+[[config]]
+name = "Rust + C++ Threads"
+kind = "run"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.slots]
+build = "Rust + C++ Threads · Build"
+run = "Rust + C++ Threads · Run"
+debug = "Rust + C++ Threads · Debug"
+
+[[config]]
+name = "Rust + C Threads · Build"
+kind = "build"
+method = "plan"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native Libraries · Rust Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Rust + C Threads · Cargo Build"
+
+[[config]]
+name = "Rust + C++ Threads · Build"
+kind = "build"
+method = "plan"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native Libraries · Rust Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Rust + C++ Threads · Cargo Build"
+
+[[config]]
+name = "Rust + C Threads · Cargo Build"
+kind = "build"
+method = "cargo"
+command = "cargo build --offline --features native_threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+
+[[config]]
+name = "Rust + C++ Threads · Cargo Build"
+kind = "build"
+method = "cargo"
+command = "cargo build --offline --features cpp,native_threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+
+[[config]]
+name = "Rust + C Threads · Run"
+kind = "run"
+method = "cargo"
+command = "cargo run --offline --features native_threads -- runs/c-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C++ Threads · Run"
+kind = "run"
+method = "cargo"
+command = "cargo run --offline --features cpp,native_threads -- runs/cpp-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C Threads · Debug"
+kind = "debug"
+method = "cargo"
+command = "cargo run --offline --features native_threads -- runs/c-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C++ Threads · Debug"
+kind = "debug"
+method = "cargo"
+command = "cargo run --offline --features cpp,native_threads -- runs/cpp-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"

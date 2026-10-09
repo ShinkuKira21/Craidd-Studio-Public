@@ -60,7 +60,11 @@ check but fails its unrelated dirty-close assertion: it expects five literal
 WindowManager close behavior was changed by this patch. The configured
 linked-startup/save-restart/build-output suites pass.
 
+The cross-language thread-control experiment adds a later desktop report and
+the Rust Native versus C# LDI control boundary in
+[linked native thread friction](linked-thread-ux-friction.md).
+
 ---
 
-*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
 *This document is a record.*

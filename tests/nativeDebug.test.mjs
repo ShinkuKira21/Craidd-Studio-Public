@@ -305,11 +305,12 @@ const toolbarURL = await load("../src/components/layout/Toolbar.tsx", {
   "./ThreadDropdown":url("export default function ThreadDropdown(){return null;}"),
 });
 const {default:Toolbar}=await import(toolbarURL);
-test("Native+Rust keeps disabled Gold presence and no standalone Native Debug launch", () => {
+test("Native+Rust explains disabled Gold and keeps White Debug as the launch", () => {
   useSolution.setState({solution:labSolution});
-  useLinkedWindows.setState({windows:[{windowLabel:"native"},{windowLabel:"rust"}],linked:false,canBuild:false,canRun:false,canDebug:false});
+  useLinkedWindows.setState({windows:[{windowLabel:"native",ldiRole:"native-library"},{windowLabel:"rust",ldiRole:"live-native"}],linked:false,canBuild:false,canRun:false,canDebug:false});
   const html=renderToStaticMarkup(createElement(Toolbar));
-  assert.ok(html.includes("2 solution windows; no eligible linked debug group"));
+  assert.ok(html.includes("Rust + Native uses one LLDB session"));
+  assert.ok(html.includes("use White Debug in A"));
   assert.ok(html.includes("Debug — no debug configurations"));
 });
 test("Native toolbar exposes Gold Rust Stop outside native frames and only offers owner navigation while paused in Rust", () => {

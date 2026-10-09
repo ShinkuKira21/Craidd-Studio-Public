@@ -94,7 +94,7 @@ def worker_lines(text):
 
 
 def run(language, debugger, suspend_others):
-    linked = language in ("rust-c", "rust-cpp")
+    linked = language.startswith("rust-c")
     if language == "cpp":
         program = ROOT / "CppExclusiveStep/build/cpp-exclusive-step"
         source = ROOT / "CppExclusiveStep/main.cpp"
@@ -103,8 +103,13 @@ def run(language, debugger, suspend_others):
         source = ROOT / "CExclusiveStep/main.c"
     elif linked:
         cargo = ["cargo", "build", "--offline", "--manifest-path", str(ROOT / "RustLinkedStep/Cargo.toml")]
-        if language == "rust-cpp":
-            cargo.extend(["--features", "cpp"])
+        features = []
+        if language.startswith("rust-cpp"):
+            features.append("cpp")
+        if language.endswith("-threads"):
+            features.append("native_threads")
+        if features:
+            cargo.extend(["--features", ",".join(features)])
         subprocess.run(cargo, check=True)
         program = ROOT / "RustLinkedStep/target/debug/rust-linked-step"
         source = ROOT / "RustLinkedStep/src/main.rs"
@@ -177,7 +182,7 @@ def run(language, debugger, suspend_others):
                 assert read_counts(output) == (1001, 2001), read_counts(output)
                 dap.request("setBreakpoints", {"source": {"path": str(source)}, "breakpoints": []})
                 dap.request("continue", {"threadId": rows[2][0]})
-                dap.wait(lambda m: m.get("type") == "event" and m.get("event") == "terminated", timeout=10)
+                dap.wait(lambda m: m.get("type") == "event" and m.get("event") == "terminated", timeout=30 if linked else 10)
                 assert read_counts(output) == ((1060, 2060) if linked else (1012, 2012)), read_counts(output)
                 print(f"{language}: PASS; initial DAP threads={initial_threads}; ready DAP threads={ready_threads}; final counters={read_counts(output)}")
             finally:
@@ -192,7 +197,7 @@ def read_counts(path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("language", choices=("rust", "cpp", "c", "rust-c", "rust-cpp"))
+    parser.add_argument("language", choices=("rust", "cpp", "c", "rust-c", "rust-cpp", "rust-c-threads", "rust-cpp-threads"))
     parser.add_argument("--debugger", default="/usr/bin/lldb-dap")
     parser.add_argument("--without-suspension", action="store_true", help="Diagnostic comparison; does not claim isolation")
     options = parser.parse_args()

@@ -28,6 +28,10 @@ cmake --build CExclusiveStep/build
 python3 probe.py rust
 python3 probe.py rust-c
 python3 probe.py rust-cpp
+python3 probe.py rust-c-threads
+python3 probe.py rust-cpp-threads
+python3 probe_native_child.py c
+python3 probe_native_child.py cpp
 python3 probe.py cpp
 python3 probe.py c
 python3 blocked_probe.py
@@ -105,3 +109,33 @@ switched from worker 1 to worker 2 and kept the other counter and instruction
 address fixed during selected-thread steps. The linked Native view and ⇥
 together are new on this branch and need a Craidd desktop run. Record source
 line, selected thread, both counters, and any hold or release error.
+
+### Rust workers that create native child workers
+
+Select **Rust + C Threads** or **Rust + C++ Threads** to run the same Rust
+caller with the `native_threads` Cargo feature. Each Rust worker calls a C or
+C++ export that runs one native worker on the calling thread and creates one
+native child. The Rust worker results are under
+`RustLinkedStep/runs/c-threads/` or `runs/cpp-threads/`. The native worker
+results are under `RustLinkedStep/runs/native-c/` or `runs/native-cpp/`:
+`owner-1-worker-1.txt`, `owner-1-worker-2.txt`, and the owner-2 equivalents.
+
+In two Craidd windows, keep **Native Libraries · Rust** selected in B. Put
+Blue on `BLUE_RUST_C_THREADS` or `BLUE_RUST_CPP_THREADS` in A. Put red on
+`BREAK_C_PAIR_WORKER` or `BREAK_CPP_PAIR_WORKER` in B. Start **White Debug in
+A**. At a native stop, inspect the real LLDB thread list in A, select a
+native worker with a source frame, and use ⇥. Compare both native counters
+for that owner after each stop, then switch workers and repeat. Record whether
+the stop appears in A or B. A child thread may lack the original Rust caller
+frame; the current Blue routing may therefore leave it in A. B has a linked
+native inspector but **no thread dropdown** for this shared LLDB session yet.
+The [window-control friction note](../../docs/feats/ldi-debugging/linked-thread-ux-friction.md)
+records this boundary.
+
+The direct `rust-c-threads` and `rust-cpp-threads` probes passed selected
+**Rust-worker** steps while native calls created and joined child threads.
+The `probe_native_child.py` cases also selected a real native child in the
+original Rust process and advanced only its native counter while the other
+known threads were held. These direct DAP runs do not prove Craidd's ⇥
+control at that child, Blue routing, or B controls. Those are the desktop
+questions for these fixtures.

@@ -866,7 +866,8 @@ mod tests {
         let native = super::super::solution::load_solution_named(
             native_root.to_string_lossy().into_owned(), "thread-control.cln".into(),
         ).unwrap().unwrap().solution;
-        for config in ["Rust + C Lib · Debug", "Rust + C++ Lib · Debug"] {
+        for config in ["Rust + C Lib · Debug", "Rust + C++ Lib · Debug",
+            "Rust + C Threads · Debug", "Rust + C++ Threads · Debug"] {
             assert_eq!(describe(&native, config).unwrap(),
                 vec!["Build Native Libraries · Rust Build → wait for success"]);
         }

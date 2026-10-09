@@ -1286,11 +1286,11 @@ mod tests {
             .parent().unwrap().join("experiments/lldb-native-thread-control");
         let rust = fs::read_to_string(root.join("RustLinkedStep/src/main.rs")).unwrap();
         let calls = calls(&rust).unwrap();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 4);
         for call in calls {
             let native = definition(root.join("Native").to_str().unwrap(), &call.symbol).unwrap();
             assert!(native.end > native.start);
-            assert_eq!(native.file.ends_with(".c"), call.symbol == "step_add_c");
+            assert_eq!(native.file.ends_with(".c"), call.symbol.ends_with("_c"));
         }
     }
     #[test]

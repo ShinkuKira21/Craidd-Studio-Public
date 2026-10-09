@@ -12,6 +12,28 @@ ignored `.runs/probes/rust-c-ihsr6elg/` and
 `.runs/probes/rust-cpp-mg5sqc10/`. This proves the direct LLDB path through
 these FFI calls, not Blue presentation or Craidd desktop controls.
 
+The user reported that the Rust→C and Rust→C++ worker variants also work in
+the Craidd desktop. Their screenshots showed disabled Gold Debug before the
+Rust launch and the ⇥ Step Over tooltip. This is desktop feedback for the
+caller/library path; native-child-thread selection was not part of that run.
+
+The new `rust-c-threads` and `rust-cpp-threads` direct probes also passed:
+selected Rust-worker steps held the other Rust worker's PC and counter fixed
+while each FFI call created and joined a native child. All four native
+per-owner counter files reached 12 after Continue. Traces are in ignored
+`.runs/probes/rust-c-threads-fq6xx81o/` and
+`.runs/probes/rust-cpp-threads-gxwz71f9/`. This does not yet establish
+selected **native-child** stepping or Blue routing to B.
+
+Direct native-child probes then passed for both languages. They stopped in a
+child with a C/C++ source frame and no Rust caller frame, suspended the other
+known LLDB threads, and advanced only that child's native counter. After
+release, all four native counters reached 12 and both Rust counters reached
+`1060/2060`. Traces are in ignored
+`.runs/probes/rust-native-c-p9572g_u/` and
+`.runs/probes/rust-native-cpp-0x8fwthg/`. Craidd's Blue routing and B-window
+control for those child frames remain unverified.
+
 
 Environment: Linux x86-64, installed `/usr/bin/lldb-dap` 23.1.1. This is a
 direct DAP test, not a Craidd desktop acceptance record. The LLDB-DAP

@@ -528,6 +528,20 @@ fn split_cargo_debug_args(mut command_args: Vec<String>) -> (Vec<String>, Vec<St
     (cargo_args, program_args)
 }
 
+fn single_thread_capabilities(language: &str, multi_thread: bool, ldi_token: Option<u64>, body: &Value) -> (bool, u8) {
+    let native = matches!(language, "rust" | "cpp") && multi_thread
+        && (ldi_token.is_none() || language == "cpp")
+        && body["$__lldb_version"] == "lldb version 23.1.1";
+    let managed_origin = language == "csharp";
+    // The managed origin may use one-thread Step before Blue; with_control
+    // refuses this request while the original C# call is held by LDI.
+    let exclusive = if multi_thread && (ldi_token.is_none() || managed_origin)
+        && body["supportsSingleThreadExecutionRequests"] == true { 1 }
+        else if managed_origin && multi_thread && body["craiddManagedExclusiveNext"] == true { 2 }
+        else { 0 };
+    (native, exclusive)
+}
+
 fn split_debug_args(method: &str, mut command_args: Vec<String>) -> (Vec<String>, Vec<String>) {
     if method == "cargo" { return split_cargo_debug_args(command_args); }
     let program_args = match command_args.iter().position(|arg| arg == "--") {
@@ -1622,21 +1636,9 @@ pub(crate) fn launch_prepared(
                     .or_else(|| message["command"].as_str().map(String::from)).unwrap_or_default();
                 match command.as_str() {
                     "initialize" => {
-                        let native_single_step = matches!(language, "rust" | "cpp")
-                            && session.multi_thread
-                            // The LDI native partner is a separate LLDB process.
-                            // A held C# origin is still blocked by with_control.
-                            && (session.ldi_token.is_none() || language == "cpp")
-                            && message["body"]["$__lldb_version"] == "lldb version 23.1.1";
+                        let (native_single_step, exclusive_next_mode) = single_thread_capabilities(
+                            &language, session.multi_thread, session.ldi_token, &message["body"]);
                         session.native_single_step.store(native_single_step, Ordering::Release);
-                        // Keep the standard DAP path separate from the optional
-                        // managed experiment. The installed LLDB path above uses
-                        // the same debugger session's scripting API.
-                        let exclusive_next_mode = if session.multi_thread && session.ldi_token.is_none()
-                            && message["body"]["supportsSingleThreadExecutionRequests"] == true { 1 }
-                            else if language == "csharp" && session.multi_thread && session.ldi_token.is_none()
-                                && message["body"]["craiddManagedExclusiveNext"] == true { 2 }
-                            else { 0 };
                         session.exclusive_next_mode.store(exclusive_next_mode, Ordering::Release);
                         emit_current_session(&app_reader, &label_reader, &session,
                             json!({"status":"capabilities", "sessionKey":format!("{}:{}", session.pgid, session.birth),
@@ -2304,6 +2306,18 @@ fn cancel_debug_session_only(app: &AppHandle, label: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_sessions_expose_only_their_own_qualified_thread_step() {
+        let lldb = json!({"$__lldb_version":"lldb version 23.1.1"});
+        assert_eq!(single_thread_capabilities("rust", true, None, &lldb), (true, 0));
+        assert_eq!(single_thread_capabilities("cpp", true, Some(1), &lldb), (true, 0));
+        let managed = json!({"craiddManagedExclusiveNext":true});
+        assert_eq!(single_thread_capabilities("csharp", true, Some(1), &managed), (false, 2));
+        assert_eq!(single_thread_capabilities("csharp", true, Some(1), &json!({})), (false, 0));
+        assert_eq!(single_thread_capabilities("cpp", true, Some(1),
+            &json!({"supportsSingleThreadExecutionRequests":true})), (false, 0));
+    }
 
     #[test]
     fn thread_book_preserves_scope_and_rejects_expired_inspection() {

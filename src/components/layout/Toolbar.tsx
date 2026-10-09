@@ -239,6 +239,8 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   };
   const projects = linked.members.map((member) => member.projectName).join(" + ");
   const count = linked.members.length || linked.windows.length;
+  const rustNativePair = linked.windows.some((member) => member.ldiRole === "live-native")
+    && linked.windows.some((member) => member.ldiRole === "native-library");
   const activeCount = linked.activeCount;
   const missingDebug = linked.members.filter((member) => !member.canDebug && member.ldiRole !== "native-library");
   const debugBlockers = [
@@ -246,6 +248,10 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     !linked.debugAdapterAvailable ? "Install/select the required lldb-dap or netcoredbg adapter in Preferences → Toolchain, then rescan" : null,
   ].filter(Boolean).join("; ");
   const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
+    : !linked.linked && rustNativePair && kind === "debug"
+      ? "Rust + Native uses one LLDB session. Select the Native library in B, set Blue on the Rust call in A, then use White Debug in A. Gold Debug starts multiple processes."
+    : !linked.linked && rustNativePair && kind === "run"
+      ? "The Native library has no separate Run process. Use White Run in Rust; use White Debug in Rust for linked native inspection."
     : !linked.linked ? `${count} solution windows; no eligible linked ${kind} group. Libraries have no Run/Debug process. Use White Run/Debug in the caller; Native shows its live inspector and Stop.`
     : kind === "debug" && !linked.canDebug ? `Cannot debug ${count} linked windows: ${debugBlockers}`
     : !available ? `Cannot ${kind} all ${count} linked instances: a configuration is missing`

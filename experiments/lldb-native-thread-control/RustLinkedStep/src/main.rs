@@ -1,20 +1,34 @@
 use std::{fs, path::PathBuf, sync::{Arc, Barrier}, thread, time::Duration};
 
 unsafe extern "C" {
-    #[cfg(not(feature = "cpp"))]
+    #[cfg(all(not(feature = "cpp"), not(feature = "native_threads")))]
     fn step_add_c(left: i32, right: i32) -> i32;
-    #[cfg(feature = "cpp")]
+    #[cfg(all(feature = "cpp", not(feature = "native_threads")))]
     fn step_add_cpp(left: i32, right: i32) -> i32;
+    #[cfg(all(not(feature = "cpp"), feature = "native_threads"))]
+    fn step_pair_c(left: i32, right: i32) -> i32;
+    #[cfg(all(feature = "cpp", feature = "native_threads"))]
+    fn step_pair_cpp(left: i32, right: i32) -> i32;
 }
 
-#[cfg(not(feature = "cpp"))]
+#[cfg(all(not(feature = "cpp"), not(feature = "native_threads")))]
 fn native_add(left: i32, right: i32) -> i32 {
     unsafe { step_add_c(left, right) } // BLUE_RUST_C
 }
 
-#[cfg(feature = "cpp")]
+#[cfg(all(feature = "cpp", not(feature = "native_threads")))]
 fn native_add(left: i32, right: i32) -> i32 {
     unsafe { step_add_cpp(left, right) } // BLUE_RUST_CPP
+}
+
+#[cfg(all(not(feature = "cpp"), feature = "native_threads"))]
+fn native_add(left: i32, right: i32) -> i32 {
+    unsafe { step_pair_c(left, right) } // BLUE_RUST_C_THREADS
+}
+
+#[cfg(all(feature = "cpp", feature = "native_threads"))]
+fn native_add(left: i32, right: i32) -> i32 {
+    unsafe { step_pair_cpp(left, right) } // BLUE_RUST_CPP_THREADS
 }
 
 fn main() {

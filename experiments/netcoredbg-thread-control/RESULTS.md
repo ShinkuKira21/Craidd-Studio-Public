@@ -44,3 +44,17 @@ call sites, the C export without C++ linkage syntax, and the C++ export.
 The two-process LDI reproduction and ⇥ in its native partner remain to be
 checked in Craidd desktop. The local patched netcoredbg binary was absent,
 but that binary is not needed for ⇥ in B's LLDB process.
+
+The C# fixtures already create two managed caller threads and two native
+workers per reproduced call. On this branch, B's native workers also write
+per-thread counters under its `Native/runs/` directory. The new files make
+the requested C# Threads→C/C++ Threads test observable, but no desktop
+before/after counter or thread-switch report exists yet.
+
+Standalone LLDB-DAP partner probes passed for C and C++: one native worker's
+counter advanced while the other stayed fixed, then both reached 20 after
+release. Traces are in ignored `.runs/probes/native-c-p2gr197m/` and
+`.runs/probes/native-cpp-2eu61bbs/`. This validates the native mechanism
+outside LDI; Gold Debug, A's managed ⇥ and B's paired ⇥ still need desktop
+acceptance. The C# experiment program itself completed both variants with
+each native counter at 20.

@@ -32,7 +32,7 @@ method = "dotnet"
 command = "dotnet run --project ThreadControlExperiment.csproj --no-launch-profile -- runs/basic"
 
 [[config]]
-name = "C# + C Lib"
+name = "C# Threads + C Threads"
 kind = "run"
 target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
 [config.slots]
@@ -41,7 +41,7 @@ run = "C# + C Lib · Run"
 debug = "C# + C Lib · Debug"
 
 [[config]]
-name = "C# + C++ Lib"
+name = "C# Threads + C++ Threads"
 kind = "run"
 target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
 [config.slots]
