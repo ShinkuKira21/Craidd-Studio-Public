@@ -41,6 +41,70 @@ npm run tauri dev
 package restore, such as NuGet packages for the Avalonia GUI or npm packages
 for the Rust Tauri GUI. See each lab's README before starting it.
 
+## How to make a project
+
+Craidd is solution-first: everything — trees, configs, builds, debuggers —
+hangs off a `.cln` solution that declares its projects. So the first thing
+you do is open a folder and declare a project inside it.
+
+**From an empty folder:**
+
+1. **File → Open Folder…** and pick a folder (create one first if you like).
+2. The Solution Explorer shows **"No solution in this folder."** Click
+   **New project**.
+3. Fill in the New Project dialog:
+   - **Project name** — the folder name under the solution root, and the
+     base name of the `.craidd` marker written inside it.
+   - **Language** — Rust, TypeScript, JavaScript, Python, C++, C#, or Config.
+     This is what the project's filtered tree is built from. Pick the
+     language you're actually working in, not the file extension you happen
+     to have on disk.
+   - *(Optional)* **Create a Config project too?** — attaches a `[config]`
+     facet to the same marker so JSON/TOML/YAML/INI files in the project (or
+     a directory you point at) show up as a separate config tree. Useful for
+     app settings, save data, toolchain configs.
+   - *(Optional)* **Fine Tune after creation?** — opens the membership editor
+     so you can decide, file by file, which files belong to the language tree
+     and which belong to the config tree.
+4. Click **Create**. Craidd writes the folder, drops a `.craidd` marker
+   inside it, creates or updates the solution's `.cln`, and populates the
+   project tree. The Configurations chip in the toolbar will light up with
+   inferred Power Configs derived from any manifests it finds (`Cargo.toml`,
+   `package.json`, `*.csproj`, `CMakeLists.txt`).
+
+**From a folder that already has code:**
+
+1. **File → Open Folder…** to the folder that contains the code. If Craidd
+   doesn't find a `.cln`, the Solution Explorer again shows the "No solution"
+   banner — but you don't need the dialog this time.
+2. In **File Discovery** (the lower sidebar), right-click the folder you want
+   to declare and choose **Make This a Project…**.
+3. `MakeProjectDialog` opens with language detection already filled in from
+   the folder contents (e.g. *"Suggested Rust: 3 .rs files"*). Confirm or
+   change it, optionally attach a Config facet or Fine Tune after creation,
+   and click **Create Project**. A `.craidd` is written into that folder and
+   the solution is created or updated to reference it.
+
+**After the project exists:**
+
+- The Solution Explorer shows it with a language-filtered tree. Files that
+  don't match the declared language won't appear there — use File Discovery
+  if you need to see everything on disk.
+- The Configurations dialog (**Configurations chip → Add / Edit
+  Configurations…**) lists anything inferred from the project's manifests and
+  lets you add your own named Build / Run / Debug entries.
+- To add more projects to the same solution, repeat either path — the "No
+  solution" banner is gone once a `.cln` exists, so use File Discovery's
+  right-click menu, or **Project → Add → New Blank Project…** from the
+  menu bar if you want the dialog again.
+
+A `.craidd` marker is small on purpose — name, language, root, optional
+config facet, optional membership overrides. Everything else about the
+project (what it builds, how it builds, what dependencies it has) is read
+from the ecosystem's own manifest at build time, never duplicated into the
+marker. See [the `.craidd` and `.cln` model](docs/craidd-cln-model.md) for
+the reasoning.
+
 ## Why Linked Windows?
 
 A `.cln` solution can contain several projects. Open it with **File → Open
