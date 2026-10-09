@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSolution } from "../../store/solutionStore";
 import { usePreferences } from "../../store/preferencesStore";
 import { useBreakpoints } from "../../store/breakpointStore";
+import { getActiveEditor, setActiveEditor } from "../../lib/activeEditor";
 import { useLinkedWindows } from "../../store/linkedWindowsStore";
 import type { Breakpoint } from "../../store/breakpointStore";
 import { useDebug } from "../../store/debugStore";
@@ -260,6 +261,8 @@ export default function CodeView() {
         onChange={onChange}
         onMount={(instance: editor.IStandaloneCodeEditor, monaco: Monaco) => {
           editorRef.current = instance;
+          setActiveEditor(instance);
+          instance.onDidDispose(() => { if (getActiveEditor() === instance) setActiveEditor(null); });
           monacoRef.current = monaco;
           decorationsRef.current = instance.createDecorationsCollection();
           refreshBreakpoints();

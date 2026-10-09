@@ -3,122 +3,116 @@ import { usePreferences } from "../store/preferencesStore";
 import { useSolution } from "../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../lib/fileActions";
 import { useLinkedWindows } from "../store/linkedWindowsStore";
-import { startViewedAction, stopViewedAction } from "../lib/viewedActions";
+import { debugKeyViewed, debugOrContinueViewed, startViewedAction, stopViewedAction } from "../lib/viewedActions";
 import { useSessionFeedback } from "../store/sessionFeedbackStore";
+import { focusAreaOf, isChordPrefix, matchShortcut, type ShortcutId } from "../lib/shortcuts";
+import { openFolderDialog, openSolutionDialog } from "../lib/workspaceActions";
+import { getActiveEditor } from "../lib/activeEditor";
+import { useBreakpoints } from "../store/breakpointStore";
+
+const CHORD_WINDOW_MS = 1500;
+
+function report(what: string, error: unknown) {
+  alert(`${what} failed: ${String(error)}`);
+}
 
 export function useKeyboardShortcuts(
   openCommandPalette: () => void,
   openPreferences: () => void,
 ) {
   useEffect(() => {
-    const onKey = async (e: KeyboardEvent) => {
-      if (useSessionFeedback.getState().savePrompt) return;
-      const mod = e.ctrlKey || e.metaKey;
+    let chordAt = 0;
 
-      if (mod && e.key.toLowerCase() === "q") {
-        const scope = e.altKey && !e.shiftKey ? "ide" : e.shiftKey && !e.altKey ? "solution" : !e.altKey && !e.shiftKey ? "window" : null;
-        if (scope) {
-          e.preventDefault();
+    const canEditViewed = () => {
+      const linked = useLinkedWindows.getState();
+      return linked.viewedWindowLabel === linked.ownWindowLabel || linked.remoteEditing;
+    };
+
+    const run = async (id: ShortcutId) => {
+      switch (id) {
+        case "exitWindow": case "exitSolution": case "exitIde": {
+          const scope = id === "exitIde" ? "ide" : id === "exitSolution" ? "solution" : "window";
           window.dispatchEvent(new CustomEvent("craidd:exit-scope", { detail: scope }));
           return;
         }
-      }
-
-      if (mod && e.shiftKey && e.key.toLowerCase() === "b") {
-        e.preventDefault();
-        try { await startViewedAction("build"); } catch (error) { alert(`Build failed: ${String(error)}`); }
-        return;
-      }
-      if (mod && e.key === "F5") {
-        e.preventDefault();
-        try { await startViewedAction("run"); } catch (error) { alert(`Run failed: ${String(error)}`); }
-        return;
-      }
-      if (!mod && !e.shiftKey && e.key === "F5") {
-        e.preventDefault();
-        try { await startViewedAction("debug"); } catch (error) { alert(`Debug failed: ${String(error)}`); }
-        return;
-      }
-      if (e.shiftKey && e.key === "F5") {
-        e.preventDefault();
-        try { await stopViewedAction(); } catch (error) { alert(`Stop failed: ${String(error)}`); }
-        return;
-      }
-
-      // ── Save ─────────────────────────────────────────────
-      if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        const linked = useLinkedWindows.getState();
-        if (linked.viewedWindowLabel !== linked.ownWindowLabel && !linked.remoteEditing) return;
-        try { await saveActiveFile(); }
-        catch (err) { alert(`Save failed: ${String(err)}`); }
-        return;
-      }
-
-      // ── Save As ──────────────────────────────────────────
-      if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        const linked = useLinkedWindows.getState();
-        if (linked.viewedWindowLabel !== linked.ownWindowLabel && !linked.remoteEditing) return;
-        try {
-          await saveActiveFileAs();
-        } catch (err) {
-          console.error("[craidd] Save As failed:", err);
-          alert(`Save As failed: ${String(err)}`);
+        case "openFolder": try { await openFolderDialog(); } catch (error) { report("Open Folder", error); } return;
+        case "openSolution": try { await openSolutionDialog(); } catch (error) { report("Open Solution", error); } return;
+        case "build": try { await startViewedAction("build"); } catch (error) { report("Build", error); } return;
+        case "run": try { await startViewedAction("run"); } catch (error) { report("Run", error); } return;
+        case "debugOrContinue": try { await debugOrContinueViewed(); } catch (error) { report("Debug", error); } return;
+        case "stop": try { await stopViewedAction(); } catch (error) { report("Stop", error); } return;
+        case "pause": case "stepOver": case "stepInto": case "stepOut":
+          try { await debugKeyViewed(id); } catch (error) { report("Debug control", error); }
+          return;
+        case "toggleBreakpoint": {
+          const file = useSolution.getState().activeFileId;
+          const line = getActiveEditor()?.getPosition()?.lineNumber;
+          if (!file || !line) return;
+          // Red breakpoints only. LDI blue markers keep their gutter and context-menu flow.
+          try { await useBreakpoints.getState().toggle(file, line); } catch (error) { report("Toggle breakpoint", error); }
+          return;
         }
-        return;
-      }
-
-      // ── Rename (F2) ─────────────────────────────────────
-      // Fires the same event path as right-click → Rename. The
-      // focused tree item handler lives in the sidebar.
-      if (e.key === "F2") {
-        e.preventDefault();
-        const s = useSolution.getState();
-        if (s.focusedTreeTarget) {
+        case "save":
+          if (!canEditViewed()) return;
+          try { await saveActiveFile(); } catch (error) { report("Save", error); }
+          return;
+        case "saveAs":
+          if (!canEditViewed()) return;
+          try { await saveActiveFileAs(); } catch (error) {
+            console.error("[craidd] Save As failed:", error);
+            report("Save As", error);
+          }
+          return;
+        case "rename": {
+          // Fires the same path as right-click → Rename on the focused tree row.
+          // Cleared first so a second F2 does not rename the same node again;
+          // this matches Visual Studio's explorer behaviour.
+          const s = useSolution.getState();
+          if (!s.focusedTreeTarget) return;
           const target = s.focusedTreeTarget;
-          // Clear before firing so a second F2 does not re-trigger the
-          // same node. The user must click a tree row again to rename
-          // another item; this matches Visual Studio's explorer behaviour.
           s.setFocusedTreeTarget(null);
           s.requestRename(target.path, target.source);
+          return;
         }
-        return;
-      }
-
-      // ── Preferences ──────────────────────────────────────
-      if (mod && e.key === ",") {
-        e.preventDefault();
-        openPreferences();
-        return;
-      }
-
-      if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); usePreferences.getState().zoomIn(); return; }
-      if (mod && e.key === "-") { e.preventDefault(); usePreferences.getState().zoomOut(); return; }
-      if (mod && e.key === "0") { e.preventDefault(); usePreferences.getState().resetZoom(); return; }
-      if (e.altKey && e.key.toLowerCase() === "z") { e.preventDefault(); usePreferences.getState().toggleWordWrap(); return; }
-      if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); usePreferences.getState().toggleSidebar(); return; }
-      if (mod && e.key.toLowerCase() === "j") { e.preventDefault(); usePreferences.getState().toggleBottomPanel(); return; }
-      if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); openCommandPalette(); return; }
-
-      // Ctrl+W: close active tab (prompts if dirty via EditorTabs; here
-      // we just do a raw close, the prompt flow lives in the pane).
-      if (mod && e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        const s = useSolution.getState();
-        if (s.activeFileId) {
+        case "preferences": openPreferences(); return;
+        case "commandPalette": openCommandPalette(); return;
+        case "zoomIn": usePreferences.getState().zoomIn(); return;
+        case "zoomOut": usePreferences.getState().zoomOut(); return;
+        case "resetZoom": usePreferences.getState().resetZoom(); return;
+        case "wordWrap": usePreferences.getState().toggleWordWrap(); return;
+        case "toggleSidebar": usePreferences.getState().toggleSidebar(); return;
+        case "togglePanel": usePreferences.getState().toggleBottomPanel(); return;
+        case "closeTab": {
+          // A dirty or deleted tab goes through the pane's close prompt.
+          const s = useSolution.getState();
+          if (!s.activeFileId) return;
           const tab = s.tabs.find((t) => t.fileId === s.activeFileId);
           if (tab && (tab.dirty || tab.diskState === "deleted")) {
-            // Let the pane handle it — dispatch a custom event.
             window.dispatchEvent(new CustomEvent("craidd:request-close", { detail: s.activeFileId }));
           } else {
             s.closeTab(s.activeFileId);
           }
+          return;
         }
-        return;
+        case "undo": case "redo": return;
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+
+    // Capture phase, so IDE keys win over Monaco's own bindings and the
+    // second half of Ctrl+K Ctrl+O is seen even inside the editor.
+    const onKey = (e: KeyboardEvent) => {
+      if (useSessionFeedback.getState().savePrompt) return;
+      if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+      if (isChordPrefix(e)) { chordAt = Date.now(); return; }
+      const afterChord = chordAt > 0 && Date.now() - chordAt < CHORD_WINDOW_MS;
+      chordAt = 0;
+      const id = matchShortcut(e, focusAreaOf(e.target), afterChord);
+      if (!id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void run(id);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [openCommandPalette, openPreferences]);
 }

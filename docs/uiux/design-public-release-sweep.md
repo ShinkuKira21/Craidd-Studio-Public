@@ -148,6 +148,28 @@ add F9. Ignore repeated keys for start actions. Wire Undo/Redo to the active
 Monaco editor. A small node test should check that every advertised shortcut
 has a handler.
 
+**Delivered (slice A):** `src/lib/shortcuts.ts` is the single table, and the
+menu reads its labels from it. The handler runs in the capture phase with
+focus-aware rules:
+
+- In dialog fields, F2, Ctrl+W, Ctrl+B, Ctrl+J, Alt+Z and F9 are left to the field.
+- In the editor, F2 and Ctrl+Shift+O are left to Monaco.
+- Ctrl+K Ctrl+O is a chord.
+
+F5 continues when paused and never starts a second session. F6, F10, F11 and
+Shift+F11 apply only in the state where they make sense, and the Run menu
+lists them. F9 toggles a red breakpoint at the cursor; blue LDI markers keep
+their gutter flow. Edit → Undo/Redo drive Monaco. Held keys repeat only for
+steps and zoom. `tests/shortcuts.test.mjs` checks the table against the menu.
+
+**Limitations:**
+
+- **Ctrl+Shift+F5 Restart** is not mapped. No single-session restart action
+  exists yet (Gold Restart is linked-only), and the key now does nothing
+  instead of starting Run.
+- Inside the editor, Monaco still shows its "waiting for second key" hint
+  after Ctrl+K Ctrl+O.
+
 ## 6. File → Exit → This Application
 
 **Reported:** it does not always close everything.
