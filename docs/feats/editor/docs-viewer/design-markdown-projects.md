@@ -182,6 +182,12 @@ including Markdown outside `docs/` and inside nested project folders, subject
 to the shared discovery exclusions. Wider or external project roots need an
 explicit scope choice rather than an implicit crawl.
 
+If future broader web/scripting project support is adopted, the
+[conditional project-directory boundary](design-html-pdf-viewers.md#conditional-boundary-broader-web-and-scripting-projects)
+supersedes the nested-project inclusion above. Docs discovery must then exclude
+declared project directories to prevent docs/project contamination; overlapping
+project and documentation roots need an explicit policy.
+
 Proposed tree behavior:
 
 - Include `.md` and `.markdown` files with case-insensitive extension matching.

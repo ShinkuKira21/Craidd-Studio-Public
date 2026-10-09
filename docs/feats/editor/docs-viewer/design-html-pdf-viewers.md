@@ -44,6 +44,27 @@ filter covers the workspace, selected documentation roots or explicit include
 paths. Generated documentation in excluded build folders should require an
 explicit include route; do not silently undo shared discovery exclusions.
 
+### Conditional boundary: broader web and scripting projects
+
+If future community direction expands Craidd's project support toward broader
+code-editor workflows, including HTML, CSS, JavaScript, JavaScript frameworks,
+PHP and similar projects, **Docs discovery must exclude declared project
+directories and their descendants**. Otherwise application HTML and related
+source can appear as documentation, causing docs/project contamination.
+
+Use the project's declared directory boundaries from the project model rather
+than guessing ownership from extensions or framework names. Apply the boundary
+consistently across Docs format filters and recursive indexing. File Discovery
+and the project explorer continue to provide access to those project files.
+
+This is a conditional requirement for that future expansion, not a declaration
+that Craidd is becoming a general code editor or a change to today's delivery
+scope. Once introduced, it supersedes the Markdown proposal's inclusion of
+documents inside nested project folders. Documentation nested inside a project,
+and a project sharing the workspace root, need an explicit documentation-root
+policy before implementation; do not silently include application source to
+resolve that overlap.
+
 | Capability | Markdown | HTML proposal | PDF proposal |
 | --- | --- | --- | --- |
 | Source view | Editable Markdown | Editable original HTML | No ordinary text-source editor |
@@ -180,7 +201,9 @@ obligations before adoption. This change adds no runtime dependency.
 
 ## Decisions and future acceptance
 
-Before implementation, agree initial formats and HTML discovery relevance;
+Before implementation, agree initial formats and HTML discovery relevance,
+including the conditional project-directory boundary if broader web/scripting
+projects become part of the product direction;
 static HTML versus a future script-enabled mode; resource/navigation boundaries;
 the PDF renderer and binary transport; initial PDF controls; and the shared B0
 file-action policy. Preserve Markdown's source-editing contract as its own gate.
@@ -189,6 +212,9 @@ Future evidence must include the running IDE and a packaged supported Linux buil
 
 1. Browse mixed Markdown/HTML/PDF documentation in deep unopened folders;
    filter formats and confirm files retain their real identities and paths.
+   If the conditional project boundary applies, verify that declared web/scripting
+   project directories remain excluded across every filter and background walk,
+   while separately scoped documentation stays discoverable.
 2. Edit HTML Source, switch Preview, save/undo and reload after an external
    change. Preserve source formatting and existing dirty/conflict handling.
 3. Render local HTML CSS/images/fonts and follow anchors/document links;
