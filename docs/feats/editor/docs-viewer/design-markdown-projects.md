@@ -1,12 +1,16 @@
 # Design: Markdown preview and documentation browsing
 
-**Roadmap track:** Future editor/documentation feature, unassigned. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
+**Roadmap track:** Future editor/documentation feature, unassigned. See the [current roadmap](../../../roadmaps/Roadmap-v0.0.4A.md).
 
 **Status:** Proposal, 9 October 2026. No renderer, Docs sidebar or Markdown project is implemented by this document. The user selected the View Source / View Preview interaction with editable Preview and leans toward B, the Docs sidebar. B is the preferred direction for discussion, not a final implementation decision; A and other recommendations remain available for consideration.
 
 **Design owner:** ShinkuKira21. This records the user's idea for reading and working with a repository's documentation inside Craidd.
 
-**Companion:** [The project model](../../craidd-cln-model.md), especially the distinction between File Discovery and Solution Explorer.
+**Companion:** [The project model](../../../craidd-cln-model.md), especially the distinction between File Discovery and Solution Explorer.
+
+**Viewer design collection:** [Docs viewer index](README.md) and
+[potential HTML/PDF viewers](design-html-pdf-viewers.md). HTML and PDF are
+extension proposals; this document's initial discovery contract is Markdown.
 
 ## Direction for public review
 
@@ -128,7 +132,7 @@ directly to disk can use ordinary Markdown fences without that copy/paste issue.
 
 Craidd does not format documents or enforce an authoring style. Standard
 Markdown is the default rendering contract; users can keep ordinary `.md`
-files. The [working protocol](../../working-protocol.md) describes an AI-chat
+files. The [working protocol](../../../working-protocol.md) describes an AI-chat
 handoff practice, not a product formatting requirement.
 
 For convenience, consider an optional preview compatibility setting that
@@ -269,12 +273,12 @@ not evidence that the proposed feature works:
 
 | Existing source | Current responsibility / proposed reuse |
 | --- | --- |
-| [ActivityBar.tsx](../../../src/components/layout/ActivityBar.tsx), [layoutStore.ts](../../../src/store/layoutStore.ts), [Sidebar.tsx](../../../src/components/sidebar/Sidebar.tsx) | View selection and sidebar composition; possible Docs entry and pane |
-| [FileDiscovery.tsx](../../../src/components/sidebar/discovery/FileDiscovery.tsx), [FileTree.tsx](../../../src/components/sidebar/FileTree.tsx) | On-disk tree, lazy expansion, selection and file actions; needs a deliberate filtered-discovery contract |
-| [fs.rs](../../../src-tauri/src/commands/fs.rs) | Directory listing/cache, recursive filtering and filesystem operations; possible shared discovery backend |
-| [languages.ts](../../../src/lib/languages.ts) | Markdown lexer selection for `.md`/`.markdown`; no Markdown project declaration |
-| [EditorPane.tsx](../../../src/components/editor/EditorPane.tsx), [CodeView.tsx](../../../src/components/editor/CodeView.tsx) | Ordinary source editor; possible same-tab Preview/Source switch |
-| [solutionStore.ts](../../../src/store/solutionStore.ts), [fileActions.ts](../../../src/lib/fileActions.ts) | Tab content, identity, save/conflict behavior and shared file operations |
+| [ActivityBar.tsx](../../../../src/components/layout/ActivityBar.tsx), [layoutStore.ts](../../../../src/store/layoutStore.ts), [Sidebar.tsx](../../../../src/components/sidebar/Sidebar.tsx) | View selection and sidebar composition; possible Docs entry and pane |
+| [FileDiscovery.tsx](../../../../src/components/sidebar/discovery/FileDiscovery.tsx), [FileTree.tsx](../../../../src/components/sidebar/FileTree.tsx) | On-disk tree, lazy expansion, selection and file actions; needs a deliberate filtered-discovery contract |
+| [fs.rs](../../../../src-tauri/src/commands/fs.rs) | Directory listing/cache, recursive filtering and filesystem operations; possible shared discovery backend |
+| [languages.ts](../../../../src/lib/languages.ts) | Markdown lexer selection for `.md`/`.markdown`; no Markdown project declaration |
+| [EditorPane.tsx](../../../../src/components/editor/EditorPane.tsx), [CodeView.tsx](../../../../src/components/editor/CodeView.tsx) | Ordinary source editor; possible same-tab Preview/Source switch |
+| [solutionStore.ts](../../../../src/store/solutionStore.ts), [fileActions.ts](../../../../src/lib/fileActions.ts) | Tab content, identity, save/conflict behavior and shared file operations |
 
 No rendered Markdown component was found in the inspected editor path.
 Selecting a rendering library, discovery strategy or project schema is later

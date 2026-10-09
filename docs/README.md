@@ -26,7 +26,7 @@ The rest of the docs are grouped by purpose:
 
 The philosophy documents are grouped by topic. Start with the [philosophy index](philosophies/README.md); feature designs live under `feats/`. The Git workspaces documents are proposals, not implemented behavior.
 
-The proposed [Markdown preview and documentation browser](feats/editor/design-markdown-projects.md) records editable Preview with View Source / View Preview controls and a preferred Docs sidebar direction backed by File Discovery. It retains docs-as-project as an alternative and identifies the editing, discovery and document-management decisions needed before implementation. It is unscheduled design work.
+The [Docs viewer design collection](feats/editor/docs-viewer/README.md) records editable Markdown Preview with View Source / View Preview controls and a preferred Docs sidebar direction backed by File Discovery. It retains docs-as-project as an alternative, explores potential HTML/PDF viewers, and identifies the editing, discovery and document-management decisions needed before implementation. It is unscheduled design work.
 
 ---
 

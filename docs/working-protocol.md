@@ -150,7 +150,7 @@ fences. Shell scripts in chat are fenced normally.
 
 Craidd Studio does not format documents or enforce an authoring style.
 Optional preview support for `+++` is a future convenience proposal; see
-[Markdown preview and documentation browsing](feats/editor/design-markdown-projects.md).
+[Markdown preview and documentation browsing](feats/editor/docs-viewer/design-markdown-projects.md).
 
 ## Non-negotiables
 
