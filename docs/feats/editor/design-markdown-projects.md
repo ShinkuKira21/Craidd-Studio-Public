@@ -2,7 +2,7 @@
 
 **Roadmap track:** Future editor/documentation feature, unassigned. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Proposal, 9 October 2026. No renderer, Docs sidebar or Markdown project is implemented by this document. Options A and B remain alternatives for consideration; recommendations below are not locked decisions.
+**Status:** Proposal, 9 October 2026. No renderer, Docs sidebar or Markdown project is implemented by this document. The user selected the View Source / View Preview interaction with editable Preview; options A and B and other recommendations remain open for consideration.
 
 **Design owner:** ShinkuKira21. This records the user's idea for reading and working with a repository's documentation inside Craidd.
 
@@ -23,29 +23,37 @@ there, opening a documentation tree in the adjacent sidebar.
 ## 0: Open Markdown in a viewer, with a clear editing toggle
 
 Clicking a Markdown file could open its rendered document in the ordinary
-editor area. The tab should expose an obvious `Preview / Source` toggle, with
-`Source` meaning the actual editable Markdown. An optional `Split` mode could
-show source and preview together. This applies regardless of whether the file
-was opened from Solution Explorer, File Discovery, Docs or a document link.
+editor area. Use `View Source / View Preview` as the switching actions, following
+the interaction the user likes in Codex. Their second screenshot shows the
+`View source` control; they also identify editable Preview as part of the
+desired experience. Both views should support editing: Source edits the actual
+Markdown, and Preview lets the user edit the rendered document in place.
+An optional `Split` mode could show source and preview together. This applies
+regardless of whether the file was opened from Solution Explorer, File
+Discovery, Docs or a document link.
 
-Preview should render the current editor buffer, including unsaved changes.
+Preview should render and edit the current document buffer, including unsaved
+changes.
 Switching views must preserve the same file identity, dirty state, undo
 history and cursor; it must not reload the disk version or create a second
 editable copy. Save and close should retain the editor's existing conflict
 and unsaved-change handling, including linked-window ownership.
 
-There are two different meanings of editing in the preview window:
+The two editing surfaces have different implementation responsibilities:
 
 | Approach | Benefit | Cost / question |
 | --- | --- | --- |
-| Toggle from Preview to Source in the same tab | Read comfortably, then edit the original Markdown with existing editor behavior | Decide whether Preview or Source is the default when opening Markdown |
-| Edit the rendered document directly | Reading and editing happen in one visual surface | Requires reliable conversion back to Markdown, preserving formatting, tables, links, HTML and unsupported syntax |
+| View Source | Edit the original Markdown with existing editor behavior | Decide whether Preview or Source is the default when opening Markdown |
+| View Preview, editable | Read and edit the rendered document in the same tab | Requires reliable mapping of edits back to Markdown, preserving formatting, tables, links, HTML and unsupported syntax |
 
-**Recommendation for consideration:** Start with Preview and Source, sharing
-one buffer. Consider Split next. Treat direct rendered editing as a separate
-decision; a viewer with a source toggle already provides editing in the same
-window without needing Markdown round-trip conversion. Explicit `Open as
-Source` and `Open Preview` actions should override the normal opening preference.
+**User-selected interaction:** `View Source / View Preview`, with editable
+Preview and one document buffer. The navigation choices A/B and the editing
+implementation remain proposals. Determine which rendered constructs can be
+edited safely, how edits map back to source and how unsupported constructs
+remain intact. Opening Preview without making an edit must not reserialize or
+normalize the source.
+Explicit `Open as Source` and `Open Preview` actions should override the normal
+opening preference. Split remains optional.
 
 ### What “GitHub-level” means here
 
@@ -53,7 +61,8 @@ Use a concrete rendering acceptance list rather than claiming full GitHub
 parity. The intended baseline includes headings, paragraphs, emphasis,
 ordered/unordered and nested lists, blockquotes, inline code, fenced code
 blocks with highlighting, tables, strikethrough, task lists, links and images.
-Task checkboxes in Preview are initially display-only; editing happens in Source.
+Decide whether task checkboxes are directly editable alongside other Preview
+controls; any supported edit must update the shared Markdown buffer.
 The document needs readable typography, sensible table overflow, light/dark
 themes, selectable text and keyboard-accessible links and controls.
 
@@ -240,7 +249,7 @@ implementation work. This proposal adds no dependencies and assigns no phase.
 Before implementation, settle the opening default and preference scope; A,
 B or both; the discovery root/exclusions and indexing strategy; B0's initial
 action set; rendering syntax/HTML/assets and optional `+++` compatibility;
-and whether direct rendered editing has enough value to justify its own design.
+and how editable Preview preserves Markdown across both editing surfaces.
 
 Future acceptance must exercise the running IDE:
 
@@ -248,8 +257,10 @@ Future acceptance must exercise the running IDE:
    headings, tables, nested lists, code blocks, images and fragment navigation.
    With optional `+++` compatibility enabled, verify copied AI-chat blocks;
    with it disabled, preserve literal plus signs. Neither mode rewrites files.
-2. Edit source, switch to Preview, save, undo and close with unsaved changes.
-   Confirm the preview reflects the same buffer and external changes/conflicts
+2. Use `View Source / View Preview`, edit in both surfaces, save, undo and close
+   with unsaved changes. Verify Preview edits appear in Source, source edits
+   appear in Preview, and untouched syntax/formatting survives switching and
+   saving. Confirm both views use the same buffer and external changes/conflicts
    retain the existing editor behavior, including linked windows.
 3. Find root agent docs and Markdown several unopened folders deep. Verify
    pruning, collapse/expand, filter clearing, duplicate basenames, nested
