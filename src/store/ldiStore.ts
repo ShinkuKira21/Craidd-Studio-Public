@@ -12,7 +12,7 @@ export interface LdiBlue {
   library: string; method: string;
   mode: "scalar" | "typed-interposer" | "live-native"; locals: [string, string];
   condition: string | null;
-  warning: string | null; nativePoints: Breakpoint[];
+  warning: string | null; inactiveConfig: string | null; nativePoints: Breakpoint[];
   pendingRestart: boolean;
 }
 export interface LdiCallSite {

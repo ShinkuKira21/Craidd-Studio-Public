@@ -39,10 +39,13 @@ export default function BreakpointMenu({ file, line, x, y, callSite, onClose }: 
       {red && <button role="menuitem" className="block w-full px-3 py-1.5 text-left text-red-300 hover:bg-red-900"
         onClick={() => { setCondition(red.condition ?? ""); setEditingCondition("red"); }}>
         {red.condition ? "Edit red condition…" : "Set red condition…"}</button>}
+      {blue?.inactiveConfig && <div className="max-w-64 px-3 py-2 text-zinc-400">
+        Saved for {blue.inactiveConfig}. Inactive under this Rust Power Config; switching back reactivates it.
+      </div>}
       {blue ? <button role="menuitem"
         className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
         onClick={() => { void removeLdiBlue(file, line).then(onClose).catch((error) => setMenuError(String(error))); }}>
-        Remove Blue Breakpoint</button>
+        {blue.inactiveConfig ? "Remove saved Blue Breakpoint" : "Remove Blue Breakpoint"}</button>
         : partners.map((partner) => <button key={partner.windowLabel} role="menuitem"
           title={`${file.endsWith(".rs") ? "Rust White Debug · Live Native" : "Gold Linked Debug"} · ${callSite?.entryPoint ?? "native call"}`}
           className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"

@@ -532,6 +532,7 @@ pub(crate) fn set_blue(
         mode: "live-native".into(),
         locals: [String::new(), String::new()],
         warning: None,
+        inactive_config: None,
         native_points,
         pending_restart: super::debug::has_debug_session(app, owner)
             || super::build_order::has_active_order(app, owner),
@@ -632,11 +633,17 @@ pub(crate) fn blues(app: &AppHandle, label: &str) -> Vec<Blue> {
     points
         .into_iter()
         .filter(|b| label == b.blue.origin_label || label == b.blue.partner_label)
-        .filter(|binding| super::linked_windows::rust_native_selection(
-            app, &binding.origin.label, false,
-        ).is_ok_and(|current| active_rust_config(binding, &current)))
         .map(|binding| {
             let mut blue = binding.blue.clone();
+            let current = super::linked_windows::rust_native_selection(app, &binding.origin.label, false).ok();
+            if !current.as_ref().is_some_and(|selection| active_rust_config(&binding, selection)) {
+                blue.inactive_config = Some(binding.origin.configuration.clone()
+                    .unwrap_or_else(|| "an unnamed Rust Power Config".into()));
+                blue.warning = None;
+                blue.native_points.clear();
+                blue.pending_restart = false;
+                return blue;
+            }
             blue.warning = validate(app, &binding)
                 .and_then(|_| read_calls(&blue.file, &binding.origin))
                 .and_then(|(_, calls)| {
@@ -1250,6 +1257,7 @@ mod tests {
                 mode: "live-native".into(),
                 locals: [String::new(), String::new()],
                 warning: None,
+                inactive_config: None,
                 native_points: vec![],
                 pending_restart: false,
             },

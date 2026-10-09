@@ -31,9 +31,11 @@ select different Cargo features and FFI exports. A subsequent screenshot
 showed four markers saved under **Rust + C Threads** still warning and
 blocking **Rust + C++ Threads**, even with the correct Native library window.
 Re-setting one Blue could not clear the other three. The branch now keeps
-markers from other Rust Power Configs dormant during preview and launch, while
-validating every marker belonging to the selected config against its full
-window, command and source identity. The diagnostic for a genuinely changed
+markers from other Rust Power Configs visible at their source lines with a
+muted Blue style and a saved-config label. They are dormant during preview and
+launch; a click opens a menu rather than removing a dormant marker immediately.
+Every marker belonging to the selected config is still validated against its
+full window, command and source identity. The diagnostic for a genuinely changed
 selected config names the old and new Rust configurations. A stale Rust build
 has not been established as the cause.
 

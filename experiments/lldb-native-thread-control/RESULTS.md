@@ -44,8 +44,9 @@ Native library view, White Debug in A remains the intended launch. A Blue
 marker displayed a Rust Power Config mismatch after the caller selection
 changed. A later screenshot with the correct A/B Power Configs showed four
 old C Threads Blue markers still warning and blocking a C++ Threads launch;
-resetting one marker was insufficient. The branch now excludes markers saved
-for another Rust Power Config from current preview and launch preparation.
+resetting one marker was insufficient. The branch now leaves markers saved
+for another Rust Power Config visible but muted at their source lines, and
+excludes them from current launch preparation.
 Same-config command, window and source changes still fail validation. The
 brief Welcome-screen behavior was not reproducible; no cause or fix is claimed.
 

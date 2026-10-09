@@ -232,6 +232,11 @@ select {
 }
 .craidd-paused-line { background: rgba(245, 158, 11, 0.18); }
 .craidd-breakpoint-blue { background: #3b82f6; }
+.craidd-breakpoint-inactive-blue {
+  background: rgba(59, 130, 246, 0.4);
+  border: 1px dashed #93c5fd;
+  box-sizing: border-box;
+}
 .craidd-breakpoint-ghost-blue {
   background: rgba(59, 130, 246, 0.13);
   border: 1.5px solid rgba(96, 165, 250, 0.66);
