@@ -159,6 +159,14 @@ It records nothing, and there are no Record or Start buttons. The design
 doc's cross-window aggregation (a window column and filter) belongs to the
 Markers sub-tab when it is built.
 
+**Delivered (slice G):**
+
+- `RightPanel` adds the Debugger | Profiler tabs. The chosen tab is
+  remembered per browser profile.
+- `ProfilerPanel` shows the not-implemented notice, the session bar, the
+  empty timeline, and the four sub-tabs with their empty states.
+- View → Toggle Debugger & Profiler Panel replaces Toggle Debug Panel.
+
 ## 4. File Discovery context menu
 
 **Found:** folders offer New File, New Folder, Rename, Delete and Make This

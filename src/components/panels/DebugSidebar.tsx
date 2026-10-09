@@ -51,8 +51,7 @@ export default function DebugSidebar() {
   const removeBreakpoint = async (file: string, line: number) => {
     await useBreakpoints.getState().remove(file, line);
   };
-  return <div className="h-full min-h-0 w-full bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden text-xs">
-    <div className="h-9 px-3 flex items-center border-b border-zinc-800 shrink-0 font-semibold text-zinc-300 uppercase tracking-wide">Debug</div>
+  return <div className="min-h-0 flex-1 w-full flex flex-col overflow-hidden text-xs">
     <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden scroll-thin overscroll-contain" tabIndex={0} aria-label="Debugger details">
       <LdiSessionCard />
       {native && <section className="p-3 border-b border-blue-900 bg-blue-950/20">

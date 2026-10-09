@@ -141,7 +141,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
         { separator: true },
         { label: "Toggle Solution Sidebar", shortcut: key("toggleSidebar"), action: prefs.toggleSidebar },
         { label: "Toggle Panel", shortcut: key("togglePanel"), action: prefs.toggleBottomPanel },
-        { label: "Toggle Debug Panel", action: prefs.toggleRightPanel },
+        { label: "Toggle Debugger & Profiler Panel", action: prefs.toggleRightPanel },
         { separator: true },
         { label: "Toggle Word Wrap", shortcut: key("wordWrap"), action: prefs.toggleWordWrap },
         { separator: true },
