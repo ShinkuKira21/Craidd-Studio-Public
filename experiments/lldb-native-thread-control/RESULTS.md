@@ -42,8 +42,12 @@ of Gold's launch plan showed three solution windows, including two runnable
 Rust caller windows; Gold offered to start both. With one Rust caller and one
 Native library view, White Debug in A remains the intended launch. A Blue
 marker displayed a Rust Power Config mismatch after the caller selection
-changed, and resetting Blue restored it. The brief Welcome-screen behavior
-was not reproducible; no cause or fix is claimed.
+changed. A later screenshot with the correct A/B Power Configs showed four
+old C Threads Blue markers still warning and blocking a C++ Threads launch;
+resetting one marker was insufficient. The branch now excludes markers saved
+for another Rust Power Config from current preview and launch preparation.
+Same-config command, window and source changes still fail validation. The
+brief Welcome-screen behavior was not reproducible; no cause or fix is claimed.
 
 
 Environment: Linux x86-64, installed `/usr/bin/lldb-dap` 23.1.1. This is a

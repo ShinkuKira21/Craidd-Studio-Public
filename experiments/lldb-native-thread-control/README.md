@@ -129,6 +129,8 @@ for that owner after each stop, then switch workers and repeat. Record whether
 the stop appears in A or B. A child thread may lack the original Rust caller
 frame; the current Blue routing may therefore leave it in A. B has a linked
 native inspector but **no thread dropdown** for this shared LLDB session yet.
+Blue markers saved under another Rust Power Config are dormant when you
+switch configurations; set Blue on the call for the current feature selection.
 The [window-control friction note](../../docs/feats/ldi-debugging/linked-thread-ux-friction.md)
 records this boundary.
 

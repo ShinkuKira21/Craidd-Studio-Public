@@ -400,6 +400,12 @@ fn selection_matches(saved: &LdiSelection, current: &LdiSelection) -> bool {
         && saved.profile == current.profile
         && serde_json::to_value(&saved.spec).ok() == serde_json::to_value(&current.spec).ok()
 }
+fn active_rust_config(binding: &Binding, current: &LdiSelection) -> bool {
+    // Blue markers may be retained for several Rust Power Configs in one
+    // source file. Only this config participates in the current launch.
+    // validate() still checks the full identity for participating markers.
+    binding.origin.configuration == current.configuration
+}
 fn validate(app: &AppHandle, binding: &Binding) -> Result<(), String> {
     let a = super::linked_windows::rust_native_selection(app, &binding.origin.label, false)?;
     let b = super::linked_windows::rust_native_selection(app, &binding.partner.label, true)?;
@@ -626,6 +632,9 @@ pub(crate) fn blues(app: &AppHandle, label: &str) -> Vec<Blue> {
     points
         .into_iter()
         .filter(|b| label == b.blue.origin_label || label == b.blue.partner_label)
+        .filter(|binding| super::linked_windows::rust_native_selection(
+            app, &binding.origin.label, false,
+        ).is_ok_and(|current| active_rust_config(binding, &current)))
         .map(|binding| {
             let mut blue = binding.blue.clone();
             blue.warning = validate(app, &binding)
@@ -763,6 +772,8 @@ pub(crate) fn prepare_queries(app: &AppHandle, owner: &str) -> Result<Vec<Bindin
         .get(owner)
         .cloned()
         .unwrap_or_default();
+    let current = super::linked_windows::rust_native_selection(app, owner, false).ok();
+    bindings.retain(|binding| current.as_ref().is_some_and(|selection| active_rust_config(binding, selection)));
     for binding in &mut bindings {
         validate(app, binding)?;
         binding.native = definition(&binding.partner.spec.cwd, &binding.blue.entry_point)?;
@@ -1529,6 +1540,19 @@ mod tests {
         let mut changed = binding.partner.clone();
         changed.configuration = Some("Another Native Power Config with the same build slot".into());
         assert!(!selection_matches(&binding.partner, &changed));
+    }
+    #[test]
+    fn only_current_rust_power_config_activates_its_saved_blue() {
+        let binding = binding("rust", "native");
+        let mut current = binding.origin.clone();
+        current.configuration = Some("Rust + C++ Threads".into());
+        assert!(!active_rust_config(&binding, &current));
+
+        current.configuration = binding.origin.configuration.clone();
+        assert!(active_rust_config(&binding, &current));
+        current.spec.args.push("--different-features".into());
+        assert!(!selection_matches(&binding.origin, &current),
+            "A changed command under the same Power Config must still fail validation");
     }
     #[test]
     #[ignore = "requires Python, Cargo, CMake, compiler, LLDB-DAP and ptrace permission"]

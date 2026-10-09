@@ -24,13 +24,18 @@ with only one Rust caller and one Native library window, Gold has no second
 process to start. A transient return to the Welcome screen was reported but
 could not be reproduced, so its cause is not established.
 
-After switching Rust Power Configs, an existing Blue marker reported “Native
-pairing changed (Rust Power Config)”. That marker is intentionally bound to
-the original Cargo Debug selection: the C Threads and C++ Threads commands
-select different Cargo features and FFI exports. Re-setting Blue under the
-new selection restored the pairing. The diagnostic now names the old and new
-Rust configurations instead of implying that B's Native build selection
-changed. A stale Rust build has not been established as the cause.
+After switching Rust Power Configs, existing Blue markers reported “Native
+pairing changed (Rust Power Config)”. Each marker is intentionally bound to
+its original Cargo Debug selection: the C Threads and C++ Threads commands
+select different Cargo features and FFI exports. A subsequent screenshot
+showed four markers saved under **Rust + C Threads** still warning and
+blocking **Rust + C++ Threads**, even with the correct Native library window.
+Re-setting one Blue could not clear the other three. The branch now keeps
+markers from other Rust Power Configs dormant during preview and launch, while
+validating every marker belonging to the selected config against its full
+window, command and source identity. The diagnostic for a genuinely changed
+selected config names the old and new Rust configurations. A stale Rust build
+has not been established as the cause.
 
 ## Who owns the threads?
 
