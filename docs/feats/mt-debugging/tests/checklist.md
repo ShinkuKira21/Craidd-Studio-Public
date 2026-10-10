@@ -38,6 +38,25 @@ Copy this line for each run: `ID | date | commit | OS/harness | Craidd window(s)
 
 Start with [Multi-Thread Lab](../../../../workspaces/mt-lab/README.md), then the [installed LLDB experiment](../../../../experiments/lldb-native-thread-control/README.md). Use the [optional C# experiment](../../../../experiments/netcoredbg-thread-control/README.md) only when testing its user-supplied debugger. The focused [ordinary C# lab](../../../../workspaces/mt-debugging-lab/README.md) is useful for thread lifecycle checks.
 
+### Solution file for each test batch
+
+Open the `.cln` named here; the Power Config names in each test belong to that solution. For paired tests, open the **same `.cln` in two Craidd windows** and choose the stated A/B configs. Do not assemble A and B from different lab solutions.
+
+| Test IDs | Open this solution | Configurations/windows |
+| --- | --- | --- |
+| SET-01–03 | Each `.cln` used below | Record toolchain and A/B setup afresh for every batch; setup from one solution does not establish another. |
+| MT-01–08, GUI-01–03, CL-07–08 | [workspaces/mt-lab/mt-lab.cln](../../../../workspaces/mt-lab/mt-lab.cln) | MT: each C#/Rust/C++ Console Basic, Debug Burst, Debug Handoff config; GUI: matching language MT config. CL-07/08: A **C# GUI · MT + LDI**, B **Native · LDI**. |
+| NX-01–07 | [experiments/lldb-native-thread-control/thread-control.cln](../../../../experiments/lldb-native-thread-control/thread-control.cln) | **Rust Exclusive Step**, **C++ Exclusive Step**, then **C Exclusive Step**; one window each. |
+| CS-01–07 | [experiments/netcoredbg-thread-control/thread-control.cln](../../../../experiments/netcoredbg-thread-control/thread-control.cln) | **C# Exclusive Step**, one window. Test installed stock netcoredbg separately from the optional patched build. |
+| BP-01–07, BP-09–14, BP-16–20; RL-01–08 | [experiments/lldb-native-thread-control/thread-control.cln](../../../../experiments/lldb-native-thread-control/thread-control.cln) | A **Rust + C Lib**, **Rust + C++ Lib**, **Rust + C Threads**, or **Rust + C++ Threads** as specified; B **Native Libraries · Rust**. BP-06/07 need an added temporary fixture/config. |
+| BP-08 and C# half of BP-15; CL-01–06 | [experiments/netcoredbg-thread-control/thread-control.cln](../../../../experiments/netcoredbg-thread-control/thread-control.cln) | A **C# Threads + C Threads** or **C# Threads + C++ Threads**; B **Native Libraries · C# LDI**. BP-08 is an open parity/design case. |
+| Rust half of BP-15; EDGE-06 | [experiments/lldb-native-thread-control/thread-control.cln](../../../../experiments/lldb-native-thread-control/thread-control.cln) | Rust A and Native B as above; use the **Threads** variants for EDGE-06. |
+| EDGE-01 | [experiments/netcoredbg-thread-control/thread-control.cln](../../../../experiments/netcoredbg-thread-control/thread-control.cln) | A C# caller and B native reproduction have **independent** debugger sessions. Rust live Native shares one session, so it cannot establish this case. |
+| EDGE-05, EDGE-07 | Run **both paired solutions above**, in separate runs | Compare Rust live Native with C# LDI; record which A/B sessions and IDs each result belongs to. |
+| EDGE-02–04 | [workspaces/mt-lab/mt-lab.cln](../../../../workspaces/mt-lab/mt-lab.cln) | Basic/Burst/Handoff as the individual case requires; repeat in C#, Rust, and C++ where applicable. |
+
+Optional focused C# selector regression: [workspaces/mt-debugging-lab/mt-debugging-lab.cln](../../../../workspaces/mt-debugging-lab/mt-debugging-lab.cln), **Threads · C#**. It supplements MT-01–08; it does not replace the three-language `mt-lab` run.
+
 **First desktop pass:** run MT-01–04 once in each language, NX-01–04 in Rust/C/C++, BP-01–02, BP-09–12, and BP-16 with all four saved Blue markers, then RL-01–02 and CL-01–04 for both native languages. Capture failures before moving to the deeper lifecycle and stress cases. Items labelled **fixture needed** or **open** are explicit coverage gaps; they are not prerequisites for trying the existing labs.
 
 ## UX friction watchlist: what to look for
@@ -112,7 +131,7 @@ Use `experiments/netcoredbg-thread-control/thread-control.cln`. The patched Sams
 
 ## 4. Blue native breakpoints across Power Configs
 
-In two windows of the LLDB experiment, choose a Rust caller config in A and **Native Libraries · Rust** in B. Put Blue on all four source sites in `RustLinkedStep/src/main.rs`: `BLUE_RUST_C`, `BLUE_RUST_CPP`, `BLUE_RUST_C_THREADS`, and `BLUE_RUST_CPP_THREADS`. A Blue is a **source-site intent**. Its current eligibility must be recalculated from the selected build and native pairing, without discarding it.
+Open `experiments/lldb-native-thread-control/thread-control.cln` in two windows. Choose a Rust caller config in A and **Native Libraries · Rust** in B. Put Blue on all four source sites in `RustLinkedStep/src/main.rs`: `BLUE_RUST_C`, `BLUE_RUST_CPP`, `BLUE_RUST_C_THREADS`, and `BLUE_RUST_CPP_THREADS`. A Blue is a **source-site intent**. Its current eligibility must be recalculated from the selected build and native pairing, without discarding it. BP-08 and the C# half of BP-15 instead use the C# experiment `.cln` shown in the solution map.
 
 - [ ] **BP-01** Under **Rust + C Threads**, the compiled `BLUE_RUST_C_THREADS` site is normal Blue; `#[cfg]`-excluded sites remain visible with a Gold border and are skipped at launch. Switch to **Rust + C++ Threads**: the corresponding C++ site becomes normal, prior C site gains Gold border, and no stale “Native pairing changed” warning blocks the eligible site. Switch back and confirm the same saved markers recover.
 - [ ] **BP-02** Repeat the round trip through **Rust + C Lib** and **Rust + C++ Lib**. Inspect every marker tooltip and launch preview. A Gold-bordered, proven unreachable marker is not armed and does not prevent other eligible Blues from working.
@@ -169,7 +188,7 @@ Report counts of `[Y]`, `[N]`, and `[ ]` by section, then list: functional relea
 
 ## 5. Rust → C/C++: one live process and one LLDB session
 
-Use A = **Rust + C Lib** or **Rust + C++ Lib**, B = **Native Libraries · Rust**. Link the windows; set Blue on the matching Rust call and red on `BREAK_RUST` and optionally `BREAK_C_LIBRARY`/`BREAK_CPP_LIBRARY`. Repeat for both languages.
+Open `experiments/lldb-native-thread-control/thread-control.cln` in both windows. Use A = **Rust + C Lib** or **Rust + C++ Lib**, B = **Native Libraries · Rust**. Link the windows; set Blue on the matching Rust call and red on `BREAK_RUST` and optionally `BREAK_C_LIBRARY`/`BREAK_CPP_LIBRARY`. Repeat for both languages.
 
 - [ ] **RL-01** Gold Debug explains why it is disabled for a library-only pair. White Debug in A starts the one Rust process; Gold Stop appears while linked. B is an inspector/Stop view, not a second debuggee.
 - [ ] **RL-02** Step Rust worker 1, then 2 with ⇥. Compare `RustLinkedStep/runs/c/` or `runs/cpp/` worker counters and unselected instruction locations. A native source stop routes to B when qualified; A retains the owning LLDB thread identity.
@@ -194,12 +213,14 @@ Use `experiments/netcoredbg-thread-control/thread-control.cln` in two windows: A
 - [ ] **CL-05** Remove/restore a prepared Blue during a run, edit its condition, and add a new Blue site after Gold launch. The prepared site follows its documented current-run rules; an unprepared site asks for Gold Restart rather than silently binding. Red on the same line remains independent.
 - [ ] **CL-06** With a missing native library, wrong export, or failed B launch, capture the warning and verify A is not left held forever. Repeat with corrected configuration and a fresh token.
 
-Also use the broader `workspaces/mt-lab/mt-lab.cln` **C# GUI · MT + LDI** and **Native · LDI** pair:
+For CL-07/08, switch both windows to the broader `workspaces/mt-lab/mt-lab.cln` solution: A **C# GUI · MT + LDI**, B **Native · LDI**. Do not run these two cases in the netcoredbg experiment `.cln`:
 
 - [ ] **CL-07** Variant 4: A's one C# origin remains held while B reports seven native workers; selecting a B worker changes B's stack/locals only. After B completes, A's call returns `322`.
 - [ ] **CL-08** Variant 5: seven named C# callers reach Blue **sequentially**. For each, record its own origin and token, two B workers, and release before the next handoff. Expected final results are `207, 211, 215, 219, 223, 227, 231`. This does not test seven simultaneous reproductions.
 
 ## 7. Cross-session, lifecycle, and failure checks
+
+Use the solution map above for each EDGE ID. EDGE-01 uses the two independent C# LDI sessions; EDGE-05/07 need separate results for Rust live Native and C# LDI. EDGE-02–04 use `workspaces/mt-lab/mt-lab.cln`; EDGE-06 uses the LLDB experiment `.cln`.
 
 - [ ] **EDGE-01** With two solution windows and independent debug sessions, select threads with the same numeric DAP ID if one occurs. Stack, locals, commands, and events stay with their owning window/session generation.
 - [ ] **EDGE-02** Rapidly switch thread selection during a delayed `stackTrace`/`scopes`/`variables` response, then Continue or restart. An old response must not overwrite the new selection or display stale locals/source.
