@@ -4,7 +4,7 @@ Use this checklist on `feat/mt-debugging-cross-language-labs` before describing 
 
 ## Test record
 
-Copy this line for each run: `ID | date | commit | OS | Craidd window(s)/Power Config(s) | debugger path + version | selected session/thread ID | before → after counter files or source frames | Output error | PASS/FAIL/OPEN/BLOCKED | screenshot/log`. Use **OPEN** for a known missing capability or a test needing a new fixture. Use **FAIL** when a claimed or expected behavior was actually contradicted by the desktop run.
+Copy this line for each run: `ID | date | commit | OS | Craidd window(s)/Power Config(s) | debugger path + version | selected session/thread ID | before → after counter files or source frames | Output error | PASS/FAIL/OPEN/BLOCKED | UX: clear/confusing/blocked | screenshot/log`. Use **OPEN** for a known missing capability or a test needing a new fixture. Use **FAIL** when a claimed or expected behavior was actually contradicted by the desktop run. A technically passing case can still have a confusing UX result.
 
 - [ ] **SET-01** Record the branch, commit, .NET SDK, Cargo, C/C++ compiler, `netcoredbg`, and `lldb-dap` paths and versions. Record whether C# uses the installed debugger or the optional experiment build. A selected directory is not a debugger executable.
 - [ ] **SET-02** Build the selected project/configuration before judging a breakpoint. Check the current source line and generated binary correspond to the selected Cargo feature or C# conditional build. Clear or label old `runs/` output so counter comparisons refer to this run; do not delete unrelated data.
@@ -12,7 +12,7 @@ Copy this line for each run: `ID | date | commit | OS | Craidd window(s)/Power C
 
 Start with [Multi-Thread Lab](../../../../workspaces/mt-lab/README.md), then the [installed LLDB experiment](../../../../experiments/lldb-native-thread-control/README.md). Use the [optional C# experiment](../../../../experiments/netcoredbg-thread-control/README.md) only when testing its user-supplied debugger. The focused [ordinary C# lab](../../../../workspaces/mt-debugging-lab/README.md) is useful for thread lifecycle checks.
 
-**First desktop pass:** run MT-01–04 once in each language, NX-01–04 in Rust/C/C++, BP-01–02 and BP-09–10 with all four saved Blue markers, then RL-01–02 and CL-01–04 for both native languages. Capture failures before moving to the deeper lifecycle and stress cases. Items labelled **fixture needed** or **open** are explicit coverage gaps; they are not prerequisites for trying the existing labs.
+**First desktop pass:** run MT-01–04 once in each language, NX-01–04 in Rust/C/C++, BP-01–02, BP-09–12, and BP-16 with all four saved Blue markers, then RL-01–02 and CL-01–04 for both native languages. Capture failures before moving to the deeper lifecycle and stress cases. Items labelled **fixture needed** or **open** are explicit coverage gaps; they are not prerequisites for trying the existing labs.
 
 ## UX friction watchlist: what to look for
 
@@ -29,6 +29,9 @@ These are the specific symptoms already raised during testing. A check elsewhere
 | **Blue marker meaning is hard to read.** | Normal Blue means the call is eligible; Blue with Gold border means the selected build is *proven* unable to reach it; missing/ambiguous/stale evidence needs a separate pending explanation. Click/hover the marker and check that the reason names the actual source/build/partner issue, without erasing the marker or blocking another valid one. | BP-02–04, BP-08 |
 | **The Blue marker setup tooltip feels heavy.** | Screenshot: “Select a Rust Debug Power Config and a CMake Library Build Power Config.” Test it with neither config selected, only one selected, and both selected. It should name only the missing choice and tell you where to make it; it should disappear once the pair is valid. Candidate shorter copy: “Choose a Rust Debug config and a Native Library Build config.” If one is already chosen, ask only for the other. | BP-09 |
 | **The Debug panel repeats long “Unreachable under this Power Config” messages.** | Screenshot: three C calls each repeat “Rust + C++ Threads excludes this ... call.” Switch C Threads ↔ C++ Threads with four Blues saved. The active call should be easy to spot and the inactive ones should remain understandable without dominating the panel. Candidate per-marker copy: “Not built in Rust + C++ Threads.” Candidate panel summary: “3 Blue breakpoints inactive for this build,” with individual call details available on demand. Record whether the shorter text still explains *which call* and *which config* are involved. | BP-01–02, BP-10 |
+| **Solid Blue and Gold-bordered Blue look too similar or too bright.** | The four screenshots cycle through Rust+C/C++ Lib and Threads: one solid Blue is armed while three Gold-bordered Blues remain at saved call sites. At normal editor size, decide whether you can identify the armed one without hover and whether the Gold ring looks nearly white or overpowers the solid Blue. Check selected/paused line, hover, and any available editor theme. Keep a screenshot of each state; changing color alone must not erase the inactive meaning. | BP-11 |
+| **B closes while its Blue is still set in A.** | Close only the Native window, leaving Rust A and its source open. Does the Blue remain, turn pending/ghosted, or vanish? Can you discover a one-click or clear menu path to reopen/re-pair B, or does the old marker feel stuck? Compare this with a *ghost* Blue call site whose Gold border already offers to open B. Capture the exact hover/menu text and clicks needed. | BP-12–13, BP-16 |
+| **All windows close and the solution is reopened.** | Test closing all solution windows while Craidd stays running, then a full app quit/relaunch, as separate cases. Record whether the Blue intent, partner choice, red breakpoints, and window arrangement survive each. A remembered Blue that cannot recover its partner is friction; a Blue that disappears raises a persistence decision. Do not assume the two close paths behave the same. | BP-17–18 |
 | **⇥ Step Over kept entering C/C++ from Rust.** | Repeat with Blue/native red enabled, then disabled. A requested native breakpoint can stop the step in the library; the UI should reveal why it stopped there. There is no current one-shot “stay in Rust through this call” action. Record how often this interrupts the workflow as UX friction, even if the debugger is behaving correctly. | RL-03 |
 | **Where is the native child thread picker?** | In Rust→C/C++ live Native, A owns the one LLDB session and its dropdown includes native child IDs; B is a source/stack view and currently has no separate child picker. In C#→C/C++ LDI, B owns a separate reproduction session and should have its own picker. Record whether the current window labels make that difference apparent. | RL-05–07, CL-01–03 |
 | **Window state seemed lost or a Welcome window appeared.** | Launch, stop, close or refocus B, then restart the pair. Check whether the correct session remains controllable, whether Gold/White Stop targets the owner, and whether a stale window shows old frames. Capture exact window count and launch plan; the earlier transient Welcome report was not reproduced. | RL-04, CL-04, EDGE-05 |
@@ -95,8 +98,44 @@ In two windows of the LLDB experiment, choose a Rust caller config in A and **Na
 - [ ] **BP-08 — open C# parity** Repeat same-call/conditional-build/export-missing/pending cases for C#→C/C++ Power Configs. The Rust resolver has targeted code tests; full C# Gold-border reachability is still a design target, so record unsupported behavior as **OPEN**, not as already supported.
 - [ ] **BP-09 — setup copy** Trigger the Blue setup tooltip with zero, one, and both required Power Configs selected. Record the exact text and whether it identifies the missing action. A generic two-config instruction after one is already chosen is UX friction; an instruction after both are valid is a state bug.
 - [ ] **BP-10 — warning density** With four saved Blues, switch among all Rust+C/C++ Power Configs. Count repeated inactive-call lines in the Debug panel, compare them with the active call, and note whether you can find the next action at a glance. Keep the marker's detailed reason accessible even if the panel becomes a compact summary.
+- [ ] **BP-11 — marker contrast** Capture solid Blue, Gold-bordered Blue, pending Blue, ghost Blue with Gold border, and red in the same editor theme at normal size; repeat in other supported themes. Can you pick the currently armed Blue within five seconds without hover? Is the Gold border too bright or visually close to white? Check hover/focus/paused-line overlap and color-independent cues. Record which pair of states you confused and a screenshot; do not choose a new color before seeing the failure.
+- [ ] **BP-12 — close B while idle** With A open, four Blues saved, and no active Debug, close only B. Record each marker's appearance and tooltip, the Debug panel state, and whether the active Blue is silently left pointing at a dead window. Attempt White Debug and record the actual feedback; it must not arm a stale B binding or invent a native stop.
+- [ ] **BP-13 — recovery from A** After BP-12, left-click the saved Blue and inspect its menu, then inspect the ghost Blue at an unset call site. Can either open or show B, select a compatible Native Power Config, and set/rebind the Blue without deleting it first? Record the exact labels, number of clicks, whether a new B window duplicates an existing hidden one, and whether the same source-site intent survives.
+- [ ] **BP-14 — hidden versus closed** Hide/minimize B, then repeat BP-13. The UI should distinguish **show existing B** from **open a new B** and from **B was closed**. Try B with unsaved edits and an incompatible Power Config; report whether recovery protects edits and gives an actionable error.
+- [ ] **BP-15 — close B at a stop** In Rust live Native, close B while paused in native source; A must retain control of its original LLDB process, with no stale B frame or leaked private breakpoint. In C# LDI, close B during an active reproduction; A's held origin must be released or stopped once, with no stale handoff. Record which window remains usable and whether re-pairing requires a fresh launch.
+- [ ] **BP-16 — re-pair and switch** Reopen B from A's existing Blue, choose the compatible C or C++ library build, and restart Debug if required. Verify the original Blue arms and reaches the intended native entry. Repeat with a different B instance/config and check that the old window ID, export, and warning are not reused.
+- [ ] **BP-17 — close every solution window** With Blue and red markers set, close A and B but leave the Craidd process running if the app permits it; reopen the same `.cln`. Record exact Blue/red presence, partner identity, window layout, and whether a single clear action can restore B. If closing the final window quits the process, record that fact and use BP-18 instead.
+- [ ] **BP-18 — full IDE restart** Quit Craidd entirely, relaunch, and reopen the same `.cln`. Record whether Blue intent, its source site, partner Power Config, and red breakpoints return; do not confuse restored windows with restored Blue state. The current design describes Blue pairings as app/window-scoped rather than persisted, so treat this as a **public-release persistence decision** until a requirement and implementation are agreed, not as a passing restore test.
+- [ ] **BP-19 — explicit removal** Remove one Blue by its menu, then close B. Confirm only that site disappears; other Blues and reds remain. Compare deliberate removal with merely closing B. If both actions discard the same user intent, record the recovery cost and whether the UI warned before doing so.
+- [ ] **BP-20 — combined states** Close B while the selected Rust Power Config also excludes one saved Blue; then reopen B under a compatible config. Repeat with unsaved source edits and with two Blues sharing B. Record which reason the marker/menu shows first, whether the other reason remains discoverable, and whether fixing one condition restores only the eligible sites. A Gold border must not make a missing partner or unsaved source look like proven compile exclusion.
 
 For every BP case, record selected A/B configs, source site, marker color/border/tooltip, build artifact/export evidence, launch preview, actual stop, and thread/session identity. See [Blue breakpoint reachability](../../ldi-debugging/design-blue-breakpoint-reachability.md).
+
+### Blue breakpoint close/reopen decision worksheet
+
+Use the BP-11–20 screenshots and results before choosing a release behavior. Separate **source-site intent**, **current partner window**, and **armed binding in a running debugger**: closing a view, changing a build, and removing a breakpoint are different actions. For each option below, write what happens after B closes, after all windows close, and after a full IDE restart. Include Rust live Native and C# LDI if their results differ.
+
+**A. Remove Blue when B closes**
+
+- What becomes simpler or clearer? _Write after test._
+- What user work is lost (site, condition, partner choice), and how many steps restore it? _Write after test._
+- Is closing B an unambiguous request to delete this breakpoint? What warning or undo would be needed? _Write after test._
+- Result for Rust / C# / all-window reopen: _Write after test._
+
+**B. Keep Blue as an actionable marker that can reopen or re-pair B**
+
+- What should left-click, right-click, hover, and the Debug panel offer? Can A recover without first deleting Blue? _Write after test._
+- How is a closed B distinguished from a hidden B, an incompatible config, and a proven unreachable call? _Write after test._
+- What should persist across all-window close and full IDE restart: source site, condition, native config, exact window instance, or none? _Write after test._
+- How do we prevent duplicate B windows and stale debugger bindings? Result for Rust / C#: _Write after test._
+
+**C. Keep today's behavior and improve wording/discoverability**
+
+- Does “Use Native Power Config → Open …” already recover the Blue reliably, or only appear after a non-obvious click? _Write after test._
+- Which exact tooltip/menu/panel labels should change? Does clearer copy suffice without changing state behavior? _Write after test._
+- What remains confusing after a newcomer follows the revised wording once? Result for Rust / C#: _Write after test._
+
+**Decision after the UX pass:** Chosen behavior (including any combination of B and C): _Pending._ Evidence IDs/screenshots: _Pending._ Required implementation and migration of existing Blue state: _Pending._ Public release blocker or acceptable limitation: _Pending._
 
 ## 5. Rust → C/C++: one live process and one LLDB session
 
@@ -144,7 +183,7 @@ Also use the broader `workspaces/mt-lab/mt-lab.cln` **C# GUI · MT + LDI** and *
 
 - [ ] **Gate A — ordinary MT:** MT-01–08 pass per language; GUI checks pass on each installed GUI stack, or prerequisites are listed as blocked. No claim of isolated ordinary Step.
 - [ ] **Gate B — native ⇥:** NX-01–06 pass in Craidd for Rust, C, and C++ on a recorded qualified LLDB build. Document NX-07 and other limitations with actual evidence.
-- [ ] **Gate C — Blue reachability:** BP-01–05 pass through both Rust+native pairings with four saved Blues and a real two-window launch. BP-06/07 require new fixtures; BP-08 remains open until C# parity is built and tested.
+- [ ] **Gate C — Blue reachability and lifecycle:** BP-01–05 pass through both Rust+native pairings with four saved Blues and a real two-window launch. BP-11–20 have desktop results, and the close/reopen worksheet records the chosen release behavior. BP-06/07 require new fixtures; BP-08 remains open until C# parity is built and tested.
 - [ ] **Gate D — linked MT:** RL-01–08 and CL-01–08 have separate desktop results. Mark current Rust B native-child UI limitation and any C# recovery gaps openly.
 - [ ] **Gate E — release decision:** Re-run failures after fixes, attach evidence to each result, and state which debugger versions/platforms are qualified. An unchecked or blocked case is not a pass.
 
