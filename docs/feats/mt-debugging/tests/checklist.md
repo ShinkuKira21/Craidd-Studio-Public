@@ -1,10 +1,36 @@
 # MT debugging desktop test checklist
 
-Use this checklist on `feat/mt-debugging-cross-language-labs` before describing thread control as ready for release. A checked item means it was observed in **Craidd Studio**, with the selected configuration and debugger recorded. A passing build or direct DAP probe is useful supporting evidence, but does not check a desktop item.
+Use this checklist on `feat/mt-debugging-cross-language-labs` before describing thread control as ready for release. A marked result means the action was observed in **Craidd Studio**, with the selected configuration and debugger recorded. A passing build or direct DAP probe is useful supporting evidence, but does not establish a desktop result.
+
+## How an agent or contributor fills this checklist
+
+Keep the original test text and IDs. Replace each box only after attempting that exact case on the recorded revision:
+
+- `[Y]` = observed in the live Craidd UI and the stated expectation passed. Include the visible result and evidence. Source inspection, a direct DAP probe, or a previous screenshot alone cannot earn `Y`.
+- `[N]` = attempted in the live UI and the expectation failed, including a feature that the UI plainly lacks. Record the actual behavior, reproducible steps, and whether this is a functional failure or UX friction. Do not use `N` merely because a fixture or tool was unavailable.
+- `[ ]` = not run, blocked, inconclusive, or a design question still open. Add `-- Status: NOT RUN | BLOCKED | INCONCLUSIVE | OPEN` and the specific reason. Do not force a binary answer from missing evidence.
+
+Under **every** checkbox, use the requested `--` write-up style. Indent it under its checkbox and give at least these three short lines (add more when useful):
+
+```text
+- [Y] **BP-01** Original test instruction stays here.
+
+  -- Observed: Rust + C Threads armed the C call; three excluded calls retained Gold borders.
+  -- Evidence: screenshot/path, debugger Output, selected A/B configs, source site, before/after values if applicable.
+  -- Reasoning and UX: Why this supports Y; whether the state and next action were clear to a new user.
+```
+
+For `[N]`, name the first mismatch and exact reproduction. For `[ ]`, explain what prevented a verdict and what would make it testable. Link to a screenshot, video, Output log, or counter file rather than writing “worked” alone. If one checkbox covers C, C++, Rust, and C#, add a separate `-- Variant:` result for each; a successful language cannot stand in for another. Record an issue/PR link only if one actually exists. Leave the A/B/C decision worksheet pending until the relevant UI results are recorded.
+
+### UI-Test Harness preflight
+
+The repository does not document the external UI-Test Harness. Before marking any `Y` or `N`, record its name/version, Linux desktop session, Craidd commit/build, available debugger executable paths/versions, and whether it can: click/hover Monaco gutter markers, control and identify **multiple real windows**, inspect tooltips/menus, read Output and worker counter files, capture screenshots/video, stop a live debugger, and fully quit/relaunch Craidd. Mark cases **BLOCKED** when the harness cannot perform or observe their required action. Do not quietly substitute source review, synthetic DOM state, or a direct adapter probe for a paired desktop run.
+
+The harness can gather objective UI and file evidence. Contrast, discoverability, wording, and “would a newcomer know what to do?” also need human UX judgment from the captured screen and click path. Mark those items `[ ]` with `INCONCLUSIVE` when only machine evidence exists. New-fixture cases such as BP-06/07 stay `[ ]` until the fixture and its exact build are available.
 
 ## Test record
 
-Copy this line for each run: `ID | date | commit | OS | Craidd window(s)/Power Config(s) | debugger path + version | selected session/thread ID | before → after counter files or source frames | Output error | PASS/FAIL/OPEN/BLOCKED | UX: clear/confusing/blocked | screenshot/log`. Use **OPEN** for a known missing capability or a test needing a new fixture. Use **FAIL** when a claimed or expected behavior was actually contradicted by the desktop run. A technically passing case can still have a confusing UX result.
+Copy this line for each run: `ID | date | commit | OS/harness | Craidd window(s)/Power Config(s) | debugger path + version | selected session/thread ID | before → after counter files or source frames | Output error | Y/N/blank + status | UX: clear/confusing/blocked | screenshot/log`. Use **OPEN** for a known missing capability or a test needing a new fixture. Use **N** when a claimed or expected behavior was actually contradicted by the desktop run. A technically passing case can still have a confusing UX result.
 
 - [ ] **SET-01** Record the branch, commit, .NET SDK, Cargo, C/C++ compiler, `netcoredbg`, and `lldb-dap` paths and versions. Record whether C# uses the installed debugger or the optional experiment build. A selected directory is not a debugger executable.
 - [ ] **SET-02** Build the selected project/configuration before judging a breakpoint. Check the current source line and generated binary correspond to the selected Cargo feature or C# conditional build. Clear or label old `runs/` output so counter comparisons refer to this run; do not delete unrelated data.
@@ -136,6 +162,10 @@ Use the BP-11–20 screenshots and results before choosing a release behavior. S
 - What remains confusing after a newcomer follows the revised wording once? Result for Rust / C#: _Write after test._
 
 **Decision after the UX pass:** Chosen behavior (including any combination of B and C): _Pending._ Evidence IDs/screenshots: _Pending._ Required implementation and migration of existing Blue state: _Pending._ Public release blocker or acceptable limitation: _Pending._
+
+### Agent handoff after filling the boxes
+
+Report counts of `[Y]`, `[N]`, and `[ ]` by section, then list: functional release blockers; UX friction that still needs a human decision; unrun/blocked variants and what the harness lacked; the A/B/C close-window recommendation tied to BP evidence; and the smallest repeatable retest after each proposed fix. Do not call the feature public-release ready while a required gate is blank or a failure has no verified repair. Keep any code change or fixture addition separate from this observation pass so the results describe one known build.
 
 ## 5. Rust → C/C++: one live process and one LLDB session
 
