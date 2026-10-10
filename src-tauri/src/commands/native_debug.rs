@@ -9,7 +9,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::Path,
     sync::{
@@ -400,11 +400,201 @@ fn selection_matches(saved: &LdiSelection, current: &LdiSelection) -> bool {
         && saved.profile == current.profile
         && serde_json::to_value(&saved.spec).ok() == serde_json::to_value(&current.spec).ok()
 }
-fn active_rust_config(binding: &Binding, current: &LdiSelection) -> bool {
-    // Blue markers may be retained for several Rust Power Configs in one
-    // source file. Only this config participates in the current launch.
-    // validate() still checks the full identity for participating markers.
-    binding.origin.configuration == current.configuration
+#[derive(Debug, PartialEq)]
+enum ResolutionFailure {
+    Unreachable(String),
+    Pending(String),
+}
+
+fn cargo_features(origin: &LdiSelection, file: &str) -> Result<HashSet<String>, String> {
+    let root = Path::new(&origin.spec.cwd).canonicalize().map_err(|e| e.to_string())?;
+    let source = Path::new(file).canonicalize().map_err(|e| e.to_string())?;
+    let nearest = source.ancestors().find(|folder| folder.join("Cargo.toml").is_file());
+    if nearest != Some(root.as_path()) {
+        return Err("Cannot resolve Cargo features for this source from the selected Debug command".into());
+    }
+    let manifest: toml::Value = fs::read_to_string(root.join("Cargo.toml"))
+        .map_err(|e| e.to_string())?.parse().map_err(|e: toml::de::Error| e.to_string())?;
+    let features = manifest.get("features").and_then(toml::Value::as_table);
+    let args = &origin.spec.args;
+    let mut selected = HashSet::new();
+    let mut no_default = false;
+    let mut all = false;
+    let mut index = 0;
+    while index < args.len() && args[index] != "--" {
+        match args[index].as_str() {
+            "--no-default-features" => no_default = true,
+            "--all-features" => all = true,
+            "--features" | "-F" => {
+                index += 1;
+                let value = args.get(index).ok_or("Cargo --features needs a value")?;
+                selected.extend(value.split([',', ' ']).filter(|part| !part.is_empty()).map(str::to_owned));
+            }
+            arg if arg.starts_with("--features=") => {
+                selected.extend(arg[11..].split([',', ' ']).filter(|part| !part.is_empty()).map(str::to_owned));
+            }
+            arg if arg.starts_with("-F") && arg.len() > 2 => {
+                selected.extend(arg[2..].split([',', ' ']).filter(|part| !part.is_empty()).map(str::to_owned));
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if all {
+        selected.extend(features.into_iter().flat_map(|table| table.keys()).cloned());
+    } else if !no_default {
+        if let Some(defaults) = features.and_then(|table| table.get("default")).and_then(toml::Value::as_array) {
+            selected.insert("default".into());
+            selected.extend(defaults.iter().filter_map(toml::Value::as_str).map(str::to_owned));
+        }
+    }
+    let mut queue = selected.iter().cloned().collect::<VecDeque<_>>();
+    while let Some(name) = queue.pop_front() {
+        if let Some(members) = features.and_then(|table| table.get(&name)).and_then(toml::Value::as_array) {
+            for member in members.iter().filter_map(toml::Value::as_str) {
+                // Dependency features do not define a local cfg(feature = "...") name.
+                if !member.contains('/') && !member.starts_with("dep:") && selected.insert(member.into()) {
+                    queue.push_back(member.into());
+                }
+            }
+        }
+    }
+    Ok(selected)
+}
+
+fn cfg_parts(input: &str) -> Vec<&str> {
+    let mut parts = vec![];
+    let mut depth = 0;
+    let mut quoted = false;
+    let mut start = 0;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => { parts.push(input[start..index].trim()); start = index + 1; }
+            _ => {}
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
+}
+fn cfg_value(expr: &str, features: &HashSet<String>) -> Option<bool> {
+    let expr = expr.trim();
+    for name in ["all", "any", "not"] {
+        if let Some(inner) = expr.strip_prefix(name).and_then(|rest| rest.strip_prefix('('))
+            .and_then(|rest| rest.strip_suffix(')')) {
+            let values = cfg_parts(inner).into_iter().map(|part| cfg_value(part, features)).collect::<Vec<_>>();
+            return match name {
+                "all" if values.contains(&Some(false)) => Some(false),
+                "all" if values.iter().all(|v| *v == Some(true)) => Some(true),
+                "any" if values.contains(&Some(true)) => Some(true),
+                "any" if values.iter().all(|v| *v == Some(false)) => Some(false),
+                "not" if values.len() == 1 => values[0].map(|v| !v),
+                _ => None,
+            };
+        }
+    }
+    let (key, value) = expr.split_once('=')?;
+    if key.trim() != "feature" { return None; }
+    let name = value.trim().strip_prefix('"')?.strip_suffix('"')?;
+    Some(features.contains(name))
+}
+fn cfg_closing(source: &str, open: usize) -> Option<usize> {
+    let mut depth = 0;
+    let mut quoted = false;
+    for (offset, ch) in source[open..].char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => { depth -= 1; if depth == 0 { return Some(open + offset); } },
+            _ => {}
+        }
+    }
+    None
+}
+fn call_cfgs(source: &str, line: u32) -> Result<Vec<String>, String> {
+    let clean = super::ldi::without_comments(source)?;
+    if line == 0 { return Err("A Rust call-site line must be nonzero".into()); }
+    let mut call = 0;
+    for _ in 1..line {
+        call += clean[call..].find('\n').ok_or("Rust call-site line is outside the saved file")? + 1;
+    }
+    let mut conditions = vec![];
+    for attr in regex(r"(?m)^[ \t]*#\[\s*cfg\s*\(").find_iter(&clean) {
+        let open = attr.end() - 1;
+        let close = cfg_closing(&clean, open).ok_or("Cannot parse a Rust cfg attribute")?;
+        let after = clean[close + 1..].trim_start();
+        if !after.starts_with(']') { return Err("Cannot parse a Rust cfg attribute".into()); }
+        let body = close + 1 + (clean[close + 1..].len() - after.len()) + 1;
+        let next = clean[body..].find(['{', ';']).map(|index| body + index)
+            .ok_or("Cannot find the item guarded by a Rust cfg attribute")?;
+        let end = if clean.as_bytes()[next] == b'{' {
+            end_brace(&clean, next).ok_or("Cannot close a Rust cfg-guarded item")?
+        } else { next };
+        if !(body..=end).contains(&call) { continue; }
+        conditions.push(clean[open + 1..close].to_owned());
+    }
+    Ok(conditions)
+}
+fn cfg_reachability(conditions: &[String], features: &HashSet<String>) -> Result<bool, String> {
+    let mut unknown = false;
+    for condition in conditions {
+        match cfg_value(condition, features) {
+            Some(false) => return Ok(false),
+            None => unknown = true,
+            Some(true) => {}
+        }
+    }
+    if unknown { Err("This call has a cfg expression the Native Breakpoint resolver cannot evaluate".into()) }
+    else { Ok(true) }
+}
+#[cfg(test)]
+fn call_reachability(source: &str, line: u32, features: &HashSet<String>) -> Result<bool, String> {
+    cfg_reachability(&call_cfgs(source, line)?, features)
+}
+
+fn resolve_binding_for_selected(saved: &Binding, current: &LdiSelection,
+    partner: Result<LdiSelection, String>) -> Result<Binding, ResolutionFailure> {
+    if saved.origin.instance_id != current.instance_id || saved.origin.solution != current.solution {
+        return Err(ResolutionFailure::Pending("The Rust window or solution changed; choose the native partner again".into()));
+    }
+    let (_, calls) = read_calls(&saved.blue.file, current).map_err(ResolutionFailure::Pending)?;
+    if !calls.iter().any(|call| call.line == saved.blue.line && call.symbol == saved.blue.entry_point) {
+        return Err(ResolutionFailure::Pending("The Rust call site changed; save and recheck this Blue breakpoint".into()));
+    }
+    let source = fs::read_to_string(&saved.blue.file).map_err(|e| ResolutionFailure::Pending(e.to_string()))?;
+    let conditions = call_cfgs(&source, saved.blue.line).map_err(ResolutionFailure::Pending)?;
+    let features = if conditions.is_empty() { HashSet::new() }
+        else { cargo_features(current, &saved.blue.file).map_err(ResolutionFailure::Pending)? };
+    match cfg_reachability(&conditions, &features).map_err(ResolutionFailure::Pending)? {
+        false => return Err(ResolutionFailure::Unreachable(format!(
+            "{} excludes this {} call",
+            current.configuration.as_deref().unwrap_or("The selected Rust Power Config"), saved.blue.entry_point))),
+        true => {}
+    }
+    let partner = partner.map_err(ResolutionFailure::Pending)?;
+    if partner.instance_id != saved.partner.instance_id || partner.solution != current.solution {
+        return Err(ResolutionFailure::Pending("The Native window or solution changed; choose the native partner again".into()));
+    }
+    let native = definition(&partner.spec.cwd, &saved.blue.entry_point)
+        .map_err(ResolutionFailure::Unreachable)?;
+    let mut binding = saved.clone();
+    binding.origin = current.clone();
+    binding.partner = partner;
+    binding.native = native;
+    binding.artifact = None;
+    binding.blue.partner_window_id = binding.partner.window_id;
+    binding.blue.library = binding.partner.spec.label.clone();
+    binding.blue.native_points = matching_reds(&current.solution, &binding.native);
+    binding.blue.landing = if binding.blue.native_points.is_empty() { "automatic-entry" } else { "red" }.into();
+    binding.blue.warning = None;
+    binding.blue.unreachable = None;
+    Ok(binding)
+}
+fn resolve_binding(app: &AppHandle, saved: &Binding, current: &LdiSelection) -> Result<Binding, ResolutionFailure> {
+    resolve_binding_for_selected(saved, current,
+        super::linked_windows::rust_native_selection(app, &saved.partner.label, true))
 }
 fn validate(app: &AppHandle, binding: &Binding) -> Result<(), String> {
     let a = super::linked_windows::rust_native_selection(app, &binding.origin.label, false)?;
@@ -426,15 +616,8 @@ fn validate(app: &AppHandle, binding: &Binding) -> Result<(), String> {
         } else {
             "resolved command"
         };
-        if side == "Rust" && changed == "Power Config" {
-            return Err(format!(
-                "Rust Native Breakpoint was set for '{}' but this window now uses '{}'. Set Blue again for the selected Rust Power Config",
-                saved.configuration.as_deref().unwrap_or("an unnamed Power Config"),
-                current.configuration.as_deref().unwrap_or("an unnamed Power Config"),
-            ));
-        }
         return Err(format!(
-            "Native pairing changed ({side} {changed}). Set the Rust Native Breakpoint again for these Power Configs"
+            "Native binding changed during this Rust debug session ({side} {changed}). Restart Debug to resolve the selected Power Config"
         ));
     }
     Ok(())
@@ -532,7 +715,7 @@ pub(crate) fn set_blue(
         mode: "live-native".into(),
         locals: [String::new(), String::new()],
         warning: None,
-        inactive_config: None,
+        unreachable: None,
         native_points,
         pending_restart: super::debug::has_debug_session(app, owner)
             || super::build_order::has_active_order(app, owner),
@@ -635,50 +818,38 @@ pub(crate) fn blues(app: &AppHandle, label: &str) -> Vec<Blue> {
         .filter(|b| label == b.blue.origin_label || label == b.blue.partner_label)
         .map(|binding| {
             let mut blue = binding.blue.clone();
-            let current = super::linked_windows::rust_native_selection(app, &binding.origin.label, false).ok();
-            if !current.as_ref().is_some_and(|selection| active_rust_config(&binding, selection)) {
-                blue.inactive_config = Some(binding.origin.configuration.clone()
-                    .unwrap_or_else(|| "an unnamed Rust Power Config".into()));
-                blue.warning = None;
-                blue.native_points.clear();
-                blue.pending_restart = false;
-                return blue;
+            let resolved = super::linked_windows::rust_native_selection(app, &binding.origin.label, false)
+                .map_err(ResolutionFailure::Pending)
+                .and_then(|current| resolve_binding(app, &binding, &current));
+            match &resolved {
+                Ok(current) => blue = current.blue.clone(),
+                Err(ResolutionFailure::Unreachable(reason)) => {
+                    blue.unreachable = Some(reason.clone());
+                    blue.warning = None;
+                    blue.native_points.clear();
+                }
+                Err(ResolutionFailure::Pending(reason)) => {
+                    blue.unreachable = None;
+                    blue.warning = Some(reason.clone());
+                    blue.native_points.clear();
+                }
             }
-            blue.warning = validate(app, &binding)
-                .and_then(|_| read_calls(&blue.file, &binding.origin))
-                .and_then(|(_, calls)| {
-                    if calls
-                        .iter()
-                        .any(|c| c.line == blue.line && c.symbol == blue.entry_point)
-                    {
-                        Ok(())
-                    } else {
-                        Err("Saved Rust call changed; reset this Native Breakpoint".into())
-                    }
-                })
-                .err();
-            blue.native_points = matching_reds(&binding.origin.solution, &binding.native);
-            blue.landing = if blue.native_points.is_empty() {
-                "automatic-entry"
-            } else {
-                "red"
-            }
-            .into();
             blue.pending_restart = active.get(&blue.origin_label).map_or_else(
                 || {
                     super::debug::has_debug_session(app, &blue.origin_label)
                         || super::build_order::has_active_order(app, &blue.origin_label)
                 },
                 |live| {
-                    !live.iter().any(|b| {
+                    !resolved.as_ref().is_ok_and(|current| live.iter().any(|b| {
                         b.blue.file == blue.file
                             && b.blue.line == blue.line
                             && b.blue.entry_point == blue.entry_point
                             && b.blue.landing == blue.landing
                             && b.partner.label == blue.partner_label
-                            && selection_matches(&binding.partner, &b.partner)
+                            && selection_matches(&current.partner, &b.partner)
+                            && selection_matches(&current.origin, &b.origin)
                             && unchanged(b)
-                    })
+                    }))
                 },
             );
             blue
@@ -771,7 +942,7 @@ fn build_directory(selection: &LdiSelection) -> Result<std::path::PathBuf, Strin
 /// owns that build. Previously built projects need a fresh configure once.
 pub(crate) fn prepare_queries(app: &AppHandle, owner: &str) -> Result<Vec<Binding>, String> {
     let manager = app.state::<NativeDebugManager>();
-    let mut bindings = manager
+    let saved = manager
         .0
         .lock()
         .map_err(|e| e.to_string())?
@@ -779,8 +950,13 @@ pub(crate) fn prepare_queries(app: &AppHandle, owner: &str) -> Result<Vec<Bindin
         .get(owner)
         .cloned()
         .unwrap_or_default();
-    let current = super::linked_windows::rust_native_selection(app, owner, false).ok();
-    bindings.retain(|binding| current.as_ref().is_some_and(|selection| active_rust_config(binding, selection)));
+    if saved.is_empty() { return Ok(vec![]); }
+    let Ok(current) = super::linked_windows::rust_native_selection(app, owner, false) else {
+        return Ok(vec![]);
+    };
+    let mut bindings = saved.into_iter()
+        .filter_map(|binding| resolve_binding(app, &binding, &current).ok())
+        .collect::<Vec<_>>();
     for binding in &mut bindings {
         validate(app, binding)?;
         binding.native = definition(&binding.partner.spec.cwd, &binding.blue.entry_point)?;
@@ -1257,7 +1433,7 @@ mod tests {
                 mode: "live-native".into(),
                 locals: [String::new(), String::new()],
                 warning: None,
-                inactive_config: None,
+                unreachable: None,
                 native_points: vec![],
                 pending_restart: false,
             },
@@ -1550,17 +1726,78 @@ mod tests {
         assert!(!selection_matches(&binding.partner, &changed));
     }
     #[test]
-    fn only_current_rust_power_config_activates_its_saved_blue() {
-        let binding = binding("rust", "native");
-        let mut current = binding.origin.clone();
-        current.configuration = Some("Rust + C++ Threads".into());
-        assert!(!active_rust_config(&binding, &current));
+    fn rust_cfg_reachability_follows_features_not_saved_config_name() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control/RustLinkedStep");
+        let file = root.join("src/main.rs");
+        let source = fs::read_to_string(&file).unwrap();
+        let calls = calls(&source).unwrap();
+        assert_eq!(calls.len(), 4);
+        let mut current = binding("rust", "native").origin;
+        current.spec.cwd = root.to_string_lossy().into();
+        current.configuration = Some("Another name using the same call".into());
+        let cases = [
+            (vec![], "step_add_c"),
+            (vec!["--features", "cpp"], "step_add_cpp"),
+            (vec!["--features", "native_threads"], "step_pair_c"),
+            (vec!["--features", "cpp,native_threads"], "step_pair_cpp"),
+        ];
+        for (args, expected) in cases {
+            current.spec.args = std::iter::once("run".to_string())
+                .chain(args.into_iter().map(str::to_owned)).collect();
+            let enabled = cargo_features(&current, file.to_str().unwrap()).unwrap();
+            for call in &calls {
+                assert_eq!(call_reachability(&source, call.line, &enabled).unwrap(),
+                    call.symbol == expected, "{} under {expected}", call.symbol);
+            }
+        }
+        let shared = "unsafe extern \"C\" { fn demo_add(a:i32,b:i32)->i32; }\nfn first() { unsafe { demo_add(1,2) } }";
+        assert!(call_cfgs(shared, 2).unwrap().is_empty(),
+            "An unguarded shared call must not require a Cargo feature manifest");
+        for args in [vec![], vec!["--features", "cpp"]] {
+            current.spec.args = std::iter::once("run".to_string())
+                .chain(args.into_iter().map(str::to_owned)).collect();
+            let enabled = cargo_features(&current, file.to_str().unwrap()).unwrap();
+            assert!(call_reachability(shared, 2, &enabled).unwrap());
+        }
+        assert!(call_reachability("#[cfg(target_os = \"linux\")]\nfn call() { demo_add(1,2); }", 2,
+            &HashSet::new()).is_err(), "Unsupported conditions stay pending");
+    }
+    #[test]
+    fn saved_blue_rebinds_under_another_compatible_power_config() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let file = root.join("RustLinkedStep/src/main.rs");
+        let native_root = root.join("Native");
+        let source = fs::read_to_string(&file).unwrap();
+        let line = calls(&source).unwrap().into_iter()
+            .find(|call| call.symbol == "step_pair_cpp").unwrap().line;
+        let mut saved = binding("rust", "native");
+        saved.origin.solution = root.join("thread-control.cln").to_string_lossy().into();
+        saved.partner.solution = saved.origin.solution.clone();
+        saved.origin.spec.cwd = root.join("RustLinkedStep").to_string_lossy().into();
+        saved.partner.spec.cwd = native_root.to_string_lossy().into();
+        saved.blue.file = file.to_string_lossy().into();
+        saved.blue.line = line;
+        saved.blue.entry_point = "step_pair_cpp".into();
+        saved.native = definition(native_root.to_str().unwrap(), "step_pair_cpp").unwrap();
 
-        current.configuration = binding.origin.configuration.clone();
-        assert!(active_rust_config(&binding, &current));
-        current.spec.args.push("--different-features".into());
-        assert!(!selection_matches(&binding.origin, &current),
-            "A changed command under the same Power Config must still fail validation");
+        let mut current = saved.origin.clone();
+        current.configuration = Some("Another Rust config using the same call".into());
+        current.spec.args = ["run", "--features", "cpp,native_threads"].map(str::to_owned).to_vec();
+        let mut partner = saved.partner.clone();
+        partner.configuration = Some("Another Native build of the same export".into());
+        let rebound = resolve_binding_for_selected(&saved, &current, Ok(partner.clone())).unwrap();
+        assert_eq!(rebound.origin.configuration, current.configuration);
+        assert_eq!(rebound.partner.configuration, partner.configuration);
+        assert_eq!(rebound.blue.file, saved.blue.file);
+        assert_eq!(rebound.blue.line, saved.blue.line);
+
+        current.spec.args = ["run", "--features", "native_threads"].map(str::to_owned).to_vec();
+        assert!(matches!(resolve_binding_for_selected(&saved, &current, Ok(partner)),
+            Err(ResolutionFailure::Unreachable(_))));
+        assert_eq!(saved.origin.configuration.as_deref(), Some("rust"),
+            "Resolving another config must not rewrite the saved source intent");
     }
     #[test]
     #[ignore = "requires Python, Cargo, CMake, compiler, LLDB-DAP and ptrace permission"]

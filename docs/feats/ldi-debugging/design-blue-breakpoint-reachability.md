@@ -1,10 +1,13 @@
 # Blue Native Breakpoints across Power Configs
 
-**Status:** Proposed UX and binding contract, 9 October 2026. The current Rust
-implementation still saves a Blue marker against the Rust Power Config that
-created it; C# LDI also retains a selected native partner binding. This design
-supersedes that Rust marker behavior as the target. It is not an implementation
-or a desktop acceptance result.
+**Status:** Design with a bounded Rust implementation checkpoint, 10 October
+2026. Rust now re-resolves saved Blue calls across Power Configs using
+recognized Cargo feature `#[cfg]` conditions and the selected Native window.
+Automated tests cover the lab's four feature combinations. Broader Rust cfg,
+native target ambiguity, C# conditional reachability and two-window desktop
+acceptance remain open. C# LDI already re-resolves a saved managed Blue against
+the currently selected native partner, but this document's full status and
+Gold-border contract is not implemented for C#.
 
 **Scope:** Rust→C/C++ live Native debugging and C#→C/C++ LDI. Their execution
 providers remain separate: Rust uses its original LLDB session; C# LDI holds
@@ -140,5 +143,5 @@ not establish the two-window behavior.
 
 ---
 
-*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
+*Last updated: Phase 3.x, 10 October 2026. Author(s): ShinkuKira21.*
 *This document is a design.*

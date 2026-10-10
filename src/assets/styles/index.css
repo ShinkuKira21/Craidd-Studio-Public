@@ -232,10 +232,13 @@ select {
 }
 .craidd-paused-line { background: rgba(245, 158, 11, 0.18); }
 .craidd-breakpoint-blue { background: #3b82f6; }
-.craidd-breakpoint-inactive-blue {
-  background: rgba(59, 130, 246, 0.4);
-  border: 1px dashed #93c5fd;
+.craidd-breakpoint-unreachable {
+  border: 2px solid #fbbf24;
   box-sizing: border-box;
+}
+.craidd-breakpoint-pending {
+  outline: 2px dotted #93c5fd;
+  outline-offset: 1px;
 }
 .craidd-breakpoint-ghost-blue {
   background: rgba(59, 130, 246, 0.13);

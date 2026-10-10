@@ -68,7 +68,7 @@ function Toolbar() {
   const threadStepPending = Boolean(nativeStepTarget || exclusiveStepTarget);
   const showGold = linked.windows.length > 1 || linked.linked || Boolean(linked.activeAction);
   const liveOwner = !remote && blues.some((blue) => blue.mode === "live-native"
-    && blue.originLabel === linked.ownWindowLabel && !blue.warning)
+    && blue.originLabel === linked.ownWindowLabel && !blue.warning && !blue.unreachable)
     && ["building", "starting", "running", "paused"].includes(debugStatus);
   const liveLinked = Boolean(native) || liveOwner;
   const viewedStatus = native?.status ?? remote?.status ?? (["building", "starting", "running", "paused"].includes(debugStatus) ? debugStatus : status);

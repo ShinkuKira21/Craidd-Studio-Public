@@ -50,14 +50,14 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
       },
     };
   }), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => {
-    const inactive = blue.mode === "live-native" && Boolean(blue.inactiveConfig);
+    const unreachable = Boolean(blue.unreachable);
     const warning = [blue.warning, dirty ? "Unsaved edits: Blue still uses the last saved call site. Save to revalidate it." : null]
       .filter(Boolean).join("\n");
     return { range: new monaco.Range(liveBlueLines.get(blueKey(blue)) ?? blue.line, 1,
       liveBlueLines.get(blueKey(blue)) ?? blue.line, 1),
-      options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${inactive ? " craidd-breakpoint-inactive-blue" : warning || blue.pendingRestart ? " craidd-breakpoint-warning" : ""}`,
-        glyphMarginHoverMessage: { value: (inactive
-          ? `Saved Native Blue for ${blue.inactiveConfig} · ${blue.entryPoint}. Inactive under the selected Rust Power Config; it stays here and becomes active when you switch back. Left-click for options.`
+      options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${unreachable ? " craidd-breakpoint-unreachable" : warning || blue.pendingRestart ? " craidd-breakpoint-pending" : ""}`,
+        glyphMarginHoverMessage: { value: (unreachable
+          ? `Native Blue · ${blue.entryPoint}. Unreachable under the selected Power Config: ${blue.unreachable}. The breakpoint stays here; choose a compatible Power Config to arm it. Left-click for options.`
           : warning ? `⚠ ${warning}` : blue.mode === "live-native"
           ? `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}\nRust White Debug: inspect the real process in Native. No driver or separate Rust call-site hold.`
           : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}`)
@@ -285,7 +285,7 @@ export default function CodeView() {
             setBreakpointError(null);
             const { blue, red } = markersAtLine(file, line);
             const site = callSitesRef.current.find((item) => item.line === line);
-            if (blue?.inactiveConfig) setBreakpointMenu({ x: event.event.posx, y: event.event.posy, line: blue.line });
+            if (blue?.unreachable || blue?.warning) setBreakpointMenu({ x: event.event.posx, y: event.event.posy, line: blue.line });
             else if (blue) void removeLdiBlue(file, blue.line).catch((error) => setBreakpointError(String(error)));
             else if (!red && site?.partnerLabels.length === 1) {
               void setLdiBlue(file, line, site.partnerLabels[0]).catch((error) => setBreakpointError(String(error)));

@@ -30,20 +30,19 @@ its original Cargo Debug selection: the C Threads and C++ Threads commands
 select different Cargo features and FFI exports. A subsequent screenshot
 showed four markers saved under **Rust + C Threads** still warning and
 blocking **Rust + C++ Threads**, even with the correct Native library window.
-Re-setting one Blue could not clear the other three. The branch now keeps
-markers from other Rust Power Configs visible at their source lines with a
-muted Blue style and a saved-config label. They are dormant during preview and
-launch; a click opens a menu rather than removing a dormant marker immediately.
-Every marker belonging to the selected config is still validated against its
-full window, command and source identity. The diagnostic for a genuinely changed
-selected config names the old and new Rust configurations. A stale Rust build
-has not been established as the cause.
+Re-setting one Blue could not clear the other three. The first repair kept
+markers from other Rust Power Configs visible but dormant. That was an interim
+implementation: it failed when two Power Configs legitimately reached the
+same source call. The branch now re-resolves each saved Rust call against the
+selected Cargo feature set and Native window. The same Blue can arm under
+another compatible Power Config; a recognized `#[cfg]` exclusion leaves the
+Blue visible with a Gold border and skips it at launch. Unresolved source or
+pairing evidence is shown as pending. This is code and automated test evidence;
+the two-window switch and launch still need desktop acceptance. A stale Rust
+build has not been established as the original cause.
 
-That saved-config behavior is an **interim implementation**, not the intended
-UX. It fails when two Power Configs legitimately reach the same source call:
-the user would have to fight or duplicate Blue markers to test both. The
-target is one source-site Blue whose eligibility is re-resolved for the
-selected setup: normal Blue when compatible, Blue with a Gold border when
+The target remains one source-site Blue whose eligibility is re-resolved for
+the selected setup: normal Blue when compatible, Blue with a Gold border when
 proven unreachable, and a separate pending state when evidence is missing.
 See [Blue Native Breakpoints across Power Configs](design-blue-breakpoint-reachability.md).
 
@@ -98,5 +97,5 @@ evidence for its own surface, not for the paired desktop controls.
 
 ---
 
-*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
+*Last updated: Phase 3.x, 10 October 2026. Author(s): ShinkuKira21.*
 *This document is a record.*

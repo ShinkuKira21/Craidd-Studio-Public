@@ -37,7 +37,7 @@ pub struct Blue {
     pub(crate) mode: String,
     pub(crate) locals: [String; 2],
     pub(crate) warning: Option<String>,
-    pub(crate) inactive_config: Option<String>,
+    pub(crate) unreachable: Option<String>,
     pub(crate) native_points: Vec<Breakpoint>,
     pub(crate) pending_restart: bool,
 }
@@ -605,7 +605,7 @@ fn set_blue_for_label(app: &AppHandle, owner: &str, file: String, line: u32, par
         mode: if call.kind == CallKind::Utf8Bytes { "typed-interposer" } else { "scalar" }.into(),
         locals: call.locals.clone(),
         warning: landing.err(),
-        inactive_config: None,
+        unreachable: None,
         native_points: native_points(&call, &partner).unwrap_or_default(),
         pending_restart: false,
     };
@@ -2494,7 +2494,7 @@ mod tests {
                 partner_window_id: 2, entry_point: call.entry_point.clone(), library: call.library.clone(),
                 method: call.method.clone(), landing: "automatic-entry".into(),
                 mode: if call.kind == CallKind::Utf8Bytes { "typed-interposer" } else { "scalar" }.into(),
-                locals: call.locals.clone(), warning: None, inactive_config: None, native_points: vec![], pending_restart: false };
+                locals: call.locals.clone(), warning: None, unreachable: None, native_points: vec![], pending_restart: false };
             bindings.push(Binding { blue, call, native, automatic_entry: true,
                 selection: super::super::linked_windows::LdiSelection { label: partner.into(),
                     configuration: None, profile: None,
@@ -2526,7 +2526,7 @@ mod tests {
             origin_instance: "A1".into(), partner_instance: "B1".into(), partner_window_id: 2,
             entry_point: call.entry_point.clone(), library: call.library.clone(), method: call.method.clone(),
             landing: "automatic-entry".into(), mode: "scalar".into(), locals: call.locals.clone(),
-            warning: None, inactive_config: None, native_points: vec![], pending_restart: false };
+            warning: None, unreachable: None, native_points: vec![], pending_restart: false };
         let mut blues = vec![blue.clone()];
         let shifted = format!("\n{original}");
         assert!(reconcile_blue_file(&mut blues, file, &shifted).unwrap());
