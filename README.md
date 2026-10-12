@@ -101,6 +101,10 @@ the debugger adapter may resume other threads too.
 
 ### Step by Thread experiments
 
+Start with the [Step by Thread experiment guide](experiments/README.md) for
+the two debugger routes, exact `.cln` solutions, counter checks, linked-window
+ownership and recovery steps.
+
 The ⇥ control requests **one Step Over on the selected thread** from an
 all-thread stop at a source line. Ordinary ↷, ↓, ↑ and Continue keep their
 debugger-dependent scope. A waiting thread can still block progress, so Pause,
@@ -118,14 +122,15 @@ project route.
 experiment-specific build of [Samsung's netcoredbg](https://github.com/Samsung/netcoredbg)
 made from a pinned upstream revision and the tracked Craidd experiment patch.
 The ordinary installed `netcoredbg` did not provide this control in our tests.
-Craidd does not supply or maintain the patched debugger binary. If you choose
-to build it, select its executable in **File → User Preferences → Toolchain →
-C# → Debugger**. The [C# experiment guide](experiments/netcoredbg-thread-control/README.md)
-contains the example local path, build steps and recovery procedure. The C#
-desktop A/B counter check on the combined branch still needs a fresh run.
-Compatibility is limited to the tested patched revision; users own that
-optional build and its updates. A future standard debugger capability could
-remove the need for this patch.
+The source checkout includes a [patched Linux x64 experiment build](experiments/netcoredbg-thread-control/debugger/linux-x64/BUILD.md)
+beside the patch and fixtures. Craidd does not select it by default or put it
+in the app bundle. To test C# ⇥, select its `netcoredbg` executable in
+**File → User Preferences → Toolchain → C# → Debugger**. The
+[C# experiment guide](experiments/netcoredbg-thread-control/README.md)
+has the exact path, rebuild steps and recovery procedure. The C# managed
+desktop A/B counter check still needs a fresh run. This build is bounded to
+the pinned Samsung revision and Linux x64; a future standard debugger
+capability could remove the need for the patch.
 
 The [per-thread execution design](docs/feats/mt-debugging/design-per-thread-execution-control.md)
 records the control boundaries and remaining validation work.

@@ -83,10 +83,13 @@ usable. Executables run with the user's privileges, so a download is a trust
 decision, not a convenience click. [.NET tool trust guidance](https://learn.microsoft.com/en-us/dotnet/core/tools/global-tools).
 
 The first catalog should be narrow and qualified by real build/debug tests.
-Craidd does not publish or recommend a patched netcoredbg download. A user may
-select a debugger they obtained themselves; exclusive Step still requires the
-separate adapter capability and behavioral gates. CI conformance tests for an
-experimental build do not make it a supported managed download.
+Craidd does not offer a patched netcoredbg through a product download manager.
+The source checkout contains a pinned Linux x64 experiment build, selected
+explicitly through Toolchain preferences; it is not an app-bundled or managed
+download. A user may also select a debugger they obtained themselves.
+Exclusive Step still requires the separate adapter capability and behavioral
+gates. CI conformance tests for an experimental build do not make it a
+supported managed download.
 
 ## Environment boundary, including WSL2
 
@@ -121,5 +124,5 @@ thread stepping.
 
 ---
 
-*Last updated: Proposal, 8 October 2026. Author(s): ShinkuKira21.*
+*Last updated: Proposal, 13 October 2026. Author(s): ShinkuKira21.*
 *This document is a design.*

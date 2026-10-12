@@ -1,12 +1,15 @@
 # Installed LLDB native thread-control experiment
 
-This branch tests one source step on a selected Rust, C++, or C worker while
+This experiment tests one source step on a selected Rust, C++, or C worker while
 the installed LLDB-DAP owns the process. It does not include or download a
 debugger. The current gate is deliberately limited to LLDB-DAP 23.1.1 with
-LLDB Python scripting enabled, on Linux. This branch also tests the same
+LLDB Python scripting enabled, on Linux. It also tests the same
 owner session when Rust is linked to a C or C++ library view.
 Craidd's normal Step remains available on other debugger builds, with its
 existing session-wide behavior.
+
+The [Step by Thread overview](../README.md) compares this native route with
+the optional, tracked Linux x64 C# debugger route.
 
 `thread step-over -m this-thread` alone did **not** keep another worker at
 the same instruction. The experiment uses the same LLDB-DAP session's REPL
@@ -44,7 +47,8 @@ separate C project language or debug method. The compiled program is C.
 
 ## Try the Craidd desktop control
 
-1. Launch this branch of Craidd Studio and open `thread-control.cln`.
+1. Launch Craidd Studio from a build containing this experiment and open
+   `thread-control.cln`.
 2. Choose **Rust Exclusive Step** (then repeat with **C++ Exclusive Step**
    and **C Exclusive Step**). If required, select the system `lldb-dap` in
    Preferences → Toolchain. The debugger path must point to the executable,
@@ -106,9 +110,11 @@ window**, including when the current instruction is in the library.
 Without Blue, ordinary Rust Step Into and red library breakpoints still test
 the real FFI call in A. The direct DAP probes `rust-c` and `rust-cpp` each
 switched from worker 1 to worker 2 and kept the other counter and instruction
-address fixed during selected-thread steps. The linked Native view and ⇥
-together are new on this branch and need a Craidd desktop run. Record source
-line, selected thread, both counters, and any hold or release error.
+address fixed during selected-thread steps. The
+[desktop checklist](../../docs/feats/mt-debugging/tests/checklist.md) records
+focused linked-window and native-child checks; full lifecycle and owner/worker
+reversal remain open. Record source line, selected thread, both counters, and
+any hold or release error.
 
 ### Rust workers that create native child workers
 

@@ -3,15 +3,16 @@
 **Roadmap track:** Phase 3.x debugger investigation, after the ordinary thread
 selector baseline. See the [current roadmap](../../roadmaps/Roadmap-v0.0.4A.md).
 
-**Status:** Combined experiment on `feat/mt-debugging-control`, 9 October 2026.
-This branch joins the installed-LLDB native route from
-`feat/mt-debugging-rustc` with the optional patched-netcoredbg C# route from
-`dep/mt-debugging-thread-control`. No exclusive Step is accepted on `master`.
-Direct two-worker probes passed for Rust, C++, C and patched C#. The user
-reported working Craidd desktop thread control for Rust, C++, and C before
-the merge. The combined branch needs fresh desktop Rust and C# checks,
-including before/after worker counters. Broader lifecycle and wait cases
-remain unqualified. No release phase is assigned.
+**Status:** Bounded native and managed experiments, updated 13 October 2026.
+The implementation joins the installed-LLDB native route from
+`feat/mt-debugging-rustc` with the patched-netcoredbg C# route from
+`dep/mt-debugging-thread-control`. Direct two-worker probes passed for Rust,
+C++, C and patched C#. Focused Rust native-child desktop checks are recorded
+in the [MT checklist](tests/checklist.md). The source checkout now carries an
+opt-in patched Linux x64 netcoredbg build under `experiments/`; it is not the
+default debugger or part of the app bundle. A fresh Craidd desktop managed C#
+A/B counter check and broader lifecycle cases remain open. No general
+exclusive-Step release claim is assigned.
 
 **Companions:** [MT implementation contract](design-multi-thread-debugging-implementation.md),
 [thread debugging and LDI](../ldi-debugging/design-thread-debugging-and-ldi.md),
@@ -29,13 +30,15 @@ direction.
 
 Craidd keeps ordinary thread inspection and a focused Step target for C#,
 Rust, and C++. The tested stock netcoredbg and LLDB-DAP sessions resumed other
-workers on Step. **Exclusive Step is not a shipped Craidd capability**, and
-the patched netcoredbg experiment is not a supported debugger distribution.
+workers on Step. **Exclusive Step is not a generally supported Craidd
+capability**, and the patched netcoredbg experiment is not a default debugger.
 
 The 9 October combined branch retains both bounded experiments as optional
 controls. The ordinary installed C# debugger still uses ordinary Step;
 native Rust/C/C++ uses an installed LLDB-DAP build with scripting enabled.
-Neither route changes the default toolchain or bundles a debugger.
+Neither route changes the default toolchain or puts a debugger in the app
+bundle. The 13 October distribution update below adds one pinned experiment
+build to the source checkout.
 
 The combined branch also has a generic DAP `singleThread` request path. It is
 gated by the selected adapter's advertised capability, an independently qualified
@@ -50,12 +53,24 @@ No adapter has yet qualified this generic DAP path for a product claim.
 [DAP single-thread capability](https://microsoft.github.io/debug-adapter-protocol/changelog).
 
 There is no Samsung-specific toolbar path and no in-app prompt to download or
-build a patched debugger. An advanced user may select their own debugger
-binary, but that does not make its exclusive stepping a Craidd-supported
-configuration. CI may test stock and experimental builds for conformance;
-Craidd will not publish a patched netcoredbg binary or make its upstream
-acceptance a release gate. This leaves room for a future capable, installed
-adapter without promising that today's C# users can isolate threads.
+build a patched debugger. An advanced user may select the pinned experiment
+build or another debugger binary, but that does not make its exclusive
+stepping a generally supported configuration. CI may test stock and
+experimental builds for conformance; upstream patch acceptance is not a
+release gate. This leaves room for a future capable, installed adapter
+without promising that today's stock C# debugger can isolate threads.
+
+### Source-checkout distribution update, 13 October 2026
+
+At the user's direction, the source repository now tracks a patched Linux x64
+netcoredbg build based on Samsung release 3.2.0-1092, with its provenance and
+license notices in the [C# experiment](../../../experiments/netcoredbg-thread-control/debugger/linux-x64/BUILD.md).
+This supersedes the 8 October decision not to publish any patched binary.
+Selecting the experiment build remains explicit in Toolchain preferences;
+ordinary C# debugging and C# LDI keep the installed debugger by default.
+The tracked build passed the direct worker-switch, blocked-Pause and
+active-lease Stop probes. It still needs a Craidd desktop A/B counter result
+and broader recovery qualification before a general support claim.
 
 Users can already choose a debugger executable in **File → User Preferences →
 Toolchain**. The separate project-scoped toolchain-manager proposal may later
@@ -65,10 +80,11 @@ dependency.
 
 ### Optional C# path from `dep/mt-debugging-thread-control`
 
-The combined branch carries the earlier Craidd thread selector, an
-experimental ⇥ Step Over control, the C# lab solution, and a patch against a
-pinned Samsung netcoredbg revision. The debugger binary remains user-built,
-local and ignored by Git. Stock adapters keep ordinary Step; ⇥ appears only when
+The combined experiment carries the earlier Craidd thread selector, an
+experimental ⇥ Step Over control, the C# lab solution, a patch against a
+pinned Samsung netcoredbg revision, and the tracked Linux x64 experiment
+build. Other architectures and local rebuilds remain user-built. Stock
+adapters keep ordinary Step; ⇥ appears only when
 the active adapter advertises standard DAP
 `supportsSingleThreadExecutionRequests` or the experimental managed request.
 The standard path sends `next` with `singleThread: true`; the patched C# path
@@ -83,12 +99,11 @@ current frame had no source line. The desktop screenshots established selection
 and stepping on both workers, but did not capture before/after counters for
 each step. These are feasibility results, not product acceptance.
 
-Craidd will **not** require users to build or download the experimental C#
-debugger, replace their system debugger, or silently attach a second
-controller. The user may opt into their own build through Toolchain preferences;
-Craidd neither supplies nor maintains that binary. The experimental ⇥ control
-is absent from `master`. Otherwise Craidd keeps ordinary thread inspection and
-Step, without promising isolation.
+Craidd will **not** require users to select the experimental C# debugger,
+replace their system debugger, or silently attach a second controller. The
+user may opt into the tracked build or a local rebuild through Toolchain
+preferences. Otherwise Craidd keeps ordinary thread inspection and Step,
+without promising isolation.
 
 For native Rust, C++ and C, the earlier lead was the installed LLDB owner's
 `thread step-over --run-mode this-thread` behavior. The installed `lldb-dap`
@@ -197,12 +212,12 @@ mandatory.
 
 ## C# status: optional custom build; stock debugger remains ordinary
 
-Craidd's installed netcoredbg does not advertise single-thread execution; its
-current DAP Step resumes all workers. The combined branch exposes ⇥ only for
+Craidd's tested installed netcoredbg does not advertise single-thread execution;
+its DAP Step resumed all workers. The experiment exposes ⇥ only for
 an adapter that advertises standard DAP single-thread execution or the custom
 `craiddManagedExclusiveNext` request. The latter requires an experimental
-user-built netcoredbg from the [C# experiment](../../../experiments/netcoredbg-thread-control/README.md).
-Craidd does not distribute or maintain this build, and its use remains an
+patched netcoredbg from the [C# experiment](../../../experiments/netcoredbg-thread-control/README.md).
+The source checkout includes a pinned Linux x64 build, but its use remains an
 opt-in experiment rather than a stock C# capability.
 
 The CLR debugging API explains what the patch uses; it is **not** a validated
@@ -328,5 +343,5 @@ works. Do not update the roadmap to "shipped" before those gates are recorded.
 
 ---
 
-*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
+*Last updated: Phase 3.x, 13 October 2026. Author(s): ShinkuKira21.*
 *This document is a design.*

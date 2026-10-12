@@ -1,16 +1,19 @@
 # C# managed-thread control experiment
 
-This is an **experimental C# debugger extension and Craidd control** on
-`feat/mt-debugging-control` and its cross-language experiment branch, alongside
-the separate installed-LLDB native
-experiment. It is not a default C# debugger feature.
+This is an **experimental C# debugger extension and Craidd control** alongside
+the separate [installed-LLDB native experiment](../lldb-native-thread-control/README.md).
+It is not a default C# debugger feature. Start with the
+[Step by Thread overview](../README.md) to choose the right solution and
+debugger route.
 The tracked patch applies to upstream netcoredbg commit
-`9744e1f051866215611b8440c638042aa2aa2f72` (3.2.0-1). No debugger binary
-is committed or distributed with Craidd. The ordinary installed `netcoredbg`
-remains unchanged. In C#, an adapter that does not advertise a one-thread
+`9744e1f051866215611b8440c638042aa2aa2f72` (Samsung release 3.2.0-1092).
+The [patched Linux x64 build](debugger/linux-x64/BUILD.md) and its companion
+files are committed in this experiment. Craidd does not select it by default
+or bundle it with the app. The ordinary installed `netcoredbg` remains
+unchanged. In C#, an adapter that does not advertise a one-thread
 capability keeps ordinary Step and does not show the ⇥ control.
 
-Craidd also has an experimental standard DAP route on this branch: an adapter
+Craidd also has an experimental standard DAP route: an adapter
 that advertises `supportsSingleThreadExecutionRequests` receives `next` with
 `singleThread: true` for ⇥. This capability takes precedence over the custom
 request. Its behavior must be qualified with worker counters on each adapter
@@ -40,14 +43,14 @@ resume execution.
 
 The experiment has its own Craidd solution,
 [`thread-control.cln`](thread-control.cln), and C# worker program under
-[`CSharpExclusiveStep/`](CSharpExclusiveStep/). A locally built patched adapter
-can be placed in `.local-tools/netcoredbg-thread-control/`. That directory is
-ignored by Git; the binary is not present in a fresh checkout. Build it from
-the pinned source and tracked patch before choosing it in Toolchain preferences.
+[`CSharpExclusiveStep/`](CSharpExclusiveStep/). The checkout includes a
+patched executable at `debugger/linux-x64/netcoredbg`; choose it explicitly
+in Toolchain preferences. A local rebuild can instead be placed under the
+ignored `.local-tools/netcoredbg-thread-control/` directory.
 
-1. Run this branch with `npm run tauri dev` from the Craidd repository root.
+1. Run Craidd with `npm run tauri dev` from the repository root.
 2. In **File → User Preferences → Toolchain**, choose **C#** and set the
-   **Debugger** path to `experiments/netcoredbg-thread-control/.local-tools/netcoredbg-thread-control/netcoredbg`
+   **Debugger** path to `experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg`
    (select its absolute path in the file chooser) using
    **Choose Path…**. This is a user preference; choose **Automatic** again
    when finished with the experiment.
@@ -87,18 +90,21 @@ Send me the adapter path, requested/stopped worker, both counters, and any
 Debug Output errors after another manual run so I can maintain
 [`RESULTS.md`](RESULTS.md).
 
-## Rebuild only if the experiment adapter is missing
+## Build the optional adapter locally
 
-Use a Linux host with .NET 10 SDK, Clang, CMake, Ninja, and an existing
-netcoredbg installation that supplies `ManagedPart.dll` and `libdbgshim.so`.
-The commands below use `/opt/netcoredbg` for that installation and the ignored
+The tracked Linux x64 executable can be used directly. Rebuild if you want
+to reproduce or change this experiment. Use a Linux x64 host with .NET 10
+SDK, Clang, CMake and Ninja. The commands below use the tracked companion
+libraries in `debugger/linux-x64/` and the ignored
 `experiments/netcoredbg-thread-control/.local-tools/` directory for source and
-build output. Fetch upstream source, check out the
+build output. For another architecture, obtain the matching official Samsung
+release libraries instead. Fetch upstream source, check out the
 recorded netcoredbg commit, and apply
 [`netcoredbg-exclusive-step.patch`](netcoredbg-exclusive-step.patch).
 
 ```sh
 EXPERIMENT_TOOLS="$PWD/experiments/netcoredbg-thread-control/.local-tools"
+RELEASE_LIBS="$PWD/experiments/netcoredbg-thread-control/debugger/linux-x64"
 mkdir -p "$EXPERIMENT_TOOLS"
 git clone https://github.com/Samsung/netcoredbg.git "$EXPERIMENT_TOOLS/netcoredbg-source"
 git -C "$EXPERIMENT_TOOLS/netcoredbg-source" checkout 9744e1f051866215611b8440c638042aa2aa2f72
@@ -111,11 +117,11 @@ git -C "$EXPERIMENT_TOOLS/runtime-source" sparse-checkout set src/coreclr src/na
 cmake -S "$EXPERIMENT_TOOLS/netcoredbg-source" -B "$EXPERIMENT_TOOLS/netcoredbg-build" -G Ninja \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DCORECLR_DIR="$EXPERIMENT_TOOLS/runtime-source/src/coreclr" \
-  -DDOTNET_DIR=/usr/share/dotnet -DDBGSHIM_DIR=/opt/netcoredbg \
+  -DDOTNET_DIR=/usr/share/dotnet -DDBGSHIM_DIR="$RELEASE_LIBS" \
   -DBUILD_MANAGED=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build "$EXPERIMENT_TOOLS/netcoredbg-build" -j 8
 mkdir -p "$EXPERIMENT_TOOLS/netcoredbg-thread-control"
-cp "$EXPERIMENT_TOOLS/netcoredbg-build/src/netcoredbg" /opt/netcoredbg/ManagedPart.dll /opt/netcoredbg/libdbgshim.so "$EXPERIMENT_TOOLS/netcoredbg-thread-control/"
+cp "$EXPERIMENT_TOOLS/netcoredbg-build/src/netcoredbg" "$RELEASE_LIBS"/*.dll "$RELEASE_LIBS"/libdbgshim.so "$EXPERIMENT_TOOLS/netcoredbg-thread-control/"
 ```
 
 Run the commands from the **Craidd repository root**. The CoreCLR source
@@ -126,9 +132,9 @@ revision is pinned because `release/10.0` may advance.
 From the Craidd repository root:
 
 ```sh
-python3 experiments/netcoredbg-thread-control/tools/probe.py --debugger experiments/netcoredbg-thread-control/.local-tools/netcoredbg-thread-control/netcoredbg
-python3 experiments/netcoredbg-thread-control/tools/blocked_probe.py --debugger experiments/netcoredbg-thread-control/.local-tools/netcoredbg-thread-control/netcoredbg
-python3 experiments/netcoredbg-thread-control/tools/blocked_probe.py --debugger experiments/netcoredbg-thread-control/.local-tools/netcoredbg-thread-control/netcoredbg --stop-during-lease
+python3 experiments/netcoredbg-thread-control/tools/probe.py --debugger experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg
+python3 experiments/netcoredbg-thread-control/tools/blocked_probe.py --debugger experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg
+python3 experiments/netcoredbg-thread-control/tools/blocked_probe.py --debugger experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg --stop-during-lease
 ```
 
 Fresh probe traces are written under the ignored `.runs/probes/` directory in
@@ -152,12 +158,12 @@ source frame; it is not yet arbitrary per-thread control.
 These runs establish an **initial direct-adapter proof**. Earlier Craidd
 desktop reports showed both workers could be selected and stepped at source
 lines, but did not record before/after worker counters for each step. The
-combined `feat/mt-debugging-control` branch still needs a fresh desktop A/B
-counter run after its merge.
+A current Craidd desktop A/B counter run with the optional patched adapter
+is still required.
 Remaining gates:
 new/exiting threads, exception stops, detach from an attached process, adapter
-crash, repeated lock/GC pressure, a deliberate release failure, and a real
-combined-branch Craidd desktop interaction. Keep the control experimental
+crash, repeated lock/GC pressure, a deliberate release failure, and a current
+Craidd desktop A/B counter run. Keep the control experimental
 until those recovery paths and the desktop behavior have passed.
 
 ## C# calling a C or C++ library through linked LDI
@@ -203,10 +209,11 @@ A retains ordinary Step while B's native experiment remains available.
 
 If a Blue binding is rejected, record its warning and the selected Native
 Power Config. If ⇥ is absent in B, record the installed LLDB-DAP version;
-this branch qualifies the control only for 23.1.1 with scripting. Build,
-source-recognition, and uninstrumented C#/native execution checks have passed,
-but neither C# LDI variant has a
-Craidd desktop thread-step acceptance record yet. Do not infer that the
+this experiment qualifies the control only for 23.1.1 with scripting. Build,
+source-recognition, and uninstrumented C#/native execution checks have passed.
+The [desktop checklist](../../docs/feats/mt-debugging/tests/checklist.md)
+records focused B native-worker steps for C and C++ (CL-03); broader LDI
+recovery and lifecycle checks remain open. Do not infer that the
 patched netcoredbg controls B or that a native B step advances A.
 
 The [window-control friction note](../../docs/feats/ldi-debugging/linked-thread-ux-friction.md)

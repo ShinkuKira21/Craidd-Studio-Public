@@ -95,7 +95,7 @@ Embedded debug build of b7d173f, Arch GNOME Wayland, `tauri-driver` + `/usr/bin/
   -- Evidence: `get_application_windows` snapshots in the run log below.
   -- Reasoning and UX: B thread IDs (`driver #268071`) are recorded separately from A's (`managed linked 1 #267955`). File → Duplicate Window opened the C# B **hidden** because of the duplicate-window limit, and A switched to remote-viewing it. A newcomer would need to find **Show** in the window list.
 
-Start with [Multi-Thread Lab](../../../../workspaces/mt-lab/README.md), then the [installed LLDB experiment](../../../../experiments/lldb-native-thread-control/README.md). Use the [optional C# experiment](../../../../experiments/netcoredbg-thread-control/README.md) only when testing its user-supplied debugger. The focused [ordinary C# lab](../../../../workspaces/mt-debugging-lab/README.md) is useful for thread lifecycle checks.
+Start with [Multi-Thread Lab](../../../../workspaces/mt-lab/README.md), then the [installed LLDB experiment](../../../../experiments/lldb-native-thread-control/README.md). The [optional C# experiment](../../../../experiments/netcoredbg-thread-control/README.md) includes a pinned patched Linux x64 debugger in the source checkout; select it explicitly when testing managed ⇥. The focused [ordinary C# lab](../../../../workspaces/mt-debugging-lab/README.md) is useful for thread lifecycle checks.
 
 ### Solution file for each test batch
 
@@ -140,7 +140,7 @@ These are the specific symptoms already raised during testing. A check elsewhere
 | **Where is the native child thread picker?** | In Rust→C/C++ live Native, A owns the one LLDB session and B now exposes the same native child IDs and a selected-thread ⇥. Selecting in B also changes A's inspection target. In C#→C/C++ LDI, B owns a separate reproduction session. Record whether the window labels make that difference apparent. | RL-05–09, CL-01–03 |
 | **A shows “ran for” but B omits it.** | Open both Rust/native thread dropdowns at the same paused stop. B should show the same debugger-observed running duration for each matching ID, or the same “running time unavailable” state. The duration excludes reported pauses and is not CPU time or proof that a worker advanced. | RL-09, MT-08 |
 | **Window state seemed lost or a Welcome window appeared.** | Launch, stop, close or refocus B, then restart the pair. Check whether the correct session remains controllable, whether Gold/White Stop targets the owner, and whether a stale window shows old frames. Capture exact window count and launch plan; the earlier transient Welcome report was not reproduced. | RL-04, CL-04, EDGE-05 |
-| **C# ⇥ appears to require a custom debugger.** | Compare installed stock netcoredbg with the optional user-supplied experiment executable. Preferences should show the actual executable, and the control should only appear for an advertised, qualified capability. A must never imply that Craidd ships or requires the patched debugger for ordinary C# debugging or C# LDI. | CS-01–04, CL-01 |
+| **C# ⇥ appears to require a custom debugger.** | Compare installed stock netcoredbg with the optional tracked experiment executable. Preferences should show the actual executable, and the control should only appear for an advertised, qualified capability. A must never imply that Craidd selects or requires the patched debugger for ordinary C# debugging or C# LDI. | CS-01–04, CL-01 |
 
 If a row feels confusing but the technical check passes, record it as **UX friction** in the result instead of silently marking the experience complete. The [linked-window friction record](../../ldi-debugging/linked-thread-ux-friction.md) keeps the earlier observations and current ownership model.
 
@@ -297,7 +297,7 @@ Use `experiments/lldb-native-thread-control/thread-control.cln` with the install
 
 ## 3. C# capability boundary and optional experiment
 
-Use `experiments/netcoredbg-thread-control/thread-control.cln`. The patched Samsung netcoredbg binary is **user-supplied, ignored by Git, and not distributed by Craidd**. Record its actual executable path. Repeat the stock-debugger checks first.
+Use `experiments/netcoredbg-thread-control/thread-control.cln`. The pinned patched Samsung netcoredbg build at `experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg` is tracked for this opt-in experiment; it is **not the default debugger or part of the Craidd app bundle**. Record the actual executable path. Repeat the stock-debugger checks first.
 
 - [Y] **CS-01** With installed stock `netcoredbg`, **C# Exclusive Step** still exposes ordinary inspection and Step. ⇥ is absent/disabled unless the adapter truly advertises a qualified one-thread capability; Craidd must not imply isolation from a thread ID alone.
 
