@@ -1,0 +1,5 @@
+[project]
+name = "C# LDI Native Libraries"
+language = "cpp"
+root = "."
+kind = "library"

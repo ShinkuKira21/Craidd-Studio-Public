@@ -6,7 +6,7 @@ use std::os::unix::process::CommandExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -41,6 +41,10 @@ struct Session {
     thread_id: AtomicI64,
     ldi_token: Option<u64>,
     multi_thread: bool,
+    native_single_step: AtomicBool,
+    native_step_request: Mutex<Option<NativeStepRequest>>,
+    exclusive_next_mode: AtomicU8,
+    exclusive_step_in_flight: AtomicBool,
     threads: Mutex<ThreadBook>,
     inspection_requests: Mutex<HashMap<u64, SelectionRequest>>,
     transport_busy: AtomicBool,
@@ -54,6 +58,19 @@ struct Session {
     private_breakpoints: Mutex<Vec<Breakpoint>>,
     alive: Arc<AtomicBool>,
     reaped: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+enum NativeStepPhase { Holding, Selecting, Stepping, AwaitingStop, CheckingPlan, SelectingForDiscard, Discarding, Releasing, ReleaseFailed }
+
+struct NativeStepRequest {
+    sequence: u64,
+    thread_id: i64,
+    phase: NativeStepPhase,
+    plan_index: Option<u32>,
+    held_ids: Vec<i64>,
+    holds_known: bool,
+    failure: Option<String>,
 }
 
 #[derive(Clone)]
@@ -124,8 +141,12 @@ fn generic_thread_name(name: &str, id: i64) -> bool {
 
 impl ThreadBook {
     fn snapshot(&self, session: &Session) -> Value {
-        json!({"status":"threads", "sessionKey":format!("{}:{}", session.pgid, session.birth),
-            "stale":self.stale,
+        self.snapshot_for(format!("{}:{}", session.pgid, session.birth))
+    }
+
+    fn snapshot_for(&self, session_key: String) -> Value {
+        json!({"status":"threads", "sessionKey":session_key,
+            "stale":self.stale, "allThreadsStopped":self.all_stopped,
             "threads":self.rows.iter().map(|(id, row)| json!({"id":id, "name":row.name,
                 "state":row.state, "reason":row.reason, "incarnation":row.incarnation,
                 "observedMs":row.first_seen.elapsed().as_millis(),
@@ -342,6 +363,145 @@ fn request(session: &Session, command: &str, arguments: Value) -> Result<u64, St
     Ok(seq)
 }
 
+fn native_hold_expression(thread_id: i64) -> String {
+    format!("script p=lldb.debugger.GetSelectedTarget().GetProcess(); \
+        results=[(t.GetThreadID(),t.Suspend()) for t in p if t.GetThreadID()!={thread_id} and not t.IsSuspended()]; \
+        print('CRAIDD_HOLDS:'+','.join(str(i) for i,ok in results if ok)+';FAILED:'+','.join(str(i) for i,ok in results if not ok))")
+}
+
+fn native_release_expression(ids: &[i64]) -> String {
+    let ids = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    format!("script p=lldb.debugger.GetSelectedTarget().GetProcess(); \
+        results=[(i, not p.GetThreadByID(i).IsValid() or not p.GetThreadByID(i).IsSuspended() or p.GetThreadByID(i).Resume()) for i in [{ids}]]; \
+        print('CRAIDD_RELEASE:'+','.join(str(i) for i,ok in results if ok)+';FAILED:'+','.join(str(i) for i,ok in results if not ok))")
+}
+
+fn parse_native_ids(result: &str, prefix: &str) -> Result<(Vec<i64>, Vec<i64>), String> {
+    let content = result.trim().strip_prefix(prefix).ok_or("LLDB did not confirm native thread state")?;
+    let (complete, failed) = content.split_once(";FAILED:").ok_or("LLDB returned an incomplete native thread state")?;
+    let parse = |text: &str| -> Result<Vec<i64>, String> {
+        if text.is_empty() { return Ok(Vec::new()); }
+        text.split(',').map(|id| id.parse::<i64>().ok().filter(|id| *id > 0)
+            .ok_or_else(|| "LLDB returned an invalid native thread ID".into()))
+            .collect()
+    };
+    Ok((parse(complete)?, parse(failed)?))
+}
+
+fn native_eval_error(message: &Value) -> Option<String> {
+    if message["success"] != true {
+        return Some(message["message"].as_str().unwrap_or("LLDB rejected the command").to_string());
+    }
+    let result = message["body"]["result"].as_str().unwrap_or("").trim_start();
+    result.strip_prefix("error:").map(|text| text.trim().to_string())
+}
+
+fn secondary_native_stop(message: &Value, pending: Option<&NativeStepRequest>,
+    recent: Option<&(i64, Vec<i64>)>) -> bool {
+    if !matches!(message["body"]["reason"].as_str(), Some("step" | "breakpoint")) {
+        return false;
+    }
+    let Some(reported) = message["body"]["threadId"].as_i64() else { return false; };
+    if let Some(step) = pending {
+        return step.holds_known
+            && matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop
+                | NativeStepPhase::CheckingPlan | NativeStepPhase::SelectingForDiscard
+                | NativeStepPhase::Discarding | NativeStepPhase::Releasing)
+            && reported != step.thread_id && step.held_ids.contains(&reported);
+    }
+    // This LLDB-DAP build can report the previously selected, held thread as
+    // a second process-wide stop after the requested thread already stopped.
+    recent.is_some_and(|(target, held)| reported != *target && held.contains(&reported)
+        && message["body"]["allThreadsStopped"] == true)
+}
+
+fn native_receipt_output(body: &Value) -> bool {
+    body["category"] == "console" && body["output"].as_str().is_some_and(|output|
+        output.starts_with("CRAIDD_HOLDS:") || output.starts_with("CRAIDD_RELEASE:"))
+}
+
+fn request_native_eval(session: &Session, expression: String) -> Result<u64, String> {
+    request(session, "evaluate", json!({"expression":expression, "context":"repl"}))
+}
+
+fn begin_native_release(session: &Session, step: &mut NativeStepRequest) -> Result<(), String> {
+    let sequence = request_native_eval(session, native_release_expression(&step.held_ids))?;
+    step.sequence = sequence;
+    step.phase = NativeStepPhase::Releasing;
+    session.transport_busy.store(true, Ordering::Release);
+    Ok(())
+}
+
+fn begin_native_plan_check(session: &Session, step: &mut NativeStepRequest) -> Result<(), String> {
+    // A Pause can report a completed DAP stop while LLDB's one-thread step
+    // plan is still active. Releasing SBThread suspension alone then leaves
+    // the debuggee in a tracing stop after Continue.
+    let sequence = request_native_eval(session, format!("thread plan list -t {}", step.thread_id))?;
+    step.sequence = sequence;
+    step.phase = NativeStepPhase::CheckingPlan;
+    session.transport_busy.store(true, Ordering::Release);
+    Ok(())
+}
+
+fn active_native_plan_index(result: &str) -> Result<Option<u32>, String> {
+    let mut in_active = false;
+    let mut found_active = false;
+    let mut highest = None;
+    for line in result.lines() {
+        let trimmed = line.trim();
+        if trimmed == "Active plan stack:" {
+            in_active = true;
+            found_active = true;
+            continue;
+        }
+        if trimmed.ends_with("plan stack:") { in_active = false; }
+        if !in_active { continue; }
+        if let Some(rest) = trimmed.strip_prefix("Element ") {
+            if let Some((index, _)) = rest.split_once(':') {
+                if let Ok(index) = index.parse::<u32>() {
+                    if index > 0 { highest = Some(highest.map_or(index, |old: u32| old.max(index))); }
+                }
+            }
+        }
+    }
+    if !found_active { return Err("LLDB did not report the active thread plan; Stop this debugger session".into()); }
+    Ok(highest)
+}
+
+fn debug_frame_has_source(frame: &Value) -> bool {
+    let Some(path) = frame["source"]["path"].as_str() else { return false; };
+    let source = Path::new(path);
+    frame["line"].as_u64().is_some_and(|line| line > 0)
+        && source.is_file()
+        && matches!(source.extension().and_then(|extension| extension.to_str()),
+            Some("rs" | "c" | "C" | "h" | "H" | "hh" | "cc" | "cpp" | "cxx" | "c++"
+                | "hpp" | "hxx" | "h++" | "inl" | "ipp" | "tpp" | "cs" | "S" | "s"
+                | "asm" | "m" | "mm"))
+}
+
+fn annotate_debug_frames(mut frames: Value) -> Value {
+    if let Some(items) = frames.as_array_mut() {
+        for frame in items {
+            frame["craiddSourceAvailable"] = json!(debug_frame_has_source(frame));
+        }
+    }
+    frames
+}
+
+fn fail_native_step(session: &Session, step: &mut NativeStepRequest, reason: String) -> Result<(), String> {
+    step.failure = Some(reason);
+    if step.holds_known {
+        if let Err(error) = begin_native_release(session, step) {
+            step.phase = NativeStepPhase::ReleaseFailed;
+            return Err(error);
+        }
+        Ok(())
+    } else {
+        step.phase = NativeStepPhase::ReleaseFailed;
+        Err("Native hold state is unverified; Stop this debugger session before continuing".into())
+    }
+}
+
 fn request_selection(session: &Session, command: &str, arguments: Value,
     selection: SelectionRequest) -> Result<(), String> {
     // Hold the map lock until the request is sent and recorded; a fast adapter
@@ -425,6 +585,20 @@ fn split_cargo_debug_args(mut command_args: Vec<String>) -> (Vec<String>, Vec<St
         cargo_args.push(arg);
     }
     (cargo_args, program_args)
+}
+
+fn single_thread_capabilities(language: &str, multi_thread: bool, ldi_token: Option<u64>, body: &Value) -> (bool, u8) {
+    let native = matches!(language, "rust" | "cpp") && multi_thread
+        && (ldi_token.is_none() || language == "cpp")
+        && body["$__lldb_version"] == "lldb version 23.1.1";
+    let managed_origin = language == "csharp";
+    // The managed origin may use one-thread Step before Blue; with_control
+    // refuses this request while the original C# call is held by LDI.
+    let exclusive = if multi_thread && (ldi_token.is_none() || managed_origin)
+        && body["supportsSingleThreadExecutionRequests"] == true { 1 }
+        else if managed_origin && multi_thread && body["craiddManagedExclusiveNext"] == true { 2 }
+        else { 0 };
+    (native, exclusive)
 }
 
 fn split_debug_args(method: &str, mut command_args: Vec<String>) -> (Vec<String>, Vec<String>) {
@@ -986,6 +1160,10 @@ pub(crate) fn launch_prepared(
         super::ldi::configure_origin_launch_env(&app, &label, &executable, &mut env)?;
     }
     let adapter = adapter_path(language)?;
+    if language == "csharp" {
+        emit(&app, &label, json!({"status":"output",
+            "text":format!("C# debugger adapter: {}", adapter.display())}));
+    }
     let native_bindings = if language == "rust" {
         super::native_debug::prepare(&app, &label, &solution_path, &cwd, native_snapshot.unwrap_or_default())?
     } else { vec![] };
@@ -1023,7 +1201,13 @@ pub(crate) fn launch_prepared(
         writer,
         next_seq: AtomicU64::new(1), thread_id: AtomicI64::new(0),
         ldi_token,
-        multi_thread: !live_native,
+        // A Rust/native pairing still uses this one LLDB process. Keep its
+        // thread book available in the owning Rust window.
+        multi_thread: !live_native || language == "rust",
+        native_single_step: AtomicBool::new(false),
+        native_step_request: Mutex::new(None),
+        exclusive_next_mode: AtomicU8::new(0),
+        exclusive_step_in_flight: AtomicBool::new(false),
         threads: Mutex::new(ThreadBook::default()),
         inspection_requests: Mutex::new(HashMap::new()),
         transport_busy: AtomicBool::new(false), pgid, birth, stopping: AtomicBool::new(false),
@@ -1083,6 +1267,7 @@ pub(crate) fn launch_prepared(
         let mut terminated_emitted = false;
         let mut stop_generation = 0u64;
         let mut stop_reason = String::new();
+        let mut recent_native_stop: Option<(i64, Vec<i64>)> = None;
         let mut inspection_generations: HashMap<u64, u64> = HashMap::new();
         let mut inspection_selection_epochs: HashMap<u64, u64> = HashMap::new();
         let mut selected_variables: HashMap<u64, (usize, Vec<Value>)> = HashMap::new();
@@ -1122,6 +1307,40 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "stopped" => {
+                        let (secondary, requested_stop) = session.native_step_request.lock().ok()
+                            .map(|pending| {
+                                let step = pending.as_ref();
+                                let requested = step.filter(|step| step.holds_known
+                                    && matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop)
+                                    && matches!(message["body"]["reason"].as_str(), Some("step" | "breakpoint"))
+                                    && message["body"]["threadId"].as_i64() == Some(step.thread_id))
+                                    .map(|step| (step.thread_id, step.held_ids.clone()));
+                                (secondary_native_stop(&message, step, recent_native_stop.as_ref()), requested)
+                            }).unwrap_or((false, None));
+                        if secondary { continue; }
+                        if let Some(requested) = requested_stop { recent_native_stop = Some(requested); }
+                        let mut release_error = None;
+                        if let Ok(mut pending) = session.native_step_request.lock() {
+                            if let Some(mut step) = pending.take() {
+                                if matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop)
+                                    && (matches!(message["body"]["reason"].as_str(), Some("pause" | "exception"))
+                                        || (matches!(message["body"]["reason"].as_str(), Some("step" | "breakpoint"))
+                                            && message["body"]["threadId"].as_i64() == Some(step.thread_id))) {
+                                    if let Err(error) = begin_native_plan_check(&session, &mut step) {
+                                        step.phase = NativeStepPhase::ReleaseFailed;
+                                        release_error = Some(error);
+                                        session.transport_busy.store(false, Ordering::Release);
+                                    }
+                                }
+                                *pending = Some(step);
+                            }
+                        }
+                        if let Some(error) = release_error {
+                            emit_current_session(&app_reader, &label_reader, &session,
+                                json!({"status":"nativeReleaseFailed", "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                    "retryable":true, "text":error}));
+                        }
+                        session.exclusive_step_in_flight.store(false, Ordering::Release);
                         stop_generation += 1;
                         stop_reason = message["body"]["reason"].as_str().unwrap_or("").into();
                         super::native_debug::stopping(&app_reader, &label_reader, pgid, stop_generation);
@@ -1160,18 +1379,29 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "continued" => {
+                        if session.native_step_request.lock().is_ok_and(|pending| pending.is_none()) {
+                            recent_native_stop = None;
+                        }
+                        // This LLDB-DAP build reports allThreadsContinued=true and can
+                        // report the previously selected thread even when our LLDB
+                        // owner has suspended every other native thread.
+                        let held_step = session.native_step_request.lock().ok().and_then(|pending|
+                            pending.as_ref().filter(|step| step.holds_known
+                                && !step.held_ids.is_empty()
+                                && matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop))
+                                .map(|step| step.thread_id));
                         stop_generation += 1;
                         pending_native_stop = None;
                         hidden_driver_frames = None;
                         auto_resume_after_control = false;
                         ready_reader.store(true, Ordering::Release);
-                        if let Some(id) = message["body"]["threadId"].as_i64().filter(|id| *id > 0) {
+                        if let Some(id) = held_step.or_else(|| message["body"]["threadId"].as_i64().filter(|id| *id > 0)) {
                             session.thread_id.store(id, Ordering::Relaxed);
                         }
                         if session.multi_thread {
                             if let Ok(mut book) = session.threads.lock() {
-                                book.continued(message["body"]["threadId"].as_i64().unwrap_or(0),
-                                    message["body"]["allThreadsContinued"] != false);
+                                book.continued(held_step.or_else(|| message["body"]["threadId"].as_i64()).unwrap_or(0),
+                                    held_step.is_none() && message["body"]["allThreadsContinued"] != false);
                                 book.min_response_seq = session.next_seq.load(Ordering::Acquire);
                                 emit_current_session(&app_reader, &label_reader, &session, book.snapshot(&session));
                             }
@@ -1200,7 +1430,11 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "module" => super::native_debug::module(&app_reader, &label_reader, pgid, &message["body"]),
-                    "output" => emit(&app_reader, &label_reader, json!({"status":"output", "text":message["body"]["output"]})),
+                    "output" => {
+                        if !native_receipt_output(&message["body"]) {
+                            emit(&app_reader, &label_reader, json!({"status":"output", "text":message["body"]["output"]}));
+                        }
+                    }
                     "exited" => {
                         emit(&app_reader, &label_reader, json!({"status":"terminated"}));
                         terminated_emitted = true;
@@ -1223,6 +1457,161 @@ pub(crate) fn launch_prepared(
                 }
             } else if message["type"] == "response" {
                 let response_seq = message["request_seq"].as_u64().unwrap_or(0);
+                if message["command"] == "evaluate" {
+                    let mut handled = false;
+                    let mut outcome: Option<(&'static str, String)> = None;
+                    if let Ok(mut pending) = session.native_step_request.lock() {
+                        if pending.as_ref().is_some_and(|step| step.sequence == response_seq) {
+                            handled = true;
+                            let mut step = pending.take().expect("matching native step request");
+                            let result = message["body"]["result"].as_str().unwrap_or("");
+                            match step.phase {
+                                NativeStepPhase::Holding => {
+                                    let parsed = native_eval_error(&message).map(Err)
+                                        .unwrap_or_else(|| parse_native_ids(result, "CRAIDD_HOLDS:"));
+                                    match parsed {
+                                        Ok((held, failed)) => {
+                                            step.held_ids = held;
+                                            step.holds_known = true;
+                                            if !failed.is_empty() {
+                                                let reason = format!("LLDB could not suspend native thread(s) {failed:?}");
+                                                if let Err(error) = fail_native_step(&session, &mut step, reason) {
+                                                    outcome = Some(("nativeReleaseFailed", error));
+                                                }
+                                            } else {
+                                                match request_native_eval(&session, format!("thread select -t {}", step.thread_id)) {
+                                                    Ok(seq) => { step.sequence = seq; step.phase = NativeStepPhase::Selecting; }
+                                                    Err(error) => if let Err(release_error) = fail_native_step(&session, &mut step, error) {
+                                                        outcome = Some(("nativeReleaseFailed", release_error));
+                                                    },
+                                                }
+                                            }
+                                        }
+                                        Err(error) => {
+                                            let _ = fail_native_step(&session, &mut step, error);
+                                            outcome = Some(("nativeReleaseFailed", "LLDB did not confirm which threads it suspended; Stop the debugger session".into()));
+                                        }
+                                    }
+                                }
+                                NativeStepPhase::Selecting => {
+                                    let next = native_eval_error(&message).map(Err)
+                                        .unwrap_or_else(|| request_native_eval(&session, "thread step-over -m this-thread".into()));
+                                    match next {
+                                        Ok(seq) => { step.sequence = seq; step.phase = NativeStepPhase::Stepping; }
+                                        Err(error) => if let Err(release_error) = fail_native_step(&session, &mut step, error) {
+                                            outcome = Some(("nativeReleaseFailed", release_error));
+                                        },
+                                    }
+                                }
+                                NativeStepPhase::Stepping => {
+                                    if let Some(error) = native_eval_error(&message) {
+                                        if let Err(release_error) = fail_native_step(&session, &mut step, error) {
+                                            outcome = Some(("nativeReleaseFailed", release_error));
+                                        }
+                                    } else {
+                                        step.phase = NativeStepPhase::AwaitingStop;
+                                        session.transport_busy.store(false, Ordering::Release);
+                                    }
+                                }
+                                NativeStepPhase::CheckingPlan => {
+                                    let inspected = native_eval_error(&message).map(Err)
+                                        .unwrap_or_else(|| active_native_plan_index(result));
+                                    match inspected {
+                                        Ok(Some(index)) => {
+                                            match request_native_eval(&session, format!("thread select -t {}", step.thread_id)) {
+                                                Ok(seq) => {
+                                                    step.sequence = seq;
+                                                    step.phase = NativeStepPhase::SelectingForDiscard;
+                                                    // The plan index belongs to this selected thread. A normal
+                                                    // one-thread step has one user-visible plan above the base.
+                                                    step.plan_index = Some(index);
+                                                }
+                                                Err(error) => {
+                                                    step.phase = NativeStepPhase::ReleaseFailed;
+                                                    outcome = Some(("nativeReleaseFailed", error));
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => if let Err(error) = begin_native_release(&session, &mut step) {
+                                            step.phase = NativeStepPhase::ReleaseFailed;
+                                            outcome = Some(("nativeReleaseFailed", error));
+                                        },
+                                        Err(error) => {
+                                            step.phase = NativeStepPhase::ReleaseFailed;
+                                            outcome = Some(("nativeReleaseFailed", error));
+                                        }
+                                    }
+                                }
+                                NativeStepPhase::SelectingForDiscard => {
+                                    if let Some(error) = native_eval_error(&message) {
+                                        step.phase = NativeStepPhase::ReleaseFailed;
+                                        outcome = Some(("nativeReleaseFailed", error));
+                                    } else {
+                                        let index = step.plan_index.unwrap_or(1);
+                                        match request_native_eval(&session, format!("thread plan discard {index}")) {
+                                            Ok(seq) => { step.sequence = seq; step.phase = NativeStepPhase::Discarding; }
+                                            Err(error) => {
+                                                step.phase = NativeStepPhase::ReleaseFailed;
+                                                outcome = Some(("nativeReleaseFailed", error));
+                                            }
+                                        }
+                                    }
+                                }
+                                NativeStepPhase::Discarding => {
+                                    if let Some(error) = native_eval_error(&message) {
+                                        step.phase = NativeStepPhase::ReleaseFailed;
+                                        outcome = Some(("nativeReleaseFailed", error));
+                                    } else if let Err(error) = begin_native_release(&session, &mut step) {
+                                        step.phase = NativeStepPhase::ReleaseFailed;
+                                        outcome = Some(("nativeReleaseFailed", error));
+                                    }
+                                }
+                                NativeStepPhase::Releasing => {
+                                    let parsed = native_eval_error(&message).map(Err)
+                                        .unwrap_or_else(|| parse_native_ids(result, "CRAIDD_RELEASE:"));
+                                    match parsed {
+                                        Ok((_, failed)) if failed.is_empty() => {
+                                            session.transport_busy.store(false, Ordering::Release);
+                                            outcome = Some(match step.failure.take() {
+                                                Some(reason) => ("nativeStepRejected", reason),
+                                                None => ("nativeHoldsReleased", String::new()),
+                                            });
+                                            step.held_ids.clear();
+                                        }
+                                        Ok((_, failed)) => {
+                                            step.held_ids = failed;
+                                            step.phase = NativeStepPhase::ReleaseFailed;
+                                            session.transport_busy.store(false, Ordering::Release);
+                                            outcome = Some(("nativeReleaseFailed", "LLDB could not release every held thread; retry release or Stop".into()));
+                                        }
+                                        Err(error) => {
+                                            step.phase = NativeStepPhase::ReleaseFailed;
+                                            session.transport_busy.store(false, Ordering::Release);
+                                            outcome = Some(("nativeReleaseFailed", error));
+                                        }
+                                    }
+                                }
+                                NativeStepPhase::AwaitingStop | NativeStepPhase::ReleaseFailed => {}
+                            }
+                            if !matches!(outcome, Some(("nativeHoldsReleased" | "nativeStepRejected", _))) {
+                                if matches!(step.phase, NativeStepPhase::ReleaseFailed) {
+                                    session.transport_busy.store(false, Ordering::Release);
+                                }
+                                *pending = Some(step);
+                            }
+                        }
+                    }
+                    if handled {
+                        if let Some((status, text)) = outcome {
+                            let retryable = session.native_step_request.lock().ok()
+                                .and_then(|pending| pending.as_ref().map(|step| step.holds_known)).unwrap_or(false);
+                            emit_current_session(&app_reader, &label_reader, &session,
+                                json!({"status":status, "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                    "retryable":retryable, "text":text}));
+                        }
+                        continue;
+                    }
+                }
                 let selected = session.inspection_requests.lock().ok()
                     .and_then(|mut requests| requests.remove(&response_seq));
                 if let Some(selected) = selected {
@@ -1241,7 +1630,10 @@ pub(crate) fn launch_prepared(
                     }
                     match selected.stage {
                         "stackTrace" => {
-                            let frames = message["body"]["stackFrames"].as_array().cloned().unwrap_or_default();
+                            let frames = annotate_debug_frames(message["body"]["stackFrames"].clone())
+                                .as_array().cloned().unwrap_or_default();
+                            super::native_debug::selected_frames(&app_reader, &label_reader, pgid,
+                                stop_generation, selected.thread_id, &json!(frames));
                             emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
                                 "sessionKey":format!("{}:{}", session.pgid, session.birth),
                                 "selectionEpoch":selected.selection_epoch, "frames":frames, "variables":[]}));
@@ -1269,6 +1661,8 @@ pub(crate) fn launch_prepared(
                                 if let Some(items) = message["body"]["variables"].as_array() { values.extend(items.iter().cloned()); }
                                 *remaining = remaining.saturating_sub(1);
                                 if *remaining == 0 {
+                                    super::native_debug::selected_variables(&app_reader, &label_reader, pgid,
+                                        stop_generation, &json!(values));
                                     emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
                                         "sessionKey":format!("{}:{}", session.pgid, session.birth),
                                         "selectionEpoch":selected.selection_epoch, "variables":values}));
@@ -1290,8 +1684,23 @@ pub(crate) fn launch_prepared(
                     pending.remove(&response_seq);
                     continue;
                 }
-                if matches!(message["command"].as_str(), Some("continue" | "pause" | "next" | "stepIn" | "stepOut")) {
+                if matches!(message["command"].as_str(), Some("continue" | "pause" | "next" | "stepIn" | "stepOut" | "craiddExclusiveNext" | "craiddReleaseManagedHolds")) {
                     session.transport_busy.store(false, Ordering::Release);
+                    if matches!(message["command"].as_str(), Some("next" | "craiddExclusiveNext"))
+                        && message["success"] == false
+                        && session.exclusive_step_in_flight.swap(false, Ordering::AcqRel) {
+                        emit_current_session(&app_reader, &label_reader, &session,
+                            json!({"status":"exclusiveStepRejected",
+                                "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                "text":message["message"].as_str().unwrap_or("Adapter rejected the one-thread step")}));
+                    }
+                    if message["command"] == "craiddReleaseManagedHolds" {
+                        emit_current_session(&app_reader, &label_reader, &session,
+                            json!({"status":"exclusiveReleaseResult",
+                                "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                "success":message["success"] == true,
+                                "text":message["message"].as_str().unwrap_or("Managed hold release failed")}));
+                    }
                     if auto_resume_after_control {
                         auto_resume_after_control = false;
                         let result = if message["success"] == true {
@@ -1344,6 +1753,15 @@ pub(crate) fn launch_prepared(
                     .or_else(|| message["command"].as_str().map(String::from)).unwrap_or_default();
                 match command.as_str() {
                     "initialize" => {
+                        let (native_single_step, exclusive_next_mode) = single_thread_capabilities(
+                            &language, session.multi_thread, session.ldi_token, &message["body"]);
+                        session.native_single_step.store(native_single_step, Ordering::Release);
+                        session.exclusive_next_mode.store(exclusive_next_mode, Ordering::Release);
+                        emit_current_session(&app_reader, &label_reader, &session,
+                            json!({"status":"capabilities", "sessionKey":format!("{}:{}", session.pgid, session.birth),
+                                "language":language, "nativeSingleStep":native_single_step,
+                                "exclusiveNext":exclusive_next_mode != 0,
+                                "exclusiveMethod":match exclusive_next_mode { 1 => "dap", 2 => "experimentalManaged", _ => "none" }}));
                         initialized_reader.store(true, Ordering::Release);
                         if let Ok(seq) = request(&session, "launch", launch.clone()) { pending.insert(seq, "launch".into()); }
                     }
@@ -1404,10 +1822,11 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "stackTrace" => {
-                        let frames = message["body"]["stackFrames"].clone();
+                        let frames = annotate_debug_frames(message["body"]["stackFrames"].clone());
                         let first = frames.as_array().and_then(|items| items.first());
                         let (native_routed, skip_private_entry) = super::native_debug::on_frames(
-                            &app_reader, &label_reader, pgid, stop_generation, &frames, &stop_reason);
+                            &app_reader, &label_reader, pgid, stop_generation,
+                            session.thread_id.load(Ordering::Acquire), &frames, &stop_reason);
                         let reason = pending_native_stop.as_ref().filter(|(generation, _)| *generation == stop_generation)
                             .and_then(|(_, reason)| reason.as_str());
                         let finish_native = first.is_some_and(|frame| super::ldi::on_frame(
@@ -1432,8 +1851,10 @@ pub(crate) fn launch_prepared(
                         }
                         emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
                             "nativeRouted":native_routed,
-                            "file":first.and_then(|frame| frame["source"]["path"].as_str()),
-                            "line":first.and_then(|frame| frame["line"].as_u64())}));
+                            "file":first.filter(|frame| debug_frame_has_source(frame))
+                                .and_then(|frame| frame["source"]["path"].as_str()),
+                            "line":first.filter(|frame| debug_frame_has_source(frame))
+                                .and_then(|frame| frame["line"].as_u64())}));
                         if let Some(id) = first.and_then(|frame| frame["id"].as_i64()) {
                             if let Ok(seq) = request(&session, "scopes", json!({"frameId":id})) {
                                 pending.insert(seq, "scopes".into()); inspection_generations.insert(seq, stop_generation);
@@ -1543,18 +1964,211 @@ pub async fn debug_control(window: WebviewWindow, app: AppHandle, action: String
 }
 
 #[tauri::command]
+pub async fn debug_step_thread_only(
+    window: WebviewWindow, app: AppHandle, session_key: String, thread_id: i64, incarnation: u64,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || super::ldi::with_control(&app, &label, "stepThreadOnly", || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(&label).cloned().ok_or("No debug session is active")?;
+        if format!("{}:{}", session.pgid, session.birth) != session_key {
+            return Err("Debugger session changed; select the thread again".into());
+        }
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+            return Err("Debugger session is ending".into());
+        }
+        let mode = session.exclusive_next_mode.load(Ordering::Acquire);
+        if mode == 0 {
+            return Err("This debugger session does not support Step This Thread Only".into());
+        }
+        if session.native_step_request.lock().map_err(|error| error.to_string())?.is_some() {
+            return Err("Wait for the native one-thread Step to finish".into());
+        }
+        {
+            let book = session.threads.lock().map_err(|error| error.to_string())?;
+            if !book.all_stopped || book.stale {
+                return Err("Wait for a verified all-thread stop before stepping one thread".into());
+            }
+            if book.selected_id != Some(thread_id) || !book.rows.get(&thread_id).is_some_and(|row|
+                row.state == "paused" && row.incarnation == incarnation) {
+                return Err("Selected thread changed or exited; select it again".into());
+            }
+        }
+        if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err("A debugger control is already in progress".into());
+        }
+        session.exclusive_step_in_flight.store(true, Ordering::Release);
+        let result = if mode == 1 {
+            request(&session, "next", json!({"threadId":thread_id, "singleThread":true}))
+        } else {
+            request(&session, "craiddExclusiveNext", json!({"threadId":thread_id}))
+        };
+        if let Err(error) = result {
+            session.exclusive_step_in_flight.store(false, Ordering::Release);
+            session.transport_busy.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    })).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn debug_release_thread_holds(
+    window: WebviewWindow, app: AppHandle, session_key: String,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || super::ldi::with_control(&app, &label, "releaseThreadHolds", || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(&label).cloned().ok_or("No debug session is active")?;
+        if format!("{}:{}", session.pgid, session.birth) != session_key {
+            return Err("Debugger session changed".into());
+        }
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire)
+            || session.exclusive_next_mode.load(Ordering::Acquire) != 2 {
+            return Err("Managed hold release is unavailable for this session".into());
+        }
+        {
+            let book = session.threads.lock().map_err(|error| error.to_string())?;
+            if !book.all_stopped || book.stale {
+                return Err("Pause all threads before releasing managed holds".into());
+            }
+        }
+        if session.exclusive_step_in_flight.load(Ordering::Acquire) {
+            return Err("Pause the active one-thread step first".into());
+        }
+        if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err("A debugger control is already in progress".into());
+        }
+        if let Err(error) = request(&session, "craiddReleaseManagedHolds", json!({})) {
+            session.transport_busy.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    })).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn debug_select_thread(window: WebviewWindow, app: AppHandle, thread_id: i64) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || select_thread_by_label(&app, window.label(), thread_id))
         .await.map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+pub async fn debug_step_native_thread_only(
+    window: WebviewWindow, app: AppHandle, session_key: String, thread_id: i64, incarnation: u64,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || step_native_thread_only_by_label(&app, &label, &session_key, thread_id, incarnation))
+        .await.map_err(|error| error.to_string())?
+}
+
+pub(crate) fn step_native_thread_only_by_label(
+    app: &AppHandle, label: &str, session_key: &str, thread_id: i64, incarnation: u64,
+) -> Result<(), String> {
+    super::ldi::with_control(app, label, "stepNativeThreadOnly", || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(label).cloned().ok_or("No debug session is active")?;
+        if format!("{}:{}", session.pgid, session.birth) != session_key {
+            return Err("Debugger session changed; select the thread again".into());
+        }
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+            return Err("Debugger session is ending".into());
+        }
+        if !session.native_single_step.load(Ordering::Acquire) {
+            return Err("This LLDB-DAP session has not qualified for experimental one-thread Step".into());
+        }
+        if session.exclusive_step_in_flight.load(Ordering::Acquire) {
+            return Err("Wait for the current one-thread Step to finish".into());
+        }
+        {
+            let book = session.threads.lock().map_err(|error| error.to_string())?;
+            if !book.all_stopped || book.stale {
+                return Err("Wait for a verified all-thread stop before stepping one thread".into());
+            }
+            if book.selected_id != Some(thread_id) || !book.rows.get(&thread_id).is_some_and(|row|
+                row.state == "paused" && row.incarnation == incarnation) {
+                return Err("Selected thread changed or exited; select it again".into());
+            }
+        }
+        let mut pending = session.native_step_request.lock().map_err(|error| error.to_string())?;
+        if pending.is_some() || session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err("A debugger control is already in progress".into());
+        }
+        let result = request_native_eval(&session, native_hold_expression(thread_id));
+        match result {
+            Ok(sequence) => {
+                *pending = Some(NativeStepRequest { sequence, thread_id, phase: NativeStepPhase::Holding,
+                    plan_index: None, held_ids: Vec::new(), holds_known: false, failure: None });
+                Ok(())
+            }
+            Err(error) => { session.transport_busy.store(false, Ordering::Release); Err(error) }
+        }
+    })
+}
+
+#[tauri::command]
+pub async fn debug_release_native_holds(
+    window: WebviewWindow, app: AppHandle, session_key: String,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || super::ldi::with_control(&app, &label, "releaseNativeHolds", || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(&label).cloned().ok_or("No debug session is active")?;
+        if format!("{}:{}", session.pgid, session.birth) != session_key {
+            return Err("Debugger session changed".into());
+        }
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+            return Err("Debugger session is ending".into());
+        }
+        {
+            let book = session.threads.lock().map_err(|error| error.to_string())?;
+            if !book.all_stopped || book.stale {
+                return Err("Wait for a verified all-thread stop before releasing native holds".into());
+            }
+        }
+        let mut pending = session.native_step_request.lock().map_err(|error| error.to_string())?;
+        let step = pending.as_mut().ok_or("No Craidd native holds are pending")?;
+        if !step.holds_known {
+            return Err("Native hold state is unverified; Stop this debugger session".into());
+        }
+        if !matches!(step.phase, NativeStepPhase::AwaitingStop | NativeStepPhase::ReleaseFailed) {
+            return Err("Wait for the current native control request to finish".into());
+        }
+        if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Err("A debugger control is already in progress".into());
+        }
+        if matches!(step.phase, NativeStepPhase::AwaitingStop) {
+            step.failure = Some("One-thread Step was interrupted; native holds were released".into());
+        }
+        if let Err(error) = begin_native_plan_check(&session, step) {
+            step.phase = NativeStepPhase::ReleaseFailed;
+            session.transport_busy.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    })).await.map_err(|error| error.to_string())?
+}
+
 fn select_thread_by_label(app: &AppHandle, label: &str, thread_id: i64) -> Result<(), String> {
+    select_thread_by_label_expected(app, label, thread_id, None)
+}
+
+fn select_thread_by_label_expected(app: &AppHandle, label: &str, thread_id: i64, expected_pgid: Option<i32>) -> Result<(), String> {
     super::ldi::thread_inspection_ready(app, label)?;
     let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
         .get(label).cloned().ok_or("No debug session is active")?;
+    if expected_pgid.is_some_and(|pgid| pgid != session.pgid) {
+        return Err("The owning Rust debugger ended or restarted".into());
+    }
     if !session.multi_thread { return Err("Thread selection is unavailable for this linked debugging session".into()); }
     if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
         return Err("Debugger session ended".into());
+    }
+    if session.native_step_request.lock().map_err(|error| error.to_string())?.is_some() {
+        return Err("Wait for the one-thread Step to stop before selecting another thread".into());
+    }
+    if session.exclusive_step_in_flight.load(Ordering::Acquire) {
+        return Err("Finish or Pause the current one-thread Step before selecting another thread".into());
     }
     let selection = {
         let mut book = session.threads.lock().map_err(|error| error.to_string())?;
@@ -1571,6 +2185,28 @@ fn select_thread_by_label(app: &AppHandle, label: &str, thread_id: i64) -> Resul
         "sessionKey":format!("{}:{}", session.pgid, session.birth)}));
     request_selection(&session, "stackTrace",
         json!({"threadId":thread_id, "startFrame":0, "levels":20}), selection)
+}
+
+pub(crate) fn live_native_threads(app: &AppHandle, owner: &str, pgid: i32) -> Result<Value, String> {
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(owner).filter(|session| session.pgid == pgid).cloned()
+        .ok_or("The owning Rust debugger ended or restarted")?;
+    if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+        return Err("The owning Rust debugger is ending".into());
+    }
+    if !session.multi_thread { return Err("This Rust debugger has no thread list".into()); }
+    let _ = request(&session, "threads", json!({}));
+    let book = session.threads.lock().map_err(|error| error.to_string())?;
+    let mut snapshot = book.snapshot(&session);
+    snapshot["selectedThreadId"] = json!(book.selected_id);
+    drop(book);
+    snapshot["nativeSingleStep"] = json!(session.native_single_step.load(Ordering::Acquire));
+    snapshot["stepPending"] = json!(session.native_step_request.lock().map_err(|error| error.to_string())?.is_some());
+    Ok(snapshot)
+}
+
+pub(crate) fn select_live_native_thread(app: &AppHandle, owner: &str, pgid: i32, thread_id: i64) -> Result<(), String> {
+    select_thread_by_label_expected(app, owner, thread_id, Some(pgid))
 }
 
 #[tauri::command]
@@ -1649,7 +2285,12 @@ pub(crate) fn control_live_native(app: &AppHandle, label: &str, pgid: i32, actio
         let _ = request(&session, command, json!({"terminateDebuggee":true}));
         return Ok(());
     }
-    let thread = session.thread_id.load(Ordering::Acquire);
+    if !matches!(action, "pause") && session.native_step_request.lock().map_err(|e| e.to_string())?.is_some() {
+        return Err("Wait for the one-thread Step to stop, or Pause it".into());
+    }
+    let thread = if action == "pause" { session.thread_id.load(Ordering::Acquire) }
+        else { session.threads.lock().map_err(|e| e.to_string())?.selected_id
+            .ok_or("Select a paused thread in the shared Rust debugger first")? };
     if thread <= 0 { return Err("The Rust debugger thread is not ready".into()); }
     if session.transport_busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
         return Err("A debugger control is already in progress".into());
@@ -1733,6 +2374,13 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
     };
     drop(active);
     if action != "stop" && session.stopping.load(Ordering::Acquire) { return Err("Debugger is stopping".into()); }
+    if !matches!(action, "pause" | "stop")
+        && session.native_step_request.lock().map_err(|error| error.to_string())?.is_some() {
+        return Err("Wait for the one-thread Step to stop, or Pause it".into());
+    }
+    if !matches!(action, "pause" | "stop") && session.exclusive_step_in_flight.load(Ordering::Acquire) {
+        return Err("Wait for the one-thread Step to stop, or Pause it".into());
+    }
     let command = match action {
         "continue" => "continue", "pause" => "pause", "stepOver" => "next",
         "stepInto" => "stepIn", "stepOut" => "stepOut",
@@ -1750,12 +2398,16 @@ fn control_debug(label: &str, state: &DebugManager, builds: &DebugBuildManager, 
             .ok_or("No paused thread is available for this debugger control")?
     } else { session.thread_id.load(Ordering::Relaxed) };
     if thread_id <= 0 { return Err("Debugger thread is not ready yet; try again after it starts".into()); }
-    if session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
-        return Err("A debugger step or pause command is already in progress".into());
+    // Pause is the recovery path when a one-thread step waits on a held
+    // worker. Let it pass an in-flight step; the DAP writer serializes the
+    // packets and the stop handler releases the recorded holds.
+    let owns_busy = session.transport_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok();
+    if !owns_busy && action != "pause" {
+        return Err("A debugger step command is already in progress".into());
     }
     match request(&session, command, json!({"threadId":thread_id})) {
         Ok(_) => Ok(()),
-        Err(error) => { session.transport_busy.store(false, Ordering::Release); Err(error) }
+        Err(error) => { if owns_busy { session.transport_busy.store(false, Ordering::Release); } Err(error) }
     }
 }
 
@@ -1815,6 +2467,18 @@ fn cancel_debug_session_only(app: &AppHandle, label: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_sessions_expose_only_their_own_qualified_thread_step() {
+        let lldb = json!({"$__lldb_version":"lldb version 23.1.1"});
+        assert_eq!(single_thread_capabilities("rust", true, None, &lldb), (true, 0));
+        assert_eq!(single_thread_capabilities("cpp", true, Some(1), &lldb), (true, 0));
+        let managed = json!({"craiddManagedExclusiveNext":true});
+        assert_eq!(single_thread_capabilities("csharp", true, Some(1), &managed), (false, 2));
+        assert_eq!(single_thread_capabilities("csharp", true, Some(1), &json!({})), (false, 0));
+        assert_eq!(single_thread_capabilities("cpp", true, Some(1),
+            &json!({"supportsSingleThreadExecutionRequests":true})), (false, 0));
+    }
 
     #[test]
     fn thread_book_preserves_scope_and_rejects_expired_inspection() {
@@ -1894,6 +2558,19 @@ mod tests {
         assert!(book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]));
         assert!(!book.replace_membership(&[json!({"id":1,"name":"mt-rust-console"})]));
         assert!(!book.rows.contains_key(&3), "a second omission retires the missing worker");
+    }
+
+    #[test]
+    fn native_thread_snapshot_reports_all_thread_stop_scope() {
+        let mut book = ThreadBook::default();
+        book.started(1);
+        book.started(2);
+        book.stopped(1, "breakpoint", true);
+        let paused = book.snapshot_for("session".into());
+        assert_eq!(paused["allThreadsStopped"], true);
+        assert_eq!(paused["threads"][1]["state"], "paused");
+        book.continued(1, true);
+        assert_eq!(book.snapshot_for("session".into())["allThreadsStopped"], false);
     }
 
     #[test]
@@ -2045,5 +2722,67 @@ mod tests {
         let value = read_message(&mut reader).unwrap().unwrap();
         assert_eq!(value["body"]["output"], "λ");
         assert!(read_message(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn native_hold_receipt_preserves_failed_threads_for_recovery() {
+        assert_eq!(parse_native_ids("CRAIDD_HOLDS:101,202;FAILED:303\n", "CRAIDD_HOLDS:").unwrap(),
+            (vec![101, 202], vec![303]));
+        assert!(parse_native_ids("CRAIDD_HOLDS:101;FAILED:broken", "CRAIDD_HOLDS:").is_err());
+        assert!(parse_native_ids("thread list output", "CRAIDD_HOLDS:").is_err());
+        assert!(parse_native_ids("CRAIDD_HOLDS:-1;FAILED:", "CRAIDD_HOLDS:").is_err());
+    }
+
+    #[test]
+    fn interrupted_lldb_step_plan_is_discarded_before_hold_release() {
+        let interrupted = "thread #1: tid = 0x48e2d:\n  Active plan stack:\n    Element 0: Base thread plan.\n    Element 1: Stepping over line syscall_cancel.S:56.\n  Completed plan stack:\n    Element 0: Single thread timeout, state(AsyncInterrupt)\n";
+        let completed = "thread #2: tid = 0x48e2e:\n  Active plan stack:\n    Element 0: Base thread plan.\n  Completed plan stack:\n    Element 0: Stepping over line main.rs:21.\n";
+        assert_eq!(active_native_plan_index(interrupted).unwrap(), Some(1));
+        assert_eq!(active_native_plan_index(completed).unwrap(), None);
+        assert!(active_native_plan_index("error: thread is running").is_err());
+    }
+
+    #[test]
+    fn disassembly_and_missing_source_are_not_source_step_targets() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("experiments/lldb-native-thread-control/RustExclusiveStep/src/main.rs");
+        assert!(debug_frame_has_source(&json!({"line":21,"source":{"path":source}})));
+        assert!(!debug_frame_has_source(&json!({"line":15,"source":{"path":"/usr/lib/libc.so.6"}})));
+        assert!(!debug_frame_has_source(&json!({"line":56,"source":{"path":"/usr/src/debug/missing/syscall_cancel.S"}})));
+        assert!(!debug_frame_has_source(&json!({"line":0,"source":{"path":source}})));
+    }
+
+    #[test]
+    fn queued_lldb_stop_for_held_worker_does_not_replace_selected_step_stop() {
+        let mut step = NativeStepRequest { sequence: 7, thread_id: 3,
+            phase: NativeStepPhase::Stepping, plan_index: None, held_ids: vec![1, 2], holds_known: true, failure: None };
+        let old_step = json!({"body":{"reason":"step","threadId":2,"allThreadsStopped":true}});
+        let old_breakpoint = json!({"body":{"reason":"breakpoint","threadId":2}});
+        let target_step = json!({"body":{"reason":"step","threadId":3}});
+        assert!(secondary_native_stop(&old_step, Some(&step), None));
+        assert!(secondary_native_stop(&old_breakpoint, Some(&step), None));
+        assert!(!secondary_native_stop(&target_step, Some(&step), None));
+        assert!(!secondary_native_stop(&json!({"body":{"reason":"exception","threadId":2}}), Some(&step), None));
+        assert!(!secondary_native_stop(&json!({"body":{"reason":"step","threadId":4}}), Some(&step), None),
+            "a newly created thread was not in the confirmed hold set");
+        step.phase = NativeStepPhase::Releasing;
+        assert!(secondary_native_stop(&old_step, Some(&step), None));
+        assert!(secondary_native_stop(&old_step, None, Some(&(3, vec![1, 2]))));
+        assert!(!secondary_native_stop(&old_breakpoint, None, Some(&(3, vec![1, 2]))));
+    }
+
+    #[test]
+    fn internal_hold_receipts_do_not_hide_debuggee_output() {
+        assert!(native_receipt_output(&json!({"category":"console","output":"CRAIDD_HOLDS:1;FAILED:\n"})));
+        assert!(native_receipt_output(&json!({"category":"console","output":"CRAIDD_RELEASE:1;FAILED:\n"})));
+        assert!(!native_receipt_output(&json!({"category":"stdout","output":"CRAIDD_HOLDS:my app log\n"})));
+        assert!(!native_receipt_output(&json!({"category":"console","output":"LLDB error: release failed\n"})));
+    }
+
+    #[test]
+    fn native_cli_error_is_not_a_successful_dap_evaluate() {
+        assert_eq!(native_eval_error(&json!({"success":true,"body":{"result":"error: Invalid thread ID 99\n"}})),
+            Some("Invalid thread ID 99".into()));
+        assert!(native_eval_error(&json!({"success":true,"body":{"result":""}})).is_none());
     }
 }

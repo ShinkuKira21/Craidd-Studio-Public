@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+test-results/
+docs/feats/mt-debugging/tests/evidence/
 *.local
 
 # Editor directories and files

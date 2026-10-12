@@ -1,0 +1,5 @@
+[project]
+name = "Rust Step Native Libraries"
+language = "cpp"
+root = "."
+kind = "library"

@@ -859,6 +859,40 @@ mod tests {
     }
 
     #[test]
+    fn cross_language_thread_labs_prepare_the_selected_library() {
+        let experiments = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments");
+        let native_root = experiments.join("lldb-native-thread-control");
+        let native = super::super::solution::load_solution_named(
+            native_root.to_string_lossy().into_owned(), "thread-control.cln".into(),
+        ).unwrap().unwrap().solution;
+        for config in ["Rust + C Lib · Debug", "Rust + C++ Lib · Debug",
+            "Rust + C Threads · Debug", "Rust + C++ Threads · Debug"] {
+            assert_eq!(describe(&native, config).unwrap(),
+                vec!["Build Native Libraries · Rust Build → wait for success"]);
+        }
+        let native_slot = configuration(&native, "Native Libraries · Rust").unwrap()
+            .slots.as_ref().unwrap();
+        assert_eq!(native_slot.build.as_deref(), Some("Native Libraries · Rust Build"));
+
+        let managed_root = experiments.join("netcoredbg-thread-control");
+        let managed = super::super::solution::load_solution_named(
+            managed_root.to_string_lossy().into_owned(), "thread-control.cln".into(),
+        ).unwrap().unwrap().solution;
+        for config in ["C# + C Lib · Debug", "C# + C++ Lib · Debug"] {
+            assert_eq!(describe(&managed, config).unwrap(), vec![
+                "Build C# Linked · Build → wait for success",
+                "Build Native Libraries · C# Build → wait for success",
+                "Install Native Libraries · C# Build → C# Linked · Build's resolved output",
+            ]);
+        }
+        let partner = configuration(&managed, "Native Libraries · C# LDI").unwrap()
+            .slots.as_ref().unwrap();
+        assert_eq!(partner.build.as_deref(), Some("Native Libraries · C# Build"));
+        assert!(partner.run.is_none() && partner.debug.is_none());
+    }
+
+    #[test]
     fn expands_the_demo_in_the_exact_requested_order() {
         let (solution, request) = lab();
         assert_eq!(

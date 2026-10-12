@@ -12,10 +12,11 @@ export default function LdiSessionCard() {
       {blues.map((blue) => <div key={blue.file + blue.line} className="mb-2">
         <div>{blue.entryPoint} → CS{blue.partnerWindowId}</div>
         {blue.mode === "typed-interposer" && <div className="text-zinc-400">Typed UTF-8 + byte-buffer proxy</div>}
-        {!blue.warning && <div className="text-zinc-400">{blue.mode === "live-native" ? "B inspects the real Rust process at native entry." : `B stops at ${blue.landing === "automatic-entry" ? "native entry (automatic)" : "matching red"}.`}</div>}
+        {blue.unreachable && <div className="text-amber-300">Unreachable under this Power Config: {blue.unreachable}</div>}
+        {!blue.warning && !blue.unreachable && <div className="text-zinc-400">{blue.mode === "live-native" ? "B inspects the real Rust process at native entry." : `B stops at ${blue.landing === "automatic-entry" ? "native entry (automatic)" : "matching red"}.`}</div>}
         {blue.condition && <div className="text-zinc-400">When {blue.condition}</div>}
         {blue.pendingRestart && <div className="text-amber-300">{blue.mode === "live-native" ? "Bindings are frozen until Rust Debug restarts" : "Pending Gold Restart Debug"}</div>}
-        <div className="text-zinc-400">{blue.mode === "live-native" ? "Rust White Debug activates this pair. No driver or separate call-site hold." : "Gold Linked Debug activates this pair."}</div>
+        {!blue.unreachable && !blue.warning && <div className="text-zinc-400">{blue.mode === "live-native" ? "Rust White Debug activates this pair. No driver or separate call-site hold." : "Gold Linked Debug activates this pair."}</div>}
         {blue.warning && <div className="text-amber-300 mt-1">⚠ {blue.warning}</div>}
       </div>)}
     </section> : null;
@@ -35,8 +36,8 @@ export default function LdiSessionCard() {
     <div className="text-zinc-300 mt-1 font-mono break-all">{session.entryPoint}({session.values?.join(", ") ?? session.locals.join(", ")})</div>
     <div className="text-zinc-400 mt-1">B landing: {session.landing === "automatic-entry" ? "native entry (automatic)" : "matching red breakpoint"}</div>
     <div className="text-zinc-500 mt-1">{session.file.split("/").pop()}:{session.line} → CS{session.partnerWindowId}</div>
-    {!session.held && blues.length > 1 && <div className="text-zinc-400 mt-2">
-      Armed calls: {blues.map((blue) => `${blue.entryPoint} → CS${blue.partnerWindowId}`).join(" · ")}
+    {!session.held && blues.filter((blue) => !blue.unreachable && !blue.warning).length > 1 && <div className="text-zinc-400 mt-2">
+      Armed calls: {blues.filter((blue) => !blue.unreachable && !blue.warning).map((blue) => `${blue.entryPoint} → CS${blue.partnerWindowId}`).join(" · ")}
     </div>}
     {session.held && <div className="text-zinc-400 mt-2">
       {session.phase === "boundary-wait" ? "Waiting for the selected C# thread to reach the native pre-call gate…"

@@ -304,7 +304,7 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                       {languages.map((item) => <option key={item} value={item}>{languageLabels[item]}</option>)}
                     </select>
                     <span className="text-[11px] text-zinc-500">
-                      {snapshot ? (snapshot.scanned ? `${snapshot.tools.length} tools detected` : "Not yet scanned") : "Loading…"}
+                      {snapshot ? (snapshot.scanned ? `${snapshot.tools.length} tools detected automatically` : "Not yet scanned") : "Loading…"}
                     </span>
                     <button onClick={() => void scan()} disabled={busy || !snapshot}
                       className="ml-auto px-3 py-1.5 rounded border border-zinc-700 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">
@@ -320,7 +320,9 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                     return <div key={role} className="border-b border-zinc-800 last:border-b-0 py-4 first:pt-2">
                       <div className="flex items-center justify-between gap-3 mb-2">
                         <label htmlFor={`tool-${role}`} className="capitalize text-xs text-zinc-300">{role.replace(/_/g, " ")}</label>
-                        {found.length === 0 && snapshot?.scanned && <span className="text-[11px] text-amber-400">Not found</span>}
+                        {found.length === 0 && snapshot?.scanned && (selected
+                          ? <span className="text-[11px] text-zinc-400">Custom path selected</span>
+                          : <span className="text-[11px] text-amber-400">Not found</span>)}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <select id={`tool-${role}`} value={selected} disabled={busy || !snapshot}
@@ -328,7 +330,7 @@ export default function PreferencesDialog({ onClose, initialArea = "editor", ini
                           className="flex-1 min-w-40 bg-zinc-950 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 disabled:opacity-50">
                           <option value="">Automatic{found[0] ? ` (${found[0].name})` : ""}</option>
                           {found.map((tool) => <option key={tool.path} value={tool.path}>{tool.name} — {tool.path}</option>)}
-                          {selected && !found.some((tool) => tool.path === selected) && <option value={selected}>{selected} (custom or missing)</option>}
+                          {selected && !found.some((tool) => tool.path === selected) && <option value={selected}>{selected} (custom path)</option>}
                         </select>
                         <button onClick={() => void choosePath(role)} disabled={busy}
                           className="px-3 py-1.5 rounded border border-zinc-700 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Choose Path…</button>

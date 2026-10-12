@@ -1,4 +1,4 @@
-import { useDebug } from "../../store/debugStore";
+import { hasDebugSourceLine, useDebug } from "../../store/debugStore";
 import { useBreakpoints } from "../../store/breakpointStore";
 import { useSolution } from "../../store/solutionStore";
 import { useLinkedWindows, dispatchLinkedWindowCommand } from "../../store/linkedWindowsStore";
@@ -73,9 +73,9 @@ export default function DebugSidebar() {
       </section>}
       {frames.length > 0 && <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Call stack</div>
-        {frames.map((frame) => <button key={frame.id} type="button" onClick={() => frame.source?.path && void revealFrame(frame.source.path, frame.line)
+        {frames.map((frame) => <button key={frame.id} type="button" disabled={!hasDebugSourceLine(frame)} onClick={() => frame.source?.path && void revealFrame(frame.source.path, frame.line)
           .catch((error) => alert(`Could not open frame: ${String(error)}`))}
-          className="block w-full text-left px-1 py-1 rounded hover:bg-zinc-800 truncate" title={frame.source?.path}>
+          className="block w-full text-left px-1 py-1 rounded enabled:hover:bg-zinc-800 disabled:cursor-default truncate" title={hasDebugSourceLine(frame) ? frame.source?.path : "No source file is available for this frame"}>
           <span className="text-zinc-200">{frame.name}</span><span className="ml-1 text-zinc-500">{frame.source?.name}:{frame.line}</span>
         </button>)}
       </section>}

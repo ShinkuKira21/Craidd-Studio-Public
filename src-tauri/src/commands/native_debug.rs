@@ -9,7 +9,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::Path,
     sync::{
@@ -53,6 +53,7 @@ pub struct Context {
     call_line: u32,
     status: String,
     native_stop: bool,
+    selected_thread_id: Option<i64>,
     file: Option<String>,
     line: Option<u32>,
     frames: Value,
@@ -76,6 +77,14 @@ struct State {
 pub struct NativeDebugManager(Mutex<State>);
 
 impl State {
+    fn inspection_target(&self, partner: &str, token: &str) -> Result<(String, i32), String> {
+        self.live.iter().find_map(|(owner, live)| {
+            live.context.as_ref().filter(|context| context.partner_label == partner
+                && context.token == token
+                && token == format!("{}:{}:{}", live.generation, live.pgid, live.stop))
+                .map(|_| (owner.clone(), live.pgid))
+        }).ok_or_else(|| "Native inspection changed; use the current session controls".into())
+    }
     fn reserve(&mut self, owner: &str, pgid: i32, bindings: Vec<Binding>) -> Result<(), String> {
         if self.live.iter().any(|(label, live)| {
             label != owner
@@ -306,8 +315,13 @@ fn definition(root: &str, symbol: &str) -> Result<Native, String> {
     let root = Path::new(root)
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let signature = regex(&format!(
+    let cpp_signature = regex(&format!(
         r#"(?m)^[ \t]*extern\s+"C"\s+[^;{{}}\n]+?\b{}\s*\([^;{{}}]*\)\s*(?:noexcept\s*)?\{{"#,
+        regex::escape(symbol)
+    ));
+    // C source exports its symbol without a C++ linkage declaration.
+    let c_signature = regex(&format!(
+        r#"(?m)^[ \t]*[^;{{}}\n]+?\b{}\s*\([^;{{}}]*\)\s*\{{"#,
         regex::escape(symbol)
     ));
     let mut folders = VecDeque::from([(root, 0)]);
@@ -349,6 +363,9 @@ fn definition(root: &str, symbol: &str) -> Result<Native, String> {
                 return Err("Native source file exceeds 1 MB".into());
             }
             let clean = super::ldi::without_comments(&source)?;
+            let signature = if path.extension().and_then(|v| v.to_str()) == Some("c") {
+                &c_signature
+            } else { &cpp_signature };
             for found in signature.find_iter(&clean) {
                 let end = end_brace(&clean, found.end() - 1).ok_or("Unclosed native export")?;
                 definitions.push(Native {
@@ -361,7 +378,7 @@ fn definition(root: &str, symbol: &str) -> Result<Native, String> {
         }
     }
     if definitions.len() != 1 {
-        return Err(format!("Native Breakpoint requires one extern C definition of {symbol} in the selected Native project; found {}", definitions.len()));
+        return Err(format!("Native Breakpoint requires one C definition or extern C C++ definition of {symbol} in the selected Native project; found {}", definitions.len()));
     }
     Ok(definitions.remove(0))
 }
@@ -392,6 +409,202 @@ fn selection_matches(saved: &LdiSelection, current: &LdiSelection) -> bool {
         && saved.profile == current.profile
         && serde_json::to_value(&saved.spec).ok() == serde_json::to_value(&current.spec).ok()
 }
+#[derive(Debug, PartialEq)]
+enum ResolutionFailure {
+    Unreachable(String),
+    Pending(String),
+}
+
+fn cargo_features(origin: &LdiSelection, file: &str) -> Result<HashSet<String>, String> {
+    let root = Path::new(&origin.spec.cwd).canonicalize().map_err(|e| e.to_string())?;
+    let source = Path::new(file).canonicalize().map_err(|e| e.to_string())?;
+    let nearest = source.ancestors().find(|folder| folder.join("Cargo.toml").is_file());
+    if nearest != Some(root.as_path()) {
+        return Err("Cannot resolve Cargo features for this source from the selected Debug command".into());
+    }
+    let manifest: toml::Value = fs::read_to_string(root.join("Cargo.toml"))
+        .map_err(|e| e.to_string())?.parse().map_err(|e: toml::de::Error| e.to_string())?;
+    let features = manifest.get("features").and_then(toml::Value::as_table);
+    let args = &origin.spec.args;
+    let mut selected = HashSet::new();
+    let mut no_default = false;
+    let mut all = false;
+    let mut index = 0;
+    while index < args.len() && args[index] != "--" {
+        match args[index].as_str() {
+            "--no-default-features" => no_default = true,
+            "--all-features" => all = true,
+            "--features" | "-F" => {
+                index += 1;
+                let value = args.get(index).ok_or("Cargo --features needs a value")?;
+                selected.extend(value.split([',', ' ']).filter(|part| !part.is_empty()).map(str::to_owned));
+            }
+            arg if arg.starts_with("--features=") => {
+                selected.extend(arg[11..].split([',', ' ']).filter(|part| !part.is_empty()).map(str::to_owned));
+            }
+            arg if arg.starts_with("-F") && arg.len() > 2 => {
+                selected.extend(arg[2..].split([',', ' ']).filter(|part| !part.is_empty()).map(str::to_owned));
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if all {
+        selected.extend(features.into_iter().flat_map(|table| table.keys()).cloned());
+    } else if !no_default {
+        if let Some(defaults) = features.and_then(|table| table.get("default")).and_then(toml::Value::as_array) {
+            selected.insert("default".into());
+            selected.extend(defaults.iter().filter_map(toml::Value::as_str).map(str::to_owned));
+        }
+    }
+    let mut queue = selected.iter().cloned().collect::<VecDeque<_>>();
+    while let Some(name) = queue.pop_front() {
+        if let Some(members) = features.and_then(|table| table.get(&name)).and_then(toml::Value::as_array) {
+            for member in members.iter().filter_map(toml::Value::as_str) {
+                // Dependency features do not define a local cfg(feature = "...") name.
+                if !member.contains('/') && !member.starts_with("dep:") && selected.insert(member.into()) {
+                    queue.push_back(member.into());
+                }
+            }
+        }
+    }
+    Ok(selected)
+}
+
+fn cfg_parts(input: &str) -> Vec<&str> {
+    let mut parts = vec![];
+    let mut depth = 0;
+    let mut quoted = false;
+    let mut start = 0;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => { parts.push(input[start..index].trim()); start = index + 1; }
+            _ => {}
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
+}
+fn cfg_value(expr: &str, features: &HashSet<String>) -> Option<bool> {
+    let expr = expr.trim();
+    for name in ["all", "any", "not"] {
+        if let Some(inner) = expr.strip_prefix(name).and_then(|rest| rest.strip_prefix('('))
+            .and_then(|rest| rest.strip_suffix(')')) {
+            let values = cfg_parts(inner).into_iter().map(|part| cfg_value(part, features)).collect::<Vec<_>>();
+            return match name {
+                "all" if values.contains(&Some(false)) => Some(false),
+                "all" if values.iter().all(|v| *v == Some(true)) => Some(true),
+                "any" if values.contains(&Some(true)) => Some(true),
+                "any" if values.iter().all(|v| *v == Some(false)) => Some(false),
+                "not" if values.len() == 1 => values[0].map(|v| !v),
+                _ => None,
+            };
+        }
+    }
+    let (key, value) = expr.split_once('=')?;
+    if key.trim() != "feature" { return None; }
+    let name = value.trim().strip_prefix('"')?.strip_suffix('"')?;
+    Some(features.contains(name))
+}
+fn cfg_closing(source: &str, open: usize) -> Option<usize> {
+    let mut depth = 0;
+    let mut quoted = false;
+    for (offset, ch) in source[open..].char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => { depth -= 1; if depth == 0 { return Some(open + offset); } },
+            _ => {}
+        }
+    }
+    None
+}
+fn call_cfgs(source: &str, line: u32) -> Result<Vec<String>, String> {
+    let clean = super::ldi::without_comments(source)?;
+    if line == 0 { return Err("A Rust call-site line must be nonzero".into()); }
+    let mut call = 0;
+    for _ in 1..line {
+        call += clean[call..].find('\n').ok_or("Rust call-site line is outside the saved file")? + 1;
+    }
+    let mut conditions = vec![];
+    for attr in regex(r"(?m)^[ \t]*#\[\s*cfg\s*\(").find_iter(&clean) {
+        let open = attr.end() - 1;
+        let close = cfg_closing(&clean, open).ok_or("Cannot parse a Rust cfg attribute")?;
+        let after = clean[close + 1..].trim_start();
+        if !after.starts_with(']') { return Err("Cannot parse a Rust cfg attribute".into()); }
+        let body = close + 1 + (clean[close + 1..].len() - after.len()) + 1;
+        let next = clean[body..].find(['{', ';']).map(|index| body + index)
+            .ok_or("Cannot find the item guarded by a Rust cfg attribute")?;
+        let end = if clean.as_bytes()[next] == b'{' {
+            end_brace(&clean, next).ok_or("Cannot close a Rust cfg-guarded item")?
+        } else { next };
+        if !(body..=end).contains(&call) { continue; }
+        conditions.push(clean[open + 1..close].to_owned());
+    }
+    Ok(conditions)
+}
+fn cfg_reachability(conditions: &[String], features: &HashSet<String>) -> Result<bool, String> {
+    let mut unknown = false;
+    for condition in conditions {
+        match cfg_value(condition, features) {
+            Some(false) => return Ok(false),
+            None => unknown = true,
+            Some(true) => {}
+        }
+    }
+    if unknown { Err("This call has a cfg expression the Native Breakpoint resolver cannot evaluate".into()) }
+    else { Ok(true) }
+}
+#[cfg(test)]
+fn call_reachability(source: &str, line: u32, features: &HashSet<String>) -> Result<bool, String> {
+    cfg_reachability(&call_cfgs(source, line)?, features)
+}
+
+fn resolve_binding_for_selected(saved: &Binding, current: &LdiSelection,
+    partner: Result<LdiSelection, String>) -> Result<Binding, ResolutionFailure> {
+    if saved.origin.instance_id != current.instance_id || saved.origin.solution != current.solution {
+        return Err(ResolutionFailure::Pending("The Rust window or solution changed; choose the native partner again".into()));
+    }
+    let (_, calls) = read_calls(&saved.blue.file, current).map_err(ResolutionFailure::Pending)?;
+    if !calls.iter().any(|call| call.line == saved.blue.line && call.symbol == saved.blue.entry_point) {
+        return Err(ResolutionFailure::Pending("The Rust call site changed; save and recheck this Blue breakpoint".into()));
+    }
+    let source = fs::read_to_string(&saved.blue.file).map_err(|e| ResolutionFailure::Pending(e.to_string()))?;
+    let conditions = call_cfgs(&source, saved.blue.line).map_err(ResolutionFailure::Pending)?;
+    let features = if conditions.is_empty() { HashSet::new() }
+        else { cargo_features(current, &saved.blue.file).map_err(ResolutionFailure::Pending)? };
+    match cfg_reachability(&conditions, &features).map_err(ResolutionFailure::Pending)? {
+        false => return Err(ResolutionFailure::Unreachable(format!(
+            "{} excludes this {} call",
+            current.configuration.as_deref().unwrap_or("The selected Rust Power Config"), saved.blue.entry_point))),
+        true => {}
+    }
+    let partner = partner.map_err(ResolutionFailure::Pending)?;
+    if partner.instance_id != saved.partner.instance_id || partner.solution != current.solution {
+        return Err(ResolutionFailure::Pending("The Native window or solution changed; choose the native partner again".into()));
+    }
+    let native = definition(&partner.spec.cwd, &saved.blue.entry_point)
+        .map_err(ResolutionFailure::Unreachable)?;
+    let mut binding = saved.clone();
+    binding.origin = current.clone();
+    binding.partner = partner;
+    binding.native = native;
+    binding.artifact = None;
+    binding.blue.partner_window_id = binding.partner.window_id;
+    binding.blue.library = binding.partner.spec.label.clone();
+    binding.blue.native_points = matching_reds(&current.solution, &binding.native);
+    binding.blue.landing = if binding.blue.native_points.is_empty() { "automatic-entry" } else { "red" }.into();
+    binding.blue.warning = None;
+    binding.blue.unreachable = None;
+    Ok(binding)
+}
+fn resolve_binding(app: &AppHandle, saved: &Binding, current: &LdiSelection) -> Result<Binding, ResolutionFailure> {
+    resolve_binding_for_selected(saved, current,
+        super::linked_windows::rust_native_selection(app, &saved.partner.label, true))
+}
 fn validate(app: &AppHandle, binding: &Binding) -> Result<(), String> {
     let a = super::linked_windows::rust_native_selection(app, &binding.origin.label, false)?;
     let b = super::linked_windows::rust_native_selection(app, &binding.partner.label, true)?;
@@ -412,9 +625,9 @@ fn validate(app: &AppHandle, binding: &Binding) -> Result<(), String> {
         } else {
             "resolved command"
         };
-        return Err(
-            format!("Native pairing changed ({side} {changed}). Set the Rust Native Breakpoint again for these Power Configs"),
-        );
+        return Err(format!(
+            "Native binding changed during this Rust debug session ({side} {changed}). Restart Debug to resolve the selected Power Config"
+        ));
     }
     Ok(())
 }
@@ -511,6 +724,7 @@ pub(crate) fn set_blue(
         mode: "live-native".into(),
         locals: [String::new(), String::new()],
         warning: None,
+        unreachable: None,
         native_points,
         pending_restart: super::debug::has_debug_session(app, owner)
             || super::build_order::has_active_order(app, owner),
@@ -518,8 +732,8 @@ pub(crate) fn set_blue(
     let binding = Binding {
         blue: blue.clone(),
         native,
-        origin: a,
-        partner: b,
+        origin: a.clone(),
+        partner: b.clone(),
         artifact: None,
     };
     let manager = app.state::<NativeDebugManager>();
@@ -532,11 +746,47 @@ pub(crate) fn set_blue(
     {
         return Err("Limit of 64 Rust Native Breakpoints per window".into());
     }
+    // Re-pairing one saved Blue from a closed B is an explicit recovery of
+    // that native view. Move its other saved call sites to the replacement B,
+    // including cfg-excluded sites; missing exports remain saved but unarmed.
+    // A live B is never moved implicitly; it may intentionally own only one
+    // of several call sites.
+    let old_partner = points.iter().find(|point| point.blue.file == blue.file && point.blue.line == line)
+        .map(|point| point.partner.label.clone());
+    if let Some(old_partner) = old_partner.filter(|old| old != partner
+        && app.get_webview_window(old).is_none()) {
+        rebind_closed_partner_points(points, &old_partner, &a, &b, blue.pending_restart);
+    }
     points.retain(|p| p.blue.file != blue.file || p.blue.line != line);
     points.push(binding);
     drop(state);
     let _ = app.emit("craidd:ldi-blues", ());
     Ok(blue)
+}
+
+fn rebind_closed_partner_points(points: &mut [Binding], old_label: &str,
+    origin: &LdiSelection, partner: &LdiSelection, pending_restart: bool) {
+    for saved in points.iter_mut().filter(|point| point.partner.label == old_label) {
+        // Even an export this build cannot provide belongs to the replacement
+        // window now. The resolver will show it as unreachable; retaining the
+        // closed window's ID would make that saved source site look stranded.
+        let native = definition(&partner.spec.cwd, &saved.blue.entry_point).ok();
+        saved.origin = origin.clone();
+        saved.partner = partner.clone();
+        if let Some(native) = native.as_ref() { saved.native = native.clone(); }
+        saved.artifact = None;
+        saved.blue.origin_instance = origin.instance_id.clone();
+        saved.blue.partner_label = partner.label.clone();
+        saved.blue.partner_instance = partner.instance_id.clone();
+        saved.blue.partner_window_id = partner.window_id;
+        saved.blue.library = partner.spec.label.clone();
+        saved.blue.native_points = native.as_ref().map(|native| matching_reds(&origin.solution, native))
+            .unwrap_or_default();
+        saved.blue.landing = if saved.blue.native_points.is_empty() { "automatic-entry" } else { "red" }.into();
+        saved.blue.warning = None;
+        saved.blue.unreachable = None;
+        saved.blue.pending_restart = pending_restart;
+    }
 }
 pub(crate) fn remove_blue(
     app: &AppHandle,
@@ -613,41 +863,38 @@ pub(crate) fn blues(app: &AppHandle, label: &str) -> Vec<Blue> {
         .filter(|b| label == b.blue.origin_label || label == b.blue.partner_label)
         .map(|binding| {
             let mut blue = binding.blue.clone();
-            blue.warning = validate(app, &binding)
-                .and_then(|_| read_calls(&blue.file, &binding.origin))
-                .and_then(|(_, calls)| {
-                    if calls
-                        .iter()
-                        .any(|c| c.line == blue.line && c.symbol == blue.entry_point)
-                    {
-                        Ok(())
-                    } else {
-                        Err("Saved Rust call changed; reset this Native Breakpoint".into())
-                    }
-                })
-                .err();
-            blue.native_points = matching_reds(&binding.origin.solution, &binding.native);
-            blue.landing = if blue.native_points.is_empty() {
-                "automatic-entry"
-            } else {
-                "red"
+            let resolved = super::linked_windows::rust_native_selection(app, &binding.origin.label, false)
+                .map_err(ResolutionFailure::Pending)
+                .and_then(|current| resolve_binding(app, &binding, &current));
+            match &resolved {
+                Ok(current) => blue = current.blue.clone(),
+                Err(ResolutionFailure::Unreachable(reason)) => {
+                    blue.unreachable = Some(reason.clone());
+                    blue.warning = None;
+                    blue.native_points.clear();
+                }
+                Err(ResolutionFailure::Pending(reason)) => {
+                    blue.unreachable = None;
+                    blue.warning = Some(reason.clone());
+                    blue.native_points.clear();
+                }
             }
-            .into();
             blue.pending_restart = active.get(&blue.origin_label).map_or_else(
                 || {
                     super::debug::has_debug_session(app, &blue.origin_label)
                         || super::build_order::has_active_order(app, &blue.origin_label)
                 },
                 |live| {
-                    !live.iter().any(|b| {
+                    !resolved.as_ref().is_ok_and(|current| live.iter().any(|b| {
                         b.blue.file == blue.file
                             && b.blue.line == blue.line
                             && b.blue.entry_point == blue.entry_point
                             && b.blue.landing == blue.landing
                             && b.partner.label == blue.partner_label
-                            && selection_matches(&binding.partner, &b.partner)
+                            && selection_matches(&current.partner, &b.partner)
+                            && selection_matches(&current.origin, &b.origin)
                             && unchanged(b)
-                    })
+                    }))
                 },
             );
             blue
@@ -740,7 +987,7 @@ fn build_directory(selection: &LdiSelection) -> Result<std::path::PathBuf, Strin
 /// owns that build. Previously built projects need a fresh configure once.
 pub(crate) fn prepare_queries(app: &AppHandle, owner: &str) -> Result<Vec<Binding>, String> {
     let manager = app.state::<NativeDebugManager>();
-    let mut bindings = manager
+    let saved = manager
         .0
         .lock()
         .map_err(|e| e.to_string())?
@@ -748,6 +995,13 @@ pub(crate) fn prepare_queries(app: &AppHandle, owner: &str) -> Result<Vec<Bindin
         .get(owner)
         .cloned()
         .unwrap_or_default();
+    if saved.is_empty() { return Ok(vec![]); }
+    let Ok(current) = super::linked_windows::rust_native_selection(app, owner, false) else {
+        return Ok(vec![]);
+    };
+    let mut bindings = saved.into_iter()
+        .filter_map(|binding| resolve_binding(app, &binding, &current).ok())
+        .collect::<Vec<_>>();
     for binding in &mut bindings {
         validate(app, binding)?;
         binding.native = definition(&binding.partner.spec.cwd, &binding.blue.entry_point)?;
@@ -824,6 +1078,14 @@ fn verified_stack(frames: &[Value], binding: &Binding) -> bool {
             && pair[1]["line"].as_u64() == Some(binding.blue.line as u64)
     })
 }
+fn native_child_frame(frame: &Value, binding: &Binding, modules: &HashMap<String, String>) -> bool {
+    let Some(path) = frame["source"]["path"].as_str() else { return false; };
+    let Some(artifact) = binding.artifact.as_deref() else { return false; };
+    Path::new(path).canonicalize().ok().zip(Path::new(&binding.partner.spec.cwd).canonicalize().ok())
+        .is_some_and(|(path, root)| path.starts_with(root))
+        && !frame["moduleId"].is_null()
+        && modules.get(&frame["moduleId"].to_string()).is_some_and(|module| same_path(module, artifact))
+}
 fn verified_module(frames: &[Value], binding: &Binding, modules: &HashMap<String, String>) -> bool {
     frames
         .iter()
@@ -879,6 +1141,7 @@ fn project_context(
         call_line: binding.blue.line,
         status: "paused".into(),
         native_stop: true,
+        selected_thread_id: None,
         file: first
             .and_then(|f| f["source"]["path"].as_str())
             .map(str::to_owned),
@@ -907,6 +1170,7 @@ pub(crate) fn on_frames(
     owner: &str,
     pgid: i32,
     stop: u64,
+    thread_id: i64,
     frames: &Value,
     reason: &str,
 ) -> (bool, bool) {
@@ -944,8 +1208,8 @@ pub(crate) fn on_frames(
         }
     }
     let found = bindings.iter().find(|b| {
-        verified_stack(&list, b)
-            && verified_module(&list, b, &modules)
+        ((verified_stack(&list, b) && verified_module(&list, b, &modules))
+            || first.is_some_and(|frame| native_child_frame(frame, b, &modules)))
             && validate(app, b).is_ok()
             && unchanged(b)
             && first
@@ -994,7 +1258,11 @@ pub(crate) fn on_frames(
             })
         })
         .filter(|b| !super::debug::has_debug_session(app, &b.partner.label))
-        .map(|b| project_context(live.generation, pgid, stop, owner, b, &frames));
+        .map(|b| {
+            let mut context = project_context(live.generation, pgid, stop, owner, b, &frames);
+            context.selected_thread_id = Some(thread_id);
+            context
+        });
     let inspection = context.is_some();
     let context = context.or_else(|| {
         live.bindings
@@ -1071,6 +1339,73 @@ pub(crate) fn event(app: &AppHandle, owner: &str, pgid: i32, stop: u64, value: &
         context.frames = json!([]);
         context.variables = json!([]);
     }
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+}
+
+pub(crate) fn selected_frames(app: &AppHandle, owner: &str, pgid: i32, stop: u64, thread_id: i64, frames: &Value) {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return; };
+    let Some(live) = state.live.get_mut(owner).filter(|live| live.pgid == pgid && live.stop == stop) else { return; };
+    let binding = live.context.as_ref().and_then(|context| live.bindings.iter()
+        .find(|binding| binding.partner.label == context.partner_label
+            && binding.blue.entry_point == context.entry_point
+            && binding.blue.file == context.call_file && binding.blue.line == context.call_line)
+        .cloned());
+    let first = frames.as_array().and_then(|rows| rows.first());
+    let source = first.and_then(|frame| frame["source"]["path"].as_str());
+    let native_source = first.is_some_and(|frame| binding.as_ref()
+        .is_some_and(|binding| native_child_frame(frame, binding, &live.modules)));
+    let Some(context) = live.context.as_mut().filter(|context| context.status == "paused") else { return; };
+    context.native_stop = native_source;
+    context.selected_thread_id = Some(thread_id);
+    context.file = source.filter(|_| native_source).map(str::to_owned);
+    context.line = first.and_then(|frame| frame["line"].as_u64()).filter(|_| native_source).map(|line| line as u32);
+    context.frames = frames.clone();
+    context.variables = json!([]);
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+}
+
+fn selection_pending(app: &AppHandle, owner: &str, pgid: i32) -> Option<Context> {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return None; };
+    let Some(context) = state.live.get_mut(owner).filter(|live| live.pgid == pgid)
+        .and_then(|live| live.context.as_mut()) else { return None; };
+    let previous = context.clone();
+    context.native_stop = false;
+    context.selected_thread_id = None;
+    context.file = None;
+    context.line = None;
+    context.frames = json!([]);
+    context.variables = json!([]);
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+    Some(previous)
+}
+
+fn restore_failed_selection(app: &AppHandle, owner: &str, pgid: i32, previous: Context) {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return; };
+    let Some(context) = state.live.get_mut(owner).filter(|live| live.pgid == pgid)
+        .and_then(|live| live.context.as_mut()) else { return; };
+    if context.token != previous.token || context.selected_thread_id.is_some() { return; }
+    *context = previous;
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+}
+
+pub(crate) fn selected_variables(app: &AppHandle, owner: &str, pgid: i32, stop: u64, variables: &Value) {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return; };
+    let Some(context) = state.live.get_mut(owner)
+        .filter(|live| live.pgid == pgid && live.stop == stop)
+        .and_then(|live| live.context.as_mut()) else { return; };
+    context.variables = variables.clone();
     let context = context.clone();
     drop(state);
     publish(app, &context.partner_label, &Some(context.clone()));
@@ -1176,6 +1511,42 @@ pub fn native_debug_control(
     super::debug::control_live_native(&app, &owner, pgid, &action)
 }
 
+#[tauri::command]
+pub fn native_debug_threads(window: WebviewWindow, app: AppHandle, token: String) -> Result<Value, String> {
+    let (owner, pgid) = app.state::<NativeDebugManager>().0.lock().map_err(|error| error.to_string())?
+        .inspection_target(window.label(), &token)?;
+    super::debug::live_native_threads(&app, &owner, pgid)
+}
+
+#[tauri::command]
+pub async fn native_debug_select_thread(
+    window: WebviewWindow, app: AppHandle, token: String, thread_id: i64,
+) -> Result<(), String> {
+    let partner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (owner, pgid) = app.state::<NativeDebugManager>().0.lock().map_err(|error| error.to_string())?
+            .inspection_target(&partner, &token)?;
+        let previous = selection_pending(&app, &owner, pgid);
+        let result = super::debug::select_live_native_thread(&app, &owner, pgid, thread_id);
+        if result.is_err() {
+            if let Some(previous) = previous { restore_failed_selection(&app, &owner, pgid, previous); }
+        }
+        result
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn native_debug_step_thread_only(
+    window: WebviewWindow, app: AppHandle, token: String, session_key: String, thread_id: i64, incarnation: u64,
+) -> Result<(), String> {
+    let partner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (owner, _) = app.state::<NativeDebugManager>().0.lock().map_err(|error| error.to_string())?
+            .inspection_target(&partner, &token)?;
+        super::debug::step_native_thread_only_by_label(&app, &owner, &session_key, thread_id, incarnation)
+    }).await.map_err(|error| error.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,6 +1595,7 @@ mod tests {
                 mode: "live-native".into(),
                 locals: [String::new(), String::new()],
                 warning: None,
+                unreachable: None,
                 native_points: vec![],
                 pending_restart: false,
             },
@@ -1270,6 +1642,19 @@ mod tests {
         for call in calls {
             let native = definition(root.join("Native").to_str().unwrap(), &call.symbol).unwrap();
             assert!(native.end > native.start);
+        }
+    }
+    #[test]
+    fn linked_rust_lab_resolves_c_and_cpp_exports() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let rust = fs::read_to_string(root.join("RustLinkedStep/src/main.rs")).unwrap();
+        let calls = calls(&rust).unwrap();
+        assert_eq!(calls.len(), 4);
+        for call in calls {
+            let native = definition(root.join("Native").to_str().unwrap(), &call.symbol).unwrap();
+            assert!(native.end > native.start);
+            assert_eq!(native.file.ends_with(".c"), call.symbol.ends_with("_c"));
         }
     }
     #[test]
@@ -1393,6 +1778,9 @@ mod tests {
         let binding = binding("rust", "native");
         state.reserve("rust", 100, vec![binding.clone()]).unwrap();
         let context = state.live["rust"].context.as_ref().unwrap().clone();
+        assert_eq!(state.inspection_target("native", &context.token).unwrap(), ("rust".into(), 100));
+        assert!(state.inspection_target("other", &context.token).is_err());
+        assert!(state.inspection_target("native", "old:100:0").is_err());
         assert!(!context.native_stop);
         assert!(context.frames.as_array().unwrap().is_empty());
         assert!(state
@@ -1424,6 +1812,20 @@ mod tests {
         modules.insert("1".into(), "/another/build/libdemo_scalar.so".into());
         assert!(!verified_module(&stack, &binding, &modules));
         assert!(verified_stack(&stack, &binding));
+    }
+    #[test]
+    fn native_child_source_routes_only_from_the_selected_loaded_library() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("experiments/lldb-native-thread-control/Native");
+        let mut binding = binding("rust", "native");
+        binding.partner.spec.cwd = root.to_string_lossy().into();
+        binding.artifact = Some(root.join("build/libstep.so").to_string_lossy().into());
+        let frame = json!({"source":{"path":root.join("step.c")},"line":25,"moduleId":7});
+        let modules = HashMap::from([("7".into(), binding.artifact.clone().unwrap())]);
+        assert!(native_child_frame(&frame, &binding, &modules));
+        assert!(!native_child_frame(&frame, &binding, &HashMap::new()));
+        let outside = json!({"source":{"path":root.join("../RustLinkedStep/src/main.rs")},"line":25,"moduleId":7});
+        assert!(!native_child_frame(&outside, &binding, &modules));
     }
     #[test]
     fn bookmark_edits_do_not_mutate_the_running_generation() {
@@ -1501,6 +1903,138 @@ mod tests {
         let mut changed = binding.partner.clone();
         changed.configuration = Some("Another Native Power Config with the same build slot".into());
         assert!(!selection_matches(&binding.partner, &changed));
+    }
+    #[test]
+    fn rust_cfg_reachability_follows_features_not_saved_config_name() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control/RustLinkedStep");
+        let file = root.join("src/main.rs");
+        let source = fs::read_to_string(&file).unwrap();
+        let calls = calls(&source).unwrap();
+        assert_eq!(calls.len(), 4);
+        let mut current = binding("rust", "native").origin;
+        current.spec.cwd = root.to_string_lossy().into();
+        current.configuration = Some("Another name using the same call".into());
+        let cases = [
+            (vec![], "step_add_c"),
+            (vec!["--features", "cpp"], "step_add_cpp"),
+            (vec!["--features", "native_threads"], "step_pair_c"),
+            (vec!["--features", "cpp,native_threads"], "step_pair_cpp"),
+        ];
+        for (args, expected) in cases {
+            current.spec.args = std::iter::once("run".to_string())
+                .chain(args.into_iter().map(str::to_owned)).collect();
+            let enabled = cargo_features(&current, file.to_str().unwrap()).unwrap();
+            for call in &calls {
+                assert_eq!(call_reachability(&source, call.line, &enabled).unwrap(),
+                    call.symbol == expected, "{} under {expected}", call.symbol);
+            }
+        }
+        let shared = "unsafe extern \"C\" { fn demo_add(a:i32,b:i32)->i32; }\nfn first() { unsafe { demo_add(1,2) } }";
+        assert!(call_cfgs(shared, 2).unwrap().is_empty(),
+            "An unguarded shared call must not require a Cargo feature manifest");
+        for args in [vec![], vec!["--features", "cpp"]] {
+            current.spec.args = std::iter::once("run".to_string())
+                .chain(args.into_iter().map(str::to_owned)).collect();
+            let enabled = cargo_features(&current, file.to_str().unwrap()).unwrap();
+            assert!(call_reachability(shared, 2, &enabled).unwrap());
+        }
+        assert!(call_reachability("#[cfg(target_os = \"linux\")]\nfn call() { demo_add(1,2); }", 2,
+            &HashSet::new()).is_err(), "Unsupported conditions stay pending");
+    }
+    #[test]
+    fn saved_blue_rebinds_under_another_compatible_power_config() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let file = root.join("RustLinkedStep/src/main.rs");
+        let native_root = root.join("Native");
+        let source = fs::read_to_string(&file).unwrap();
+        let line = calls(&source).unwrap().into_iter()
+            .find(|call| call.symbol == "step_pair_cpp").unwrap().line;
+        let mut saved = binding("rust", "native");
+        saved.origin.solution = root.join("thread-control.cln").to_string_lossy().into();
+        saved.partner.solution = saved.origin.solution.clone();
+        saved.origin.spec.cwd = root.join("RustLinkedStep").to_string_lossy().into();
+        saved.partner.spec.cwd = native_root.to_string_lossy().into();
+        saved.blue.file = file.to_string_lossy().into();
+        saved.blue.line = line;
+        saved.blue.entry_point = "step_pair_cpp".into();
+        saved.native = definition(native_root.to_str().unwrap(), "step_pair_cpp").unwrap();
+
+        let mut current = saved.origin.clone();
+        current.configuration = Some("Another Rust config using the same call".into());
+        current.spec.args = ["run", "--features", "cpp,native_threads"].map(str::to_owned).to_vec();
+        let mut partner = saved.partner.clone();
+        partner.configuration = Some("Another Native build of the same export".into());
+        let rebound = resolve_binding_for_selected(&saved, &current, Ok(partner.clone())).unwrap();
+        assert_eq!(rebound.origin.configuration, current.configuration);
+        assert_eq!(rebound.partner.configuration, partner.configuration);
+        assert_eq!(rebound.blue.file, saved.blue.file);
+        assert_eq!(rebound.blue.line, saved.blue.line);
+
+        current.spec.args = ["run", "--features", "native_threads"].map(str::to_owned).to_vec();
+        assert!(matches!(resolve_binding_for_selected(&saved, &current, Ok(partner)),
+            Err(ResolutionFailure::Unreachable(_))));
+        assert_eq!(saved.origin.configuration.as_deref(), Some("rust"),
+            "Resolving another config must not rewrite the saved source intent");
+    }
+    #[test]
+    fn replacing_closed_native_window_rebinds_all_compatible_saved_sites() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let file = root.join("RustLinkedStep/src/main.rs");
+        let native_root = root.join("Native");
+        let calls = calls(&fs::read_to_string(&file).unwrap()).unwrap();
+        let mut points = ["step_pair_c", "step_pair_cpp"].into_iter().map(|symbol| {
+            let mut saved = binding("rust", "closed-native");
+            saved.blue.file = file.to_string_lossy().into();
+            saved.blue.line = calls.iter().find(|call| call.symbol == symbol).unwrap().line;
+            saved.blue.entry_point = symbol.into();
+            saved.native = definition(native_root.to_str().unwrap(), symbol).unwrap();
+            saved
+        }).collect::<Vec<_>>();
+        let origin = points[0].origin.clone();
+        let mut replacement = points[0].partner.clone();
+        replacement.label = "replacement-native".into();
+        replacement.instance_id = "replacement-instance".into();
+        replacement.window_id = 4;
+        replacement.spec.cwd = native_root.to_string_lossy().into();
+        rebind_closed_partner_points(&mut points, "closed-native", &origin, &replacement, false);
+        assert_eq!(points.len(), 2);
+        for saved in &points {
+            assert_eq!(saved.blue.partner_label, "replacement-native");
+            assert_eq!(saved.blue.partner_window_id, 4);
+            assert_eq!(saved.partner.instance_id, "replacement-instance");
+            assert!(matches!(saved.blue.entry_point.as_str(), "step_pair_c" | "step_pair_cpp"));
+        }
+    }
+    #[test]
+    fn replacing_closed_native_window_moves_missing_export_without_arming_it() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let native_root = root.join("Native");
+        let mut saved = binding("rust", "closed-native");
+        saved.origin.solution = root.join("thread-control.cln").to_string_lossy().into();
+        saved.origin.spec.cwd = root.join("RustLinkedStep").to_string_lossy().into();
+        saved.origin.spec.args = ["run", "--features", "native_threads"].map(str::to_owned).to_vec();
+        saved.partner.solution = saved.origin.solution.clone();
+        saved.blue.file = root.join("RustLinkedStep/src/main.rs").to_string_lossy().into();
+        saved.blue.line = 26;
+        saved.blue.entry_point = "step_pair_c".into();
+        saved.native = definition(native_root.to_str().unwrap(), "step_pair_c").unwrap();
+        let origin = saved.origin.clone();
+        let mut replacement = saved.partner.clone();
+        replacement.label = "different-native".into();
+        replacement.instance_id = "different-instance".into();
+        replacement.window_id = 5;
+        replacement.spec.cwd = root.join("CExclusiveStep").to_string_lossy().into();
+        let mut points = vec![saved];
+        rebind_closed_partner_points(&mut points, "closed-native", &origin, &replacement, false);
+        assert_eq!(points[0].blue.partner_label, "different-native");
+        assert_eq!(points[0].blue.partner_window_id, 5);
+        assert!(points[0].blue.native_points.is_empty());
+        assert!(matches!(resolve_binding_for_selected(&points[0], &origin, Ok(replacement)),
+            Err(ResolutionFailure::Unreachable(_))));
     }
     #[test]
     #[ignore = "requires Python, Cargo, CMake, compiler, LLDB-DAP and ptrace permission"]

@@ -1,0 +1,227 @@
+# C# managed-thread control experiment
+
+This is an **experimental C# debugger extension and Craidd control** alongside
+the separate [installed-LLDB native experiment](../lldb-native-thread-control/README.md).
+It is not a default C# debugger feature. Start with the
+[Step by Thread overview](../README.md) to choose the right solution and
+debugger route.
+The tracked patch applies to upstream netcoredbg commit
+`9744e1f051866215611b8440c638042aa2aa2f72` (Samsung release 3.2.0-1092).
+The [patched Linux x64 build](debugger/linux-x64/BUILD.md) and its companion
+files are committed in this experiment. Craidd does not select it by default
+or bundle it with the app. The ordinary installed `netcoredbg` remains
+unchanged. In C#, an adapter that does not advertise a one-thread
+capability keeps ordinary Step and does not show the ⇥ control.
+
+Craidd also has an experimental standard DAP route: an adapter
+that advertises `supportsSingleThreadExecutionRequests` receives `next` with
+`singleThread: true` for ⇥. This capability takes precedence over the custom
+request. Its behavior must be qualified with worker counters on each adapter
+build and platform before it is considered supported. The patched netcoredbg
+below does **not** advertise that standard capability.
+
+The patch advertises `craiddManagedExclusiveNext` and adds
+`craiddExclusiveNext` as an experimental DAP request. At an all-thread stop,
+netcoredbg maps the supplied DAP thread ID to its
+`ICorDebugThread`, suspends the other **managed** threads through
+`ICorDebugController::SetAllThreadsDebugState`, and starts one Step Over. It
+reports `continued.allThreadsContinued: false`. A breakpoint, Step, exception,
+or Pause stop releases the lease before its `stopped` event. Normal Continue,
+detach, and terminate also attempt cleanup. `craiddReleaseManagedHolds` retries
+release from a verified stop. Release failure emits an error and leaves the
+state marked unverified for another attempt.
+
+This does not implement standard DAP `supportsSingleThreadExecutionRequests`:
+the patch has not implemented single-thread Continue or the full execution
+contract. The managed request does not control native threads, mixed-mode
+debugging, LDI, Rust, or C++. A separate Craidd control sends
+`craiddReleaseManagedHolds` at a
+verified all-thread stop; that request clears managed holds but does not
+resume execution.
+
+## Try the Craidd control on C#
+
+The experiment has its own Craidd solution,
+[`thread-control.cln`](thread-control.cln), and C# worker program under
+[`CSharpExclusiveStep/`](CSharpExclusiveStep/). The checkout includes a
+patched executable at `debugger/linux-x64/netcoredbg`; choose it explicitly
+in Toolchain preferences. A local rebuild can instead be placed under the
+ignored `.local-tools/netcoredbg-thread-control/` directory.
+
+1. Run Craidd with `npm run tauri dev` from the repository root.
+2. In **File → User Preferences → Toolchain**, choose **C#** and set the
+   **Debugger** path to `experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg`
+   (select its absolute path in the file chooser) using
+   **Choose Path…**. This is a user preference; choose **Automatic** again
+   when finished with the experiment.
+3. Open `experiments/netcoredbg-thread-control/thread-control.cln`. Select
+   **C# Exclusive Step**, put a breakpoint on `BREAK_EXCLUSIVE` in
+   `CSharpExclusiveStep/Program.cs`, and start **Debug**. The two workers are
+   named `exclusive worker 1` and `exclusive worker 2`.
+4. At a stop, select a worker in the thread dropdown. If it has a source
+   frame and the stop covers all threads, **⇥ Experimental: Step selected thread only**
+   is available in the toolbar. Step A, then select B at the next stop.
+   B can be stepped only if its selected frame has a source line. The program
+   writes each worker's count to the visible `CSharpExclusiveStep/runs/basic/`
+   folder (`worker-1.txt` and `worker-2.txt`). Refresh File Discovery after
+   starting Debug if the folder does not appear. During
+   A's exclusive Step, B's count should stay unchanged; after switching,
+   A's count should stay unchanged. If B is paused in runtime code without a
+   source line, the current adapter can reject its one-thread Step. Continue
+   to a source breakpoint on B, knowing this resumes other workers too.
+5. For a blocked step, use **Pause**. The adapter attempts to release managed
+   holds on a stop and on ordinary **Continue**. If Debug Output reports a
+   release failure, open **Recovery options** in the thread dropdown and
+   choose **Retry managed hold release** at a verified all-thread stop.
+   **Stop** ends the session if Pause or release cannot recover it.
+
+This tests one **Step Over** at a time. The ordinary ↷, ↓, and ↑ buttons
+retain their existing debugger-dependent execution scope. A successful stop shows where
+the adapter stopped; the direct probe below is the current evidence that the
+other worker's observed counter remained unchanged during these steps.
+Record any output about hold-release failure before retrying or stopping.
+The direct adapter probe has passed from source-line frames. A user desktop
+run observed that the unselected worker's dropdown timer stopped during a
+one-thread Step. That timer is debugger-observed running time, not execution
+evidence; compare the worker counter files for desktop isolation evidence.
+Switching to a worker paused without a source line remains blocked. Earlier
+lab runs wrote to a hidden `.runs/basic/` folder; new runs use `runs/basic/`.
+Send me the adapter path, requested/stopped worker, both counters, and any
+Debug Output errors after another manual run so I can maintain
+[`RESULTS.md`](RESULTS.md).
+
+## Build the optional adapter locally
+
+The tracked Linux x64 executable can be used directly. Rebuild if you want
+to reproduce or change this experiment. Use a Linux x64 host with .NET 10
+SDK, Clang, CMake and Ninja. The commands below use the tracked companion
+libraries in `debugger/linux-x64/` and the ignored
+`experiments/netcoredbg-thread-control/.local-tools/` directory for source and
+build output. For another architecture, obtain the matching official Samsung
+release libraries instead. Fetch upstream source, check out the
+recorded netcoredbg commit, and apply
+[`netcoredbg-exclusive-step.patch`](netcoredbg-exclusive-step.patch).
+
+```sh
+EXPERIMENT_TOOLS="$PWD/experiments/netcoredbg-thread-control/.local-tools"
+RELEASE_LIBS="$PWD/experiments/netcoredbg-thread-control/debugger/linux-x64"
+mkdir -p "$EXPERIMENT_TOOLS"
+git clone https://github.com/Samsung/netcoredbg.git "$EXPERIMENT_TOOLS/netcoredbg-source"
+git -C "$EXPERIMENT_TOOLS/netcoredbg-source" checkout 9744e1f051866215611b8440c638042aa2aa2f72
+cp experiments/netcoredbg-thread-control/netcoredbg-exclusive-step.patch "$EXPERIMENT_TOOLS/netcoredbg-source/exclusive-step.patch"
+git -C "$EXPERIMENT_TOOLS/netcoredbg-source" apply exclusive-step.patch
+git clone --filter=blob:none --sparse --branch release/10.0 https://github.com/dotnet/runtime.git "$EXPERIMENT_TOOLS/runtime-source"
+git -C "$EXPERIMENT_TOOLS/runtime-source" fetch --depth 1 origin 4c61b1441b4b11274d6f8b4b3bebc1147e437e78
+git -C "$EXPERIMENT_TOOLS/runtime-source" checkout 4c61b1441b4b11274d6f8b4b3bebc1147e437e78
+git -C "$EXPERIMENT_TOOLS/runtime-source" sparse-checkout set src/coreclr src/native
+cmake -S "$EXPERIMENT_TOOLS/netcoredbg-source" -B "$EXPERIMENT_TOOLS/netcoredbg-build" -G Ninja \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DCORECLR_DIR="$EXPERIMENT_TOOLS/runtime-source/src/coreclr" \
+  -DDOTNET_DIR=/usr/share/dotnet -DDBGSHIM_DIR="$RELEASE_LIBS" \
+  -DBUILD_MANAGED=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build "$EXPERIMENT_TOOLS/netcoredbg-build" -j 8
+mkdir -p "$EXPERIMENT_TOOLS/netcoredbg-thread-control"
+cp "$EXPERIMENT_TOOLS/netcoredbg-build/src/netcoredbg" "$RELEASE_LIBS"/*.dll "$RELEASE_LIBS"/libdbgshim.so "$EXPERIMENT_TOOLS/netcoredbg-thread-control/"
+```
+
+Run the commands from the **Craidd repository root**. The CoreCLR source
+revision is pinned because `release/10.0` may advance.
+
+## Direct DAP evidence
+
+From the Craidd repository root:
+
+```sh
+python3 experiments/netcoredbg-thread-control/tools/probe.py --debugger experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg
+python3 experiments/netcoredbg-thread-control/tools/blocked_probe.py --debugger experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg
+python3 experiments/netcoredbg-thread-control/tools/blocked_probe.py --debugger experiments/netcoredbg-thread-control/debugger/linux-x64/netcoredbg --stop-during-lease
+```
+
+Fresh probe traces are written under the ignored `.runs/probes/` directory in
+this experiment.
+
+On 8 October 2026, both probes passed three repeated runs on Linux with the
+patched 3.2.0-1 adapter and .NET 10. The first probe stepped one named worker
+twice, switched to the second worker at the next stop, and observed that the
+unselected worker's file counter did not advance during each exclusive Step.
+After an ordinary Continue, the other counter advanced. The blocked probe
+stepped a waiter into a lock held by another managed thread, observed no Step
+stop for 500 ms, sent Pause, then released the owner and observed both threads
+finish. Representative raw DAP traces are in [`evidence/`](evidence/).
+One active-lease Stop run also exited the adapter and removed the debuggee.
+After moving the C# project into this experiment, the A/B, blocked Pause, and
+active-lease Stop probes passed again from the new paths. A later direct probe
+selected a worker whose stack had no source line and received `0x80004005`
+from `craiddExclusiveNext`. That limits switching to a worker currently at a
+source frame; it is not yet arbitrary per-thread control.
+
+These runs establish an **initial direct-adapter proof**. Earlier Craidd
+desktop reports showed both workers could be selected and stepped at source
+lines, but did not record before/after worker counters for each step. The
+A current Craidd desktop A/B counter run with the optional patched adapter
+is still required.
+Remaining gates:
+new/exiting threads, exception stops, detach from an attached process, adapter
+crash, repeated lock/GC pressure, a deliberate release failure, and a current
+Craidd desktop A/B counter run. Keep the control experimental
+until those recovery paths and the desktop behavior have passed.
+
+## C# calling a C or C++ library through linked LDI
+
+The same `thread-control.cln` now contains **C# Threads + C Threads** and
+**C# Threads + C++ Threads** Power Configs. Each starts two managed workers that call a shared
+library. `Prepare C# Linked` builds and installs both libraries beside the
+.NET executable. **Native Libraries · C# LDI** is the Power Config for the
+second Craidd window. The C and C++ exports have distinct names and their
+corresponding Blue calls are marked in `LinkedCSharpStep/Program.cs`.
+
+This is a **two-process LDI reproduction**. At Blue, the original C# thread
+in A is held. B runs the native call with its own LLDB-DAP debugger and
+native thread IDs. B creates two native workers; their counters are under
+`Native/runs/native-c/worker-1.txt` and `worker-2.txt`, or the corresponding
+`native-cpp/` directory. These paths belong to B's reproduction process;
+the original process writes under `LinkedCSharpStep/runs/native-c/` or
+`native-cpp/`. ⇥ in B requests one
+native-thread Step Over while other B threads are held. It does **not** step
+the held managed thread in A or synchronize A's and B's thread identities.
+Only after B finishes or is explicitly released can A continue. The optional
+patched netcoredbg is needed to test one-managed-thread ⇥ in A before Blue;
+the held A call still cannot be stepped. B's native ⇥ uses the installed
+LLDB-DAP. With an ordinary netcoredbg that does not advertise the capability,
+A retains ordinary Step while B's native experiment remains available.
+
+1. Open this solution in A and B. Select **C# Threads + C Threads** in A and **Native
+   Libraries · C# LDI** in B. Link the windows with Gold. In A, put Blue on
+   `BLUE_C_CALL` and a red breakpoint on `BREAK_MANAGED`. In B, open
+   `Native/step.c`. Start Gold Debug. Repeat later with **C# Threads + C++ Threads**,
+   `BLUE_CPP_CALL`, and `Native/step.cpp`.
+2. When A reaches Blue, confirm its selected managed thread is held and B
+   has stopped in `BREAK_C_ENTRY` or `BREAK_CPP_ENTRY`. Step in B until both
+   native workers exist. Put red on `BREAK_C_WORKER` or `BREAK_CPP_WORKER`
+   if the second worker has no source frame yet, then Continue B to a source
+   stop. Select a paused native worker in B and use ⇥ at a verified
+   all-thread stop; compare B's two native counter files and current
+   instruction locations before and after. Switch native workers and repeat.
+3. Return to A after the B reproduction finishes. The selected C# worker's
+   result appears under `LinkedCSharpStep/runs/c/` or `runs/cpp/`. The other
+   managed worker can continue when the LDI hold is released, so these files
+   are **not** evidence of native thread isolation inside B.
+
+If a Blue binding is rejected, record its warning and the selected Native
+Power Config. If ⇥ is absent in B, record the installed LLDB-DAP version;
+this experiment qualifies the control only for 23.1.1 with scripting. Build,
+source-recognition, and uninstrumented C#/native execution checks have passed.
+The [desktop checklist](../../docs/feats/mt-debugging/tests/checklist.md)
+records focused B native-worker steps for C and C++ (CL-03); broader LDI
+recovery and lifecycle checks remain open. Do not infer that the
+patched netcoredbg controls B or that a native B step advances A.
+
+The [window-control friction note](../../docs/feats/ldi-debugging/linked-thread-ux-friction.md)
+explains why Rust live Native and C# LDI use different Gold/White and
+thread-dropdown paths.
+
+To isolate the native stepping mechanism without C# LDI, build `Native` and
+run `python3 tools/probe_native_threads.py c` or `cpp` from this experiment
+directory. Each launches a small driver under LLDB-DAP, steps a native
+worker while the other counter stays fixed, releases holds and checks both
+workers finish. This is a direct adapter probe, not a paired Craidd result.
