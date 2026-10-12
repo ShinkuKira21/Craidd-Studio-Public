@@ -53,6 +53,7 @@ pub struct Context {
     call_line: u32,
     status: String,
     native_stop: bool,
+    selected_thread_id: Option<i64>,
     file: Option<String>,
     line: Option<u32>,
     frames: Value,
@@ -76,6 +77,14 @@ struct State {
 pub struct NativeDebugManager(Mutex<State>);
 
 impl State {
+    fn inspection_target(&self, partner: &str, token: &str) -> Result<(String, i32), String> {
+        self.live.iter().find_map(|(owner, live)| {
+            live.context.as_ref().filter(|context| context.partner_label == partner
+                && context.token == token
+                && token == format!("{}:{}:{}", live.generation, live.pgid, live.stop))
+                .map(|_| (owner.clone(), live.pgid))
+        }).ok_or_else(|| "Native inspection changed; use the current session controls".into())
+    }
     fn reserve(&mut self, owner: &str, pgid: i32, bindings: Vec<Binding>) -> Result<(), String> {
         if self.live.iter().any(|(label, live)| {
             label != owner
@@ -1069,6 +1078,14 @@ fn verified_stack(frames: &[Value], binding: &Binding) -> bool {
             && pair[1]["line"].as_u64() == Some(binding.blue.line as u64)
     })
 }
+fn native_child_frame(frame: &Value, binding: &Binding, modules: &HashMap<String, String>) -> bool {
+    let Some(path) = frame["source"]["path"].as_str() else { return false; };
+    let Some(artifact) = binding.artifact.as_deref() else { return false; };
+    Path::new(path).canonicalize().ok().zip(Path::new(&binding.partner.spec.cwd).canonicalize().ok())
+        .is_some_and(|(path, root)| path.starts_with(root))
+        && !frame["moduleId"].is_null()
+        && modules.get(&frame["moduleId"].to_string()).is_some_and(|module| same_path(module, artifact))
+}
 fn verified_module(frames: &[Value], binding: &Binding, modules: &HashMap<String, String>) -> bool {
     frames
         .iter()
@@ -1124,6 +1141,7 @@ fn project_context(
         call_line: binding.blue.line,
         status: "paused".into(),
         native_stop: true,
+        selected_thread_id: None,
         file: first
             .and_then(|f| f["source"]["path"].as_str())
             .map(str::to_owned),
@@ -1152,6 +1170,7 @@ pub(crate) fn on_frames(
     owner: &str,
     pgid: i32,
     stop: u64,
+    thread_id: i64,
     frames: &Value,
     reason: &str,
 ) -> (bool, bool) {
@@ -1189,8 +1208,8 @@ pub(crate) fn on_frames(
         }
     }
     let found = bindings.iter().find(|b| {
-        verified_stack(&list, b)
-            && verified_module(&list, b, &modules)
+        ((verified_stack(&list, b) && verified_module(&list, b, &modules))
+            || first.is_some_and(|frame| native_child_frame(frame, b, &modules)))
             && validate(app, b).is_ok()
             && unchanged(b)
             && first
@@ -1239,7 +1258,11 @@ pub(crate) fn on_frames(
             })
         })
         .filter(|b| !super::debug::has_debug_session(app, &b.partner.label))
-        .map(|b| project_context(live.generation, pgid, stop, owner, b, &frames));
+        .map(|b| {
+            let mut context = project_context(live.generation, pgid, stop, owner, b, &frames);
+            context.selected_thread_id = Some(thread_id);
+            context
+        });
     let inspection = context.is_some();
     let context = context.or_else(|| {
         live.bindings
@@ -1316,6 +1339,73 @@ pub(crate) fn event(app: &AppHandle, owner: &str, pgid: i32, stop: u64, value: &
         context.frames = json!([]);
         context.variables = json!([]);
     }
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+}
+
+pub(crate) fn selected_frames(app: &AppHandle, owner: &str, pgid: i32, stop: u64, thread_id: i64, frames: &Value) {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return; };
+    let Some(live) = state.live.get_mut(owner).filter(|live| live.pgid == pgid && live.stop == stop) else { return; };
+    let binding = live.context.as_ref().and_then(|context| live.bindings.iter()
+        .find(|binding| binding.partner.label == context.partner_label
+            && binding.blue.entry_point == context.entry_point
+            && binding.blue.file == context.call_file && binding.blue.line == context.call_line)
+        .cloned());
+    let first = frames.as_array().and_then(|rows| rows.first());
+    let source = first.and_then(|frame| frame["source"]["path"].as_str());
+    let native_source = first.is_some_and(|frame| binding.as_ref()
+        .is_some_and(|binding| native_child_frame(frame, binding, &live.modules)));
+    let Some(context) = live.context.as_mut().filter(|context| context.status == "paused") else { return; };
+    context.native_stop = native_source;
+    context.selected_thread_id = Some(thread_id);
+    context.file = source.filter(|_| native_source).map(str::to_owned);
+    context.line = first.and_then(|frame| frame["line"].as_u64()).filter(|_| native_source).map(|line| line as u32);
+    context.frames = frames.clone();
+    context.variables = json!([]);
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+}
+
+fn selection_pending(app: &AppHandle, owner: &str, pgid: i32) -> Option<Context> {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return None; };
+    let Some(context) = state.live.get_mut(owner).filter(|live| live.pgid == pgid)
+        .and_then(|live| live.context.as_mut()) else { return None; };
+    let previous = context.clone();
+    context.native_stop = false;
+    context.selected_thread_id = None;
+    context.file = None;
+    context.line = None;
+    context.frames = json!([]);
+    context.variables = json!([]);
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+    Some(previous)
+}
+
+fn restore_failed_selection(app: &AppHandle, owner: &str, pgid: i32, previous: Context) {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return; };
+    let Some(context) = state.live.get_mut(owner).filter(|live| live.pgid == pgid)
+        .and_then(|live| live.context.as_mut()) else { return; };
+    if context.token != previous.token || context.selected_thread_id.is_some() { return; }
+    *context = previous;
+    let context = context.clone();
+    drop(state);
+    publish(app, &context.partner_label, &Some(context.clone()));
+}
+
+pub(crate) fn selected_variables(app: &AppHandle, owner: &str, pgid: i32, stop: u64, variables: &Value) {
+    let manager = app.state::<NativeDebugManager>();
+    let Ok(mut state) = manager.0.lock() else { return; };
+    let Some(context) = state.live.get_mut(owner)
+        .filter(|live| live.pgid == pgid && live.stop == stop)
+        .and_then(|live| live.context.as_mut()) else { return; };
+    context.variables = variables.clone();
     let context = context.clone();
     drop(state);
     publish(app, &context.partner_label, &Some(context.clone()));
@@ -1419,6 +1509,42 @@ pub fn native_debug_control(
         }
     }
     super::debug::control_live_native(&app, &owner, pgid, &action)
+}
+
+#[tauri::command]
+pub fn native_debug_threads(window: WebviewWindow, app: AppHandle, token: String) -> Result<Value, String> {
+    let (owner, pgid) = app.state::<NativeDebugManager>().0.lock().map_err(|error| error.to_string())?
+        .inspection_target(window.label(), &token)?;
+    super::debug::live_native_threads(&app, &owner, pgid)
+}
+
+#[tauri::command]
+pub async fn native_debug_select_thread(
+    window: WebviewWindow, app: AppHandle, token: String, thread_id: i64,
+) -> Result<(), String> {
+    let partner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (owner, pgid) = app.state::<NativeDebugManager>().0.lock().map_err(|error| error.to_string())?
+            .inspection_target(&partner, &token)?;
+        let previous = selection_pending(&app, &owner, pgid);
+        let result = super::debug::select_live_native_thread(&app, &owner, pgid, thread_id);
+        if result.is_err() {
+            if let Some(previous) = previous { restore_failed_selection(&app, &owner, pgid, previous); }
+        }
+        result
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn native_debug_step_thread_only(
+    window: WebviewWindow, app: AppHandle, token: String, session_key: String, thread_id: i64, incarnation: u64,
+) -> Result<(), String> {
+    let partner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (owner, _) = app.state::<NativeDebugManager>().0.lock().map_err(|error| error.to_string())?
+            .inspection_target(&partner, &token)?;
+        super::debug::step_native_thread_only_by_label(&app, &owner, &session_key, thread_id, incarnation)
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -1652,6 +1778,9 @@ mod tests {
         let binding = binding("rust", "native");
         state.reserve("rust", 100, vec![binding.clone()]).unwrap();
         let context = state.live["rust"].context.as_ref().unwrap().clone();
+        assert_eq!(state.inspection_target("native", &context.token).unwrap(), ("rust".into(), 100));
+        assert!(state.inspection_target("other", &context.token).is_err());
+        assert!(state.inspection_target("native", "old:100:0").is_err());
         assert!(!context.native_stop);
         assert!(context.frames.as_array().unwrap().is_empty());
         assert!(state
@@ -1683,6 +1812,20 @@ mod tests {
         modules.insert("1".into(), "/another/build/libdemo_scalar.so".into());
         assert!(!verified_module(&stack, &binding, &modules));
         assert!(verified_stack(&stack, &binding));
+    }
+    #[test]
+    fn native_child_source_routes_only_from_the_selected_loaded_library() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("experiments/lldb-native-thread-control/Native");
+        let mut binding = binding("rust", "native");
+        binding.partner.spec.cwd = root.to_string_lossy().into();
+        binding.artifact = Some(root.join("build/libstep.so").to_string_lossy().into());
+        let frame = json!({"source":{"path":root.join("step.c")},"line":25,"moduleId":7});
+        let modules = HashMap::from([("7".into(), binding.artifact.clone().unwrap())]);
+        assert!(native_child_frame(&frame, &binding, &modules));
+        assert!(!native_child_frame(&frame, &binding, &HashMap::new()));
+        let outside = json!({"source":{"path":root.join("../RustLinkedStep/src/main.rs")},"line":25,"moduleId":7});
+        assert!(!native_child_frame(&outside, &binding, &modules));
     }
     #[test]
     fn bookmark_edits_do_not_mutate_the_running_generation() {

@@ -123,12 +123,15 @@ results are under `RustLinkedStep/runs/native-c/` or `runs/native-cpp/`:
 In two Craidd windows, keep **Native Libraries · Rust** selected in B. Put
 Blue on `BLUE_RUST_C_THREADS` or `BLUE_RUST_CPP_THREADS` in A. Put red on
 `BREAK_C_PAIR_WORKER` or `BREAK_CPP_PAIR_WORKER` in B. Start **White Debug in
-A**. At a native stop, inspect the real LLDB thread list in A, select a
-native worker with a source frame, and use ⇥. Compare both native counters
-for that owner after each stop, then switch workers and repeat. Record whether
-the stop appears in A or B. A child thread may lack the original Rust caller
-frame; the current Blue routing may therefore leave it in A. B has a linked
-native inspector but **no thread dropdown** for this shared LLDB session yet.
+A**. At a native stop, B lists the threads in A's **same LLDB session**.
+Select a native worker with a source frame in B and use ⇥ to step that worker
+only. Selecting in B also changes A's inspection and step target; the thread
+ID distinguishes native children that inherit their Rust caller's name.
+Compare the selected and sibling counters under `RustLinkedStep/runs/native-c/`
+or `runs/native-cpp/` after each step. The native child can be shown in B when
+its source and loaded library match the selected Native pairing, even if its
+stack has no Rust caller frame. Continue and ordinary Step can resume other
+threads in this shared process.
 Blue markers saved under another Rust Power Config remain visible as muted
 Blue markers when you switch configurations. Their tooltip names the owning
 config; they do not participate in the current launch. Set Blue on the call
@@ -139,8 +142,8 @@ records this boundary.
 
 The direct `rust-c-threads` and `rust-cpp-threads` probes passed selected
 **Rust-worker** steps while native calls created and joined child threads.
-The `probe_native_child.py` cases also selected a real native child in the
-original Rust process and advanced only its native counter while the other
-known threads were held. These direct DAP runs do not prove Craidd's ⇥
-control at that child, Blue routing, or B controls. Those are the desktop
-questions for these fixtures.
+The `probe_native_child.py` cases selected a real native child in the original
+Rust process. A focused two-window Craidd desktop run on 12 October 2026 also
+selected and stepped one native child from B for each C and C++ pairing;
+the selected counter advanced while the sibling counter stayed fixed. See the
+[MT checklist evidence](../../docs/feats/mt-debugging/tests/checklist.md).

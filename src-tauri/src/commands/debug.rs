@@ -1632,6 +1632,8 @@ pub(crate) fn launch_prepared(
                         "stackTrace" => {
                             let frames = annotate_debug_frames(message["body"]["stackFrames"].clone())
                                 .as_array().cloned().unwrap_or_default();
+                            super::native_debug::selected_frames(&app_reader, &label_reader, pgid,
+                                stop_generation, selected.thread_id, &json!(frames));
                             emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
                                 "sessionKey":format!("{}:{}", session.pgid, session.birth),
                                 "selectionEpoch":selected.selection_epoch, "frames":frames, "variables":[]}));
@@ -1659,6 +1661,8 @@ pub(crate) fn launch_prepared(
                                 if let Some(items) = message["body"]["variables"].as_array() { values.extend(items.iter().cloned()); }
                                 *remaining = remaining.saturating_sub(1);
                                 if *remaining == 0 {
+                                    super::native_debug::selected_variables(&app_reader, &label_reader, pgid,
+                                        stop_generation, &json!(values));
                                     emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
                                         "sessionKey":format!("{}:{}", session.pgid, session.birth),
                                         "selectionEpoch":selected.selection_epoch, "variables":values}));
@@ -1821,7 +1825,8 @@ pub(crate) fn launch_prepared(
                         let frames = annotate_debug_frames(message["body"]["stackFrames"].clone());
                         let first = frames.as_array().and_then(|items| items.first());
                         let (native_routed, skip_private_entry) = super::native_debug::on_frames(
-                            &app_reader, &label_reader, pgid, stop_generation, &frames, &stop_reason);
+                            &app_reader, &label_reader, pgid, stop_generation,
+                            session.thread_id.load(Ordering::Acquire), &frames, &stop_reason);
                         let reason = pending_native_stop.as_ref().filter(|(generation, _)| *generation == stop_generation)
                             .and_then(|(_, reason)| reason.as_str());
                         let finish_native = first.is_some_and(|frame| super::ldi::on_frame(
@@ -2053,9 +2058,16 @@ pub async fn debug_step_native_thread_only(
     window: WebviewWindow, app: AppHandle, session_key: String, thread_id: i64, incarnation: u64,
 ) -> Result<(), String> {
     let label = window.label().to_string();
-    tauri::async_runtime::spawn_blocking(move || super::ldi::with_control(&app, &label, "stepNativeThreadOnly", || {
+    tauri::async_runtime::spawn_blocking(move || step_native_thread_only_by_label(&app, &label, &session_key, thread_id, incarnation))
+        .await.map_err(|error| error.to_string())?
+}
+
+pub(crate) fn step_native_thread_only_by_label(
+    app: &AppHandle, label: &str, session_key: &str, thread_id: i64, incarnation: u64,
+) -> Result<(), String> {
+    super::ldi::with_control(app, label, "stepNativeThreadOnly", || {
         let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
-            .get(&label).cloned().ok_or("No debug session is active")?;
+            .get(label).cloned().ok_or("No debug session is active")?;
         if format!("{}:{}", session.pgid, session.birth) != session_key {
             return Err("Debugger session changed; select the thread again".into());
         }
@@ -2091,7 +2103,7 @@ pub async fn debug_step_native_thread_only(
             }
             Err(error) => { session.transport_busy.store(false, Ordering::Release); Err(error) }
         }
-    })).await.map_err(|error| error.to_string())?
+    })
 }
 
 #[tauri::command]
@@ -2138,9 +2150,16 @@ pub async fn debug_release_native_holds(
 }
 
 fn select_thread_by_label(app: &AppHandle, label: &str, thread_id: i64) -> Result<(), String> {
+    select_thread_by_label_expected(app, label, thread_id, None)
+}
+
+fn select_thread_by_label_expected(app: &AppHandle, label: &str, thread_id: i64, expected_pgid: Option<i32>) -> Result<(), String> {
     super::ldi::thread_inspection_ready(app, label)?;
     let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
         .get(label).cloned().ok_or("No debug session is active")?;
+    if expected_pgid.is_some_and(|pgid| pgid != session.pgid) {
+        return Err("The owning Rust debugger ended or restarted".into());
+    }
     if !session.multi_thread { return Err("Thread selection is unavailable for this linked debugging session".into()); }
     if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
         return Err("Debugger session ended".into());
@@ -2166,6 +2185,28 @@ fn select_thread_by_label(app: &AppHandle, label: &str, thread_id: i64) -> Resul
         "sessionKey":format!("{}:{}", session.pgid, session.birth)}));
     request_selection(&session, "stackTrace",
         json!({"threadId":thread_id, "startFrame":0, "levels":20}), selection)
+}
+
+pub(crate) fn live_native_threads(app: &AppHandle, owner: &str, pgid: i32) -> Result<Value, String> {
+    let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+        .get(owner).filter(|session| session.pgid == pgid).cloned()
+        .ok_or("The owning Rust debugger ended or restarted")?;
+    if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+        return Err("The owning Rust debugger is ending".into());
+    }
+    if !session.multi_thread { return Err("This Rust debugger has no thread list".into()); }
+    let _ = request(&session, "threads", json!({}));
+    let book = session.threads.lock().map_err(|error| error.to_string())?;
+    let mut snapshot = book.snapshot(&session);
+    snapshot["selectedThreadId"] = json!(book.selected_id);
+    drop(book);
+    snapshot["nativeSingleStep"] = json!(session.native_single_step.load(Ordering::Acquire));
+    snapshot["stepPending"] = json!(session.native_step_request.lock().map_err(|error| error.to_string())?.is_some());
+    Ok(snapshot)
+}
+
+pub(crate) fn select_live_native_thread(app: &AppHandle, owner: &str, pgid: i32, thread_id: i64) -> Result<(), String> {
+    select_thread_by_label_expected(app, owner, thread_id, Some(pgid))
 }
 
 #[tauri::command]
@@ -2244,7 +2285,12 @@ pub(crate) fn control_live_native(app: &AppHandle, label: &str, pgid: i32, actio
         let _ = request(&session, command, json!({"terminateDebuggee":true}));
         return Ok(());
     }
-    let thread = session.thread_id.load(Ordering::Acquire);
+    if !matches!(action, "pause") && session.native_step_request.lock().map_err(|e| e.to_string())?.is_some() {
+        return Err("Wait for the one-thread Step to stop, or Pause it".into());
+    }
+    let thread = if action == "pause" { session.thread_id.load(Ordering::Acquire) }
+        else { session.threads.lock().map_err(|e| e.to_string())?.selected_id
+            .ok_or("Select a paused thread in the shared Rust debugger first")? };
     if thread <= 0 { return Err("The Rust debugger thread is not ready".into()); }
     if session.transport_busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
         return Err("A debugger control is already in progress".into());
