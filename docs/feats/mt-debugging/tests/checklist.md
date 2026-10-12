@@ -65,6 +65,16 @@ These checks used an embedded Craidd debug build with the uncommitted MT repair,
 - `BP-16 state repair | 10 Oct | thread-control.cln, A Rust + C Threads, B Native Libraries · Rust | set four Blues at main.rs:16/21/26/31, close B through Craidd, open new B, re-pair line 26 | all four saved Blues changed from CS2 to CS3; no old partner ID in the Debug panel | partial repair | [blue-repaired.png](evidence/2026-10-12/blue-repaired.png)`. The test used direct `set_ldi_blue`/`close_linked_window` IPC in real Craidd windows. Reopening through the marker menu and hitting each native entry after the re-pair still need the human desktop pass.
 - `C# ordinary Step regression | 12 Oct | mt-lab.cln, C# Console · Basic, stock netcoredbg | red Program.cs:21, remove red, ordinary Step Over | source controls available; stopped at Program.cs:22 | pass for this run | [csharp-ordinary.png](evidence/2026-10-12/csharp-ordinary.png)`. This checks that source-frame filtering does not disable ordinary C# stepping; it does not qualify C# ⇥.
 
+### Retest on b7d173f — 12 October 2026 (agent harness)
+
+Embedded debug build of b7d173f, Arch GNOME Wayland, `tauri-driver` + `/usr/bin/WebKitWebDriver`, `/usr/bin/lldb-dap` 23.1.1, stock `/usr/bin/netcoredbg` 3.2.0-1. One scratch `HOME` was kept across launches so BP-17/18 could check persistence. All actions went through the live UI (gutter, menus, toolbar, window list, keyboard shortcuts); no Blue or window IPC was called directly. Screenshots are `p2a-*`/`p2b-*` under [evidence/2026-10-12/](evidence/2026-10-12/). One C# close-B attempt was discarded because the windows were touched by hand during it; the clean re-run is recorded. Verdicts changed only where the run covered every required variant.
+
+- `MT-03 | Rust/C++/C# Console · Basic | main thread in join | steps disabled with source-less reason; Continue → later red | Y`
+- `NX-01, NX-05 | Rust/C++/C Exclusive Step | source-less frames disabled; ⇥ main into held join → Pause → Continue → 1012/2012 | Y,Y`
+- `NX-06 | C Exclusive Step | Stop during ⇥ clean; breakpoint during ⇥ reported and released | blank (C only)`
+- `BP-02/03/13–20 | A Rust + C/C++ Lib/Threads, B Native Libraries · Rust (CS2→CS3); C# pair for BP-15 | see entries | BP-03/14/15/16/19/20 Y, BP-13 N, BP-17/18 OPEN`
+
+
 - [Y] **SET-01** Record the branch, commit, .NET SDK, Cargo, C/C++ compiler, `netcoredbg`, and `lldb-dap` paths and versions. Record whether C# uses the installed debugger or the optional experiment build. A selected directory is not a debugger executable.
 
   -- Observed: Branch `claude/mt-debugging-test-checklist-590c8d` at 2abe400 (code identical to 856859e on `feat/mt-debugging-cross-language-labs`; 2abe400 only changed this checklist). Craidd built with `tauri build --debug --no-bundle`.
@@ -153,13 +163,15 @@ Repeat **MT-01–08** with **C# Console · Basic**, **Rust Console · Basic**, a
   -- Evidence: Debug panel text before/after each selection (run log).
   -- Reasoning and UX: Selection did not resume anything. In C++ at the first stop the panel looks identical for both workers; only the dropdown label changes.
 
-- [N] **MT-03** Inspect a worker paused in `Join`, `Sleep`, a channel, or native/runtime code with no source line. Its stack remains inspectable; source stepping is unavailable or honestly disabled. Continue can reach a later source breakpoint.
+- [Y] **MT-03** Inspect a worker paused in `Join`, `Sleep`, a channel, or native/runtime code with no source line. Its stack remains inspectable; source stepping is unavailable or honestly disabled. Continue can reach a later source breakpoint.
 
   -- Variant C#: `Main Thread` in `Thread.Join():0` → stack inspectable; ↷↓↑ disabled with “This thread has no source line…”; dropdown shows the runtime-code notice. Pass. Minor defect: the Session block renders a bare `0` as the location (React prints `pausedLine` 0). [r1-004-mt03-cs-main.png](evidence/2026-10-10/r1-004-mt03-cs-main.png), [r1-005-mt03-cs-main-menu.png](evidence/2026-10-10/r1-005-mt03-cs-main-menu.png)
   -- Variant Rust: `mt-rust-console` top frame is `` libc.so.6`___lldb_unnamed_symbol_a08c0:15 `` (LLDB disassembly). Craidd treats it as a source line, so **↷ and ⇥ stay enabled**. Continue from there reached the later red at main.rs:27 (pass for that part). [r2-003-mt03-rs-main.png](evidence/2026-10-10/r2-003-mt03-rs-main.png), [r2-004-mt03-rs-continue-later-bp.png](evidence/2026-10-10/r2-004-mt03-rs-continue-later-bp.png)
   -- Variant C++: same as Rust: `mt_cpp_console` at `` libc.so.6`…:15 `` has ↷ and ⇥ enabled. Continue reached the later red at main.cpp:39. [r2-009-mt03-cpp-main.png](evidence/2026-10-10/r2-009-mt03-cpp-main.png)
   -- Reasoning and UX: **Functional failure (LLDB variants).** A frame without real source is offered source stepping. Repro: mt-lab, Rust Console · Basic, red on BREAK_RS_BASIC, Debug, select the main thread. See NX-01/NX-05 for the consequence.
   -- Repair checkpoint: On the later working-tree build, the Rust main thread's libc frame kept its stack visible and disabled ⇥ and ordinary source Step with an explanation. Repeat this exact `mt-lab` case and the C++ source-less variant before changing the historical verdict.
+  -- Retest (b7d173f, 12 Oct): exact `mt-lab` cases. Rust main (`mt-rust-console`, top frame libc `___lldb_unnamed_symbol_a08c0:15` under `JoinHandle::join`) and C++ main (`std::thread::join`) keep their stacks; ↷ ↓ ↑ ⇥ are all disabled with “This thread has no source line…”, and the dropdown shows the runtime-code notice. Continue then reached the later red (main.rs:27 / main.cpp:39). C# main in `Thread.Join():0`: same controls disabled, and the bare `0` location is gone. [p2a-017-mt03-rs-main.png](evidence/2026-10-12/p2a-017-mt03-rs-main.png), [p2a-018-mt03-rs-later-bp.png](evidence/2026-10-12/p2a-018-mt03-rs-later-bp.png), [p2a-019-mt03-cpp-main.png](evidence/2026-10-12/p2a-019-mt03-cpp-main.png), [p2a-020-mt03-cpp-later-bp.png](evidence/2026-10-12/p2a-020-mt03-cpp-later-bp.png), [p2a-021-mt03-cs-main.png](evidence/2026-10-12/p2a-021-mt03-cs-main.png), [p2a-022-mt03-cs-later-bp.png](evidence/2026-10-12/p2a-022-mt03-cs-later-bp.png)
+  -- Verdict: Y on b7d173f for C#, Rust and C++. The N above records 856859e.
 
 - [Y] **MT-04** Try ordinary Step Over, Into, and Out. Record the requested thread, the `continued`/`stopped` scope, and which thread actually stops next. If the adapter resumes all threads, another worker hitting red first is reported as such rather than claimed as an isolated step.
 
@@ -224,12 +236,14 @@ For the GUI variants in `mt-lab`, use **C# GUI · MT**, **Rust GUI · MT**, and 
 
 Use `experiments/lldb-native-thread-control/thread-control.cln` with the installed LLDB-DAP supported by this branch (currently qualified on Linux LLDB-DAP 23.1.1 with scripting). Repeat **NX-01–06** for **Rust Exclusive Step**, **C++ Exclusive Step**, and **C Exclusive Step**. The C fixture is compiled C code through Craidd's current CMake/C++ route.
 
-- [N] **NX-01** Put red on `BREAK_NATIVE`. When both workers have paused source frames, ⇥ appears. On an unqualified debugger build, source-less frame, or stop not verified to cover all threads, it is unavailable with an accurate reason; ordinary Step remains usable.
+- [Y] **NX-01** Put red on `BREAK_NATIVE`. When both workers have paused source frames, ⇥ appears. On an unqualified debugger build, source-less frame, or stop not verified to cover all threads, it is unavailable with an accurate reason; ordinary Step remains usable.
 
   -- Variant Rust/C++/C: at `BREAK_NATIVE` with both workers paused, ⇥ appears with the title “Experimental: Step selected thread only” (LLDB-DAP 23.1.1). [r2-012-nx01-rust-paused.png](evidence/2026-10-10/r2-012-nx01-rust-paused.png), [r2-020-nx01-cpp-paused.png](evidence/2026-10-10/r2-020-nx01-cpp-paused.png), [r2-028-nx01-c-paused.png](evidence/2026-10-10/r2-028-nx01-c-paused.png)
   -- Variant Rust (source-less): selecting `rust-exclusive-` (main, top frame `` libc.so.6`___lldb_unnamed_symbol_a08c0:15 ``) leaves **⇥ and ↷ enabled**. [r2-016-nx01-rust-main-sourceless.png](evidence/2026-10-10/r2-016-nx01-rust-main-sourceless.png) C++/C source-less frames were not selected in the experiment; the mt-lab C++ main frame showed the same enabled ⇥.
   -- Reasoning and UX: **Functional failure.** The disassembly `source` returned by LLDB counts as a source line, so the “source-less → unavailable with reason” rule never fires. Clicking it led to the NX-05 stall and leak.
   -- Repair checkpoint: The later Rust Exclusive Step desktop run disabled ⇥ on the libc main frame; see the repair log. C/C++ source-less selections still need a run on the repair.
+  -- Retest (b7d173f, 12 Oct): ⇥ appears at source worker stops in Rust, C++ and C. Source-less frames disable ⇥ and ordinary Step with the source-less reason: Rust main in libc `join`; C++ worker in `__mmap` under `operator new`; C workers in `__mmap`/`__munmap`. [p2b-070-nx01-rust-main-b7d173f.png](evidence/2026-10-12/p2b-070-nx01-rust-main-b7d173f.png), [p2a-003-nx01-cpp-worker-sourceless.png](evidence/2026-10-12/p2a-003-nx01-cpp-worker-sourceless.png), [p2a-009-nx01-c-worker-sourceless.png](evidence/2026-10-12/p2a-009-nx01-c-worker-sourceless.png)
+  -- Verdict: Y on b7d173f for all three. The N above records 856859e.
 
 - [Y] **NX-02** Record `worker-1.txt` and `worker-2.txt` under that project's `runs/rust`, `runs/cpp`, or `runs/c`. Select worker 1 and use ⇥ until the file write executes (often two steps): expect `1001` and `0`. Record both values **after each stop**.
 
@@ -252,12 +266,14 @@ Use `experiments/lldb-native-thread-control/thread-control.cln` with the install
   -- Evidence: counters and IDs in the run log.
   -- Reasoning and UX: No lease, ID or selected frame survived a restart.
 
-- [N] **NX-05** Step a thread into a lock/wait whose owner is held. Observe the stall rather than a false successful step. Pause, use the recovery release action at a verified all-thread stop if offered, then Continue or Stop; record any Output hold/release error and confirm no worker is left suspended.
+- [Y] **NX-05** Step a thread into a lock/wait whose owner is held. Observe the stall rather than a false successful step. Pause, use the recovery release action at a verified all-thread stop if offered, then Continue or Stop; record any Output hold/release error and confirm no worker is left suspended.
 
   -- Observed (Rust): the selected thread was the main thread blocked in `join` (reached through the NX-01 defect, not the `blocked.cpp` lock fixture). ⇥ → status `running` for 12 s; workers held at `1001/2001`; the dropdown said “Stepping rust-exclusive- #249153… use Pause or Stop to recover” and offered **Release native holds**. Pause → verified all-thread stop (reason `step`); the release button disappeared. After removing red and Continue, the UI showed all three threads `running`, but the counters stayed at `1001/2001` for 45 s+. `/proc/<pid>/task/*/status` showed both workers in **`t (tracing stop)`**. Output had no hold/release error (only `threads: notStopped`), and no release action was offered.
   -- Evidence: [r2-017-nx05-rust-main-step-blocked.png](evidence/2026-10-10/r2-017-nx05-rust-main-step-blocked.png), [r2-018-nx05-rust-paused-recovery.png](evidence/2026-10-10/r2-018-nx05-rust-paused-recovery.png), [r2-019-nx05-rust-leaked-hold.png](evidence/2026-10-10/r2-019-nx05-rust-leaked-hold.png); PID 249153.
   -- Reasoning and UX: **Functional failure: workers left suspended after Pause → Continue, while the UI claims they are running.** Stop killed the process, and the next Debug run started clean (`0/0` → `1001/0` → `1012/2012`). Repro: Rust Exclusive Step, red BREAK_NATIVE, Debug, select `rust-exclusive-`, ⇥, Pause, remove red, Continue.
   -- Repair checkpoint: The later Rust desktop run stepped from main.rs:27 into a blocked join, paused, continued, and terminated with `1012/2012`. This confirms that recovery path; the original breakpoint path, C/C++, and lock fixture still need retest.
+  -- Retest (b7d173f, 12 Oct): each fixture with red only on main's join line (Rust main.rs:27, C++ main.cpp:42, C main.c:63), then red removed and ⇥ on main. In every language: status `running`, counters held at `0/0` for 3–4 s, and the dropdown offered “Release native holds”. Pause → “One-thread Step requested <main>, but stopped on <main> (exception)” with step controls disabled at the source-less frame. Continue → terminated at `1012/2012`. Output had no hold/release lines. The wait is a join on held workers; `blocked.cpp` has no Craidd config, so the mutex fixture was not used. [p2b-074-nx05-rust-blocked.png](evidence/2026-10-12/p2b-074-nx05-rust-blocked.png), [p2b-075-nx05-rust-paused.png](evidence/2026-10-12/p2b-075-nx05-rust-paused.png), [p2b-076-nx05-rust-after-continue.png](evidence/2026-10-12/p2b-076-nx05-rust-after-continue.png), [p2a-004-nx05-cpp-blocked.png](evidence/2026-10-12/p2a-004-nx05-cpp-blocked.png), [p2a-005-nx05-cpp-paused.png](evidence/2026-10-12/p2a-005-nx05-cpp-paused.png), [p2a-006-nx05-cpp-after-continue.png](evidence/2026-10-12/p2a-006-nx05-cpp-after-continue.png), [p2a-010-nx05-c-blocked.png](evidence/2026-10-12/p2a-010-nx05-c-blocked.png), [p2a-011-nx05-c-paused.png](evidence/2026-10-12/p2a-011-nx05-c-paused.png), [p2a-012-nx05-c-after-continue.png](evidence/2026-10-12/p2a-012-nx05-c-after-continue.png)
+  -- Verdict: Y on b7d173f for all three. The N above records 856859e. Adding a Craidd config for `blocked.cpp` would cover the literal mutex case.
 
 - [ ] **NX-06** Try Stop during an outstanding ⇥ and a breakpoint/exception arriving during it. Check that the session terminates or stops cleanly and that no leaked hold affects the next Debug run.
 
@@ -265,6 +281,9 @@ Use `experiments/lldb-native-thread-control/thread-control.cln` with the install
   -- Observed: Stop after the NX-05 leaked hold terminated the process (no remaining PID), and the next run was clean. Stop *during* an outstanding ⇥, and a breakpoint arriving during ⇥, were not attempted.
   -- Evidence: NX-05 run log.
   -- Reasoning and UX: Only the “next run is clean” part is covered.
+  -- Retest (b7d173f, 12 Oct): Variant C, Stop during outstanding ⇥: ⇥ main into the held join, then Stop after 3.5 s → `terminated`, PID 119838 gone, no thread menu left. The next C runs were clean. [p2a-013-nx06-c-stop-during-step-before.png](evidence/2026-10-12/p2a-013-nx06-c-stop-during-step-before.png), [p2a-014-nx06-c-stop-during-step-after.png](evidence/2026-10-12/p2a-014-nx06-c-stop-during-step-after.png)
+  -- Variant C, breakpoint during ⇥: worker 1 at main.c:36, red added inside `write_count` (:19), ⇥ → stopped `breakpoint` at :19 on the same thread, with “One-thread Step requested c step 1 #120233, but stopped on #120233 (breakpoint)”. Worker 2 stayed at :35. Removing red and Continue → `1012/2012`. [p2a-016-nx06-c-breakpoint-during-step.png](evidence/2026-10-12/p2a-016-nx06-c-breakpoint-during-step.png)
+  -- Status: INCONCLUSIVE. Rust/C++ variants and an exception arriving during ⇥ not run.
 
 - [ ] **NX-07 — open stress case** Spawn/exit a thread while ⇥ is in flight; compare membership and work before/after. The current one-step snapshot only covers known threads, so record this as a limitation or failure of a stronger isolation claim, not as a pass inferred from NX-02.
 
@@ -341,13 +360,14 @@ Open `experiments/lldb-native-thread-control/thread-control.cln` in two windows.
   -- Observed: **Rust + C Lib**: 16 normal, others Gold. **Rust + C++ Lib**: 21 normal, others Gold. **→ C Threads**: back to 26 normal. Every tooltip names the excluding config and call. In a C Lib run, the armed `step_add_c` Blue stopped in `step.c:7` while the Gold ones did not interfere. Rust White Debug shows **no launch-preview dialog**; the Debug panel list is the only preview.
   -- Evidence: [r2-041-bp02-c-lib.png](evidence/2026-10-10/r2-041-bp02-c-lib.png), [r2-042-bp02-cpp-lib.png](evidence/2026-10-10/r2-042-bp02-cpp-lib.png), [r2-043-bp02-c-threads-final.png](evidence/2026-10-10/r2-043-bp02-c-threads-final.png), [r2-055-rl02-A-w1.png](evidence/2026-10-10/r2-055-rl02-A-w1.png)
   -- Reasoning and UX: C Lib launch passed. The C++ Lib launch was not run, and the requested launch preview does not exist for Rust live Native. Judge whether the Debug panel is a clear enough preview before signing off.
+  -- Retest (b7d173f, 12 Oct): **Rust + C++ Lib** launch with Blue on 21 and red on the same line: first stop red main.rs:21, Continue → Blue native entry `step.cpp:7` (B “Rust-owned native inspection · paused”), then the next red. Gold-bordered 16/26/31 never stopped. [p2a-026-bp03-cpp-lib-red-and-blue-21.png](evidence/2026-10-12/p2a-026-bp03-cpp-lib-red-and-blue-21.png), [p2a-027-bp02-cpp-lib-stop-1.png](evidence/2026-10-12/p2a-027-bp02-cpp-lib-stop-1.png), [p2a-028-bp02-cpp-lib-stop-2.png](evidence/2026-10-12/p2a-028-bp02-cpp-lib-stop-2.png)
+  -- Status: still INCONCLUSIVE only for the human call on whether the Debug panel is an adequate launch preview; both launches pass.
 
-- [ ] **BP-03** Click a Gold-bordered Blue to inspect/remove exactly that source-site intent; create it again and switch config. Removing one does not delete another. A red breakpoint on the same line retains ordinary red behavior.
+- [Y] **BP-03** Click a Gold-bordered Blue to inspect/remove exactly that source-site intent; create it again and switch config. Removing one does not delete another. A red breakpoint on the same line retains ordinary red behavior.
 
-  -- Status: NOT RUN
-  -- Observed: Remove/recreate of a single Gold-bordered Blue alongside a red on the same line was not attempted.
-  -- Evidence: None.
-  -- Reasoning and UX: No verdict; run it in a later pass on the same build.
+  -- Observed (b7d173f, A Rust + C Threads, B Native Libraries · Rust CS2): left-click on Gold-bordered 21 → menu “Set Red Breakpoint / Unreachable… Blue remains at this call site. / Remove Blue Breakpoint”. Set Red, then right-click → **Remove Blue Breakpoint** removed only Blue 21. 16/26/31 and the red at main.rs:21 remained. Right-click → “Set Native Debugging Breakpoint → CS2: Native Libraries · Rust” recreated it. Under Rust + C++ Lib, 21 became normal and the red still stopped first (see BP-02 retest).
+  -- Evidence: [p2a-024-bp03-gold-menu.png](evidence/2026-10-12/p2a-024-bp03-gold-menu.png), [p2a-025-bp03-after-remove-blue-21.png](evidence/2026-10-12/p2a-025-bp03-after-remove-blue-21.png), [p2a-026-bp03-cpp-lib-red-and-blue-21.png](evidence/2026-10-12/p2a-026-bp03-cpp-lib-red-and-blue-21.png)
+  -- Reasoning and UX: Pass. Friction: while red and Blue share a line, the gutter shows only the Blue marker; the red is visible only in the Breakpoints list and the hover (“Breakpoint · line 21 | Native Debugging Breakpoint…”).
 
 - [ ] **BP-04** Change the Native window's build Power Config or make its expected export unavailable. Distinguish **proven unreachable** (Gold border with reason) from **unresolved/missing/stale/ambiguous evidence** (needs attention or pending). Do not silently arm the wrong export or call every uncertain state unreachable. Restore the correct partner and verify eligibility returns.
 
@@ -412,61 +432,61 @@ Open `experiments/lldb-native-thread-control/thread-control.cln` in two windows.
   -- Evidence: [r2-058-bp12-after-close-B.png](evidence/2026-10-10/r2-058-bp12-after-close-B.png), [r2-059-bp12-white-debug-without-B.png](evidence/2026-10-10/r2-059-bp12-white-debug-without-B.png)
   -- Reasoning and UX: Pass, with the marker visibly flagged rather than silently pointing at a dead window. Friction: “→ CS3” still names the dead window.
 
-- [ ] **BP-13 — recovery from A** After BP-12, left-click the saved Blue and inspect its menu, then inspect the ghost Blue at an unset call site. Can either open or show B, select a compatible Native Power Config, and set/rebind the Blue without deleting it first? Record the exact labels, number of clicks, whether a new B window duplicates an existing hidden one, and whether the same source-site intent survives.
+- [N] **BP-13 — recovery from A** After BP-12, left-click the saved Blue and inspect its menu, then inspect the ghost Blue at an unset call site. Can either open or show B, select a compatible Native Power Config, and set/rebind the Blue without deleting it first? Record the exact labels, number of clicks, whether a new B window duplicates an existing hidden one, and whether the same source-site intent survives.
 
   -- Status: INCONCLUSIVE
   -- Observed: Left-click on pending Blue 26 opened a menu: “Set Red Breakpoint / Needs recheck: Debugging window is no longer open. Blue remains at this call site. / Remove Blue Breakpoint / Use Native Power Config → Open Native Libraries · Rust”. Gold-bordered 21 showed the same actions with only the unreachable reason. Choosing **Use Native Power Config** (2 clicks total) opened a new B (CS4); the same Blue intent survived, without deleting it first. The ghost-site variant was not available because all four sites held Blues.
   -- Evidence: [r2-060-bp13-pending-blue-menu.png](evidence/2026-10-10/r2-060-bp13-pending-blue-menu.png), [r2-061-bp13-gold-blue-menu.png](evidence/2026-10-10/r2-061-bp13-gold-blue-menu.png), [r2-062-bp16-after-repair.png](evidence/2026-10-10/r2-062-bp16-after-repair.png)
   -- Reasoning and UX: Saved-Blue recovery works for a closed B; the ghost-site path and already hidden B were not compared. Wording friction: “Needs recheck” for a closed window.
+  -- Retest (b7d173f, 12 Oct): saved pending Blue (B closed): left-click → “Use Native Power Config → Open Native Libraries · Rust” (2 clicks) opened a new B (CS3) and re-armed. Ghost site (Blue 31 just removed by a left-click on a healthy Blue, compatible B CS3 open and visible): hover says “⚠ You need to duplicate this window and open Power Config: Native Libraries · Rust, where step_pair_cpp exists…”, and the right-click menu offers only “Set Blue Breakpoint → Open Native Libraries · Rust”, not CS3. Choosing it **reused CS3** (no new window) and set Blue → CS3. [p2a-042-bp-ghost31-needs-window-with-B-open.png](evidence/2026-10-12/p2a-042-bp-ghost31-needs-window-with-B-open.png), [p2a-043-bp-ghost31-rightclick-menu.png](evidence/2026-10-12/p2a-043-bp-ghost31-rightclick-menu.png), [p2a-044-bp13-ghost-open-native-result.png](evidence/2026-10-12/p2a-044-bp13-ghost-open-native-result.png)
+  -- Verdict: N (state/UX defect). The ghost-site eligibility ignored an open compatible B, so the copy tells the user to duplicate a window that already exists. Repro: A Rust + C++ Threads, B Native Libraries · Rust opened via the Blue menu, left-click Blue 31 to remove it, hover 31. The action itself recovers correctly. Also note that left-clicking a healthy Blue deletes it with no confirmation, while left-click on a pending or Gold Blue opens a menu.
 
-- [ ] **BP-14 — hidden versus closed** Hide/minimize B, then repeat BP-13. The UI should distinguish **show existing B** from **open a new B** and from **B was closed**. Try B with unsaved edits and an incompatible Power Config; report whether recovery protects edits and gives an actionable error.
+- [Y] **BP-14 — hidden versus closed** Hide/minimize B, then repeat BP-13. The UI should distinguish **show existing B** from **open a new B** and from **B was closed**. Try B with unsaved edits and an incompatible Power Config; report whether recovery protects edits and gives an actionable error.
 
-  -- Status: NOT RUN
-  -- Observed: Hide/minimize B and dirty/incompatible B were not tested.
-  -- Evidence: None.
-  -- Reasoning and UX: No verdict; run it in a later pass on the same build.
+  -- Observed (b7d173f): **Hidden B** (window list → Hide CS3): eligible Blue 31 → pending “⚠ Show the Native window before starting Rust Native Debugging”; its menu still offers “Use Native Power Config → Open Native Libraries · Rust”, which refuses with “Error: Show the existing Native window from the Window Manager before pairing Rust Native Debugging” and creates no duplicate. Show CS3 re-armed 31 automatically. **Closed B** reads “Debugging window is no longer open” (BP-12/16). **Unsaved edit in B** (step.cpp): 31 → pending “⚠ Save or discard the Native window's edits before pairing or stepping Rust Native Debugging”; B's edit untouched. **Incompatible B** (Rust Exclusive Step): “⚠ Select a Rust Debug Power Config and a CMake Library Build Power Config”. Switching B back re-armed 31.
+  -- Evidence: [p2a-045-bp14-B-hidden.png](evidence/2026-10-12/p2a-045-bp14-B-hidden.png), [p2a-046-bp14-B-hidden-menu31.png](evidence/2026-10-12/p2a-046-bp14-B-hidden-menu31.png), [p2a-047-bp14-after-use-native-from-hidden.png](evidence/2026-10-12/p2a-047-bp14-after-use-native-from-hidden.png), [p2a-048-bp14-B-dirty.png](evidence/2026-10-12/p2a-048-bp14-B-dirty.png), [p2a-049-bp14-A-with-dirty-B.png](evidence/2026-10-12/p2a-049-bp14-A-with-dirty-B.png), [p2a-050-bp14-B-incompatible-menu.png](evidence/2026-10-12/p2a-050-bp14-B-incompatible-menu.png)
+  -- Reasoning and UX: The states are distinguished, edits are protected, and errors are actionable. Friction for the UX pass: the hidden-B menu says “Open…” but answers with an error instead of offering “Show CS3”; the incompatible-B copy is the generic two-config sentence although A is already valid; the panel keeps “→ CS3” in every state.
 
-- [ ] **BP-15 — close B at a stop** In Rust live Native, close B while paused in native source; A must retain control of its original LLDB process, with no stale B frame or leaked private breakpoint. In C# LDI, close B during an active reproduction; A's held origin must be released or stopped once, with no stale handoff. Record which window remains usable and whether re-pairing requires a fresh launch.
+- [Y] **BP-15 — close B at a stop** In Rust live Native, close B while paused in native source; A must retain control of its original LLDB process, with no stale B frame or leaked private breakpoint. In C# LDI, close B during an active reproduction; A's held origin must be released or stopped once, with no stale handoff. Record which window remains usable and whether re-pairing requires a fresh launch.
 
-  -- Status: NOT RUN
-  -- Observed: B was not closed while paused.
-  -- Evidence: None.
-  -- Reasoning and UX: No verdict; run it in a later pass on the same build.
+  -- Variant Rust (b7d173f, A Rust + C++ Lib): paused at Blue entry `step.cpp:7`, B (CS2) closed from A's window list without a prompt. A stayed paused at step.cpp:7 with reason “Native view detached; continue debugging in the Rust window”, stack intact, and all controls available. ↷ → step.cpp:8; Continue → next red main.rs:21; counters advanced to `1002/2002`. The Blues stayed saved (“Bindings are frozen until Rust Debug restarts”; 26 “Debugging window is no longer open”). [p2a-030-bp15-rust-after-close-B-at-native-stop.png](evidence/2026-10-12/p2a-030-bp15-rust-after-close-B-at-native-stop.png), [p2a-031-bp15-rust-after-continue.png](evidence/2026-10-12/p2a-031-bp15-rust-after-continue.png)
+  -- Variant C# (b7d173f, A C# Threads + C Threads CS1, B Native Libraries · C# LDI CS3; clean re-run after an interrupted first attempt): A held `managed linked 2 #152251` (`step_add_c(2001, 0)`), B `driver` paused at step.c:15. Closing B (no prompt) → A `running` once → terminated with A's own results `1040/2040`; no B driver process remained. **Both C# Blue intents were discarded**: sites 23 and 28 became `ghost-needs-window` with “⚠ You need to duplicate this window…”, and the LDI panel emptied. [p2b-068-bp15-cs-rerun-before-close.png](evidence/2026-10-12/p2b-068-bp15-cs-rerun-before-close.png), [p2b-069-bp15-cs-rerun-after-close.png](evidence/2026-10-12/p2b-069-bp15-cs-rerun-after-close.png)
+  -- Reasoning and UX: Both variants are truthful with no stale handoff. Re-pairing needs a fresh launch in both. Rust keeps Blue intent on close but C# discards it; that difference feeds the worksheet.
 
-- [N] **BP-16 — re-pair and switch** Reopen B from A's existing Blue, choose the compatible C or C++ library build, and restart Debug if required. Verify the original Blue arms and reaches the intended native entry. Repeat with a different B instance/config and check that the old window ID, export, and warning are not reused.
+- [Y] **BP-16 — re-pair and switch** Reopen B from A's existing Blue, choose the compatible C or C++ library build, and restart Debug if required. Verify the original Blue arms and reaches the intended native entry. Repeat with a different B instance/config and check that the old window ID, export, and warning are not reused.
 
   -- Observed: After BP-13, Blue 26 became normal “→ CS4”. White Debug stopped at `step_pair_c` entry step.c:20 (with native red removed; with red at step.c:25 it landed on that red, matching the documented landing rule). The B panel showed “Native Libraries · Rust · CS4 · Rust link · paused”. However, the other three Blues still read **“→ CS3”** (the closed window) in A's panel after the re-pair.
   -- Evidence: [r2-062-bp16-after-repair.png](evidence/2026-10-10/r2-062-bp16-after-repair.png), [r2-063-bp16-B-native-entry.png](evidence/2026-10-10/r2-063-bp16-B-native-entry.png), [r2-064-bp16-blue-only-run.png](evidence/2026-10-10/r2-064-bp16-blue-only-run.png)
   -- Reasoning and UX: The primary re-pair passes. It fails the “old window ID is not reused” clause for the other saved Blues (state/UX defect). The repeat with a second B instance or config was not run.
   -- Repair checkpoint: In the later working-tree desktop run, closing B through Craidd and re-pairing line 26 moved all four saved Blues to new CS3. The marker-menu click path and a post-repair native-entry launch remain to test.
+  -- Retest (b7d173f, 12 Oct): marker-menu path: B closed, left-click pending Blue 26 → “Use Native Power Config → Open Native Libraries · Rust” → new B CS3, and **all four** saved Blues read “→ CS3”. White Debug under Rust + C Threads stopped at `step.c:20`; switching A to Rust + C++ Threads and launching stopped at `step.cpp:12`, with B showing “Native Libraries · Rust · CS3 · Rust link · paused”. [p2a-035-bp16-marker-menu-repair.png](evidence/2026-10-12/p2a-035-bp16-marker-menu-repair.png), [p2a-036-bp16-c-threads-native-entry-B.png](evidence/2026-10-12/p2a-036-bp16-c-threads-native-entry-B.png), [p2a-039-bp16-cpp-threads-native-entry-A.png](evidence/2026-10-12/p2a-039-bp16-cpp-threads-native-entry-A.png)
+  -- Verdict: Y on b7d173f. The N above records 856859e.
 
 - [ ] **BP-17 — close every solution window** With Blue and red markers set, close A and B but leave the Craidd process running if the app permits it; reopen the same `.cln`. Record exact Blue/red presence, partner identity, window layout, and whether a single clear action can restore B. If closing the final window quits the process, record that fact and use BP-18 instead.
 
-  -- Status: BLOCKED
-  -- Observed: Not attempted. The harness gives each app launch a fresh scratch HOME, so state that persists across windows or app sessions cannot be judged without changing the harness.
-  -- Evidence: None.
-  -- Reasoning and UX: Needs a harness mode that reuses HOME, or a human run.
+  -- Status: OPEN (persistence decision)
+  -- Observed (b7d173f, fixed scratch HOME): with saved Blues (21/26/31) and red main.rs:47, **File → Exit → This Solution** (Ctrl+Shift+Q) showed “Closing… Closing all windows in this solution. Cancel / Close”, with no mention of Blue intent. Craidd stayed running (mt-lab window). Reopening `thread-control.cln` gave one new window (CS5) on the default config **Rust Exclusive Step**, no tabs, no B. The red main.rs:47 survived; **no Blue intent, ghost or partner survived**. Restoring B needs the full manual setup again. Closing the last window from the window list was not offered for a single-window solution.
+  -- Evidence: [p2a-054-bp17-exit-solution.png](evidence/2026-10-12/p2a-054-bp17-exit-solution.png), [p2a-055-bp17-reopened.png](evidence/2026-10-12/p2a-055-bp17-reopened.png), [p2a-057-bp17-reopened-main-rs.png](evidence/2026-10-12/p2a-057-bp17-reopened-main-rs.png)
+  -- Reasoning and UX: Blues are window-scoped and discarded silently on all-window close, while reds persist. Decide in the worksheet.
 
 - [ ] **BP-18 — full IDE restart** Quit Craidd entirely, relaunch, and reopen the same `.cln`. Record whether Blue intent, its source site, partner Power Config, and red breakpoints return; do not confuse restored windows with restored Blue state. The current design describes Blue pairings as app/window-scoped rather than persisted, so treat this as a **public-release persistence decision** until a requirement and implementation are agreed, not as a passing restore test.
 
-  -- Status: BLOCKED
-  -- Observed: Same as BP-17 (each relaunch gets a new scratch HOME).
-  -- Evidence: None.
-  -- Reasoning and UX: Persistence decision still open.
+  -- Status: OPEN (persistence decision)
+  -- Observed (b7d173f, same HOME across launches): A CS5 Rust + C++ Threads with Blue 31 → B CS6. **Exit → This Application** (Ctrl+Alt+Q) → “Closing… Exiting the IDE.” → Close; process gone. Relaunch → Get Started lists “Previously opened windows” (three thread-control rows plus mt-lab). **Open 3** on the first row reopened **three** windows, **all on Native Libraries · Rust**; A's Rust + C++ Threads window was not restored. Red main.rs:47 returned; **no Blue intent returned**.
+  -- Evidence: [p2a-058-bp18-before-quit.png](evidence/2026-10-12/p2a-058-bp18-before-quit.png), [p2a-059-bp18-quit-dialog.png](evidence/2026-10-12/p2a-059-bp18-quit-dialog.png), [p2b-061-bp18-get-started.png](evidence/2026-10-12/p2b-061-bp18-get-started.png), [p2b-062-bp18-restored-workspace-1.png](evidence/2026-10-12/p2b-062-bp18-restored-workspace-1.png)
+  -- Reasoning and UX: The Blue result matches the documented app/window-scoped design. Separate finding for review: the restored window group does not reproduce the A/B arrangement (three identical Native windows).
 
-- [ ] **BP-19 — explicit removal** Remove one Blue by its menu, then close B. Confirm only that site disappears; other Blues and reds remain. Compare deliberate removal with merely closing B. If both actions discard the same user intent, record the recovery cost and whether the UI warned before doing so.
+- [Y] **BP-19 — explicit removal** Remove one Blue by its menu, then close B. Confirm only that site disappears; other Blues and reds remain. Compare deliberate removal with merely closing B. If both actions discard the same user intent, record the recovery cost and whether the UI warned before doing so.
 
-  -- Status: NOT RUN
-  -- Observed: Menu removal followed by closing B was not run.
-  -- Evidence: None.
-  -- Reasoning and UX: No verdict; run it in a later pass on the same build.
+  -- Observed (b7d173f): with 16/21/26/31 saved and red main.rs:47, closing B (CS3) removed no Blue (31 pending “Debugging window is no longer open”, the others Gold). Then Gold-bordered 16 → menu **Remove Blue Breakpoint** → only 16 became a ghost (`ghost-needs-window`). 21/26/31 and the red remained, and the panel lost only `step_add_c`. No warning before the deliberate removal; none expected.
+  -- Evidence: [p2a-051-bp19-after-remove-16-and-close-B.png](evidence/2026-10-12/p2a-051-bp19-after-remove-16-and-close-B.png), [p2a-052-bp19-after-removing-16.png](evidence/2026-10-12/p2a-052-bp19-after-removing-16.png)
+  -- Reasoning and UX: Pass for Rust. Closing B keeps intent and removal deletes exactly one site. In C#, closing B deletes intent (BP-15).
 
-- [ ] **BP-20 — combined states** Close B while the selected Rust Power Config also excludes one saved Blue; then reopen B under a compatible config. Repeat with unsaved source edits and with two Blues sharing B. Record which reason the marker/menu shows first, whether the other reason remains discoverable, and whether fixing one condition restores only the eligible sites. A Gold border must not make a missing partner or unsaved source look like proven compile exclusion.
+- [Y] **BP-20 — combined states** Close B while the selected Rust Power Config also excludes one saved Blue; then reopen B under a compatible config. Repeat with unsaved source edits and with two Blues sharing B. Record which reason the marker/menu shows first, whether the other reason remains discoverable, and whether fixing one condition restores only the eligible sites. A Gold border must not make a missing partner or unsaved source look like proven compile exclusion.
 
-  -- Status: INCONCLUSIVE
-  -- Observed (partial): with B closed and Rust + C Threads excluding 16/21/31, those markers and their menus show **only** “Unreachable…”. The missing-partner reason is not discoverable on them; only the eligible site 26 shows “Debugging window is no longer open”. Re-pairing restored 26 only; the others stay Gold and keep “→ CS3”.
-  -- Evidence: [r2-061-bp13-gold-blue-menu.png](evidence/2026-10-10/r2-061-bp13-gold-blue-menu.png), [r2-062-bp16-after-repair.png](evidence/2026-10-10/r2-062-bp16-after-repair.png)
-  -- Reasoning and UX: The unsaved-edit and two-Blues-sharing-B variants were not run.
+  -- Observed (b7d173f, four Blues sharing B): with B closed under Rust + C Threads, the Gold-bordered 16/21/31 (hover and menu) show **only** “Unreachable under this Power Config…”, and the closed-partner reason is not discoverable on them. Eligible 26 shows “⚠ Debugging window is no longer open”. Adding an unsaved edit in A made 26 show both “⚠ Debugging window is no longer open” and “Unsaved edits: Blue still uses the last saved call site. Save to revalidate it.”; the Gold sites still showed only exclusion. Undoing the edit and re-pairing via 26's menu armed only the eligible site, and all four moved to the new B.
+  -- Evidence: [p2a-032-bp20-B-closed-c-threads.png](evidence/2026-10-12/p2a-032-bp20-B-closed-c-threads.png), [p2a-033-bp20-menu-26.png](evidence/2026-10-12/p2a-033-bp20-menu-26.png), [p2a-034-bp20-dirty-A.png](evidence/2026-10-12/p2a-034-bp20-dirty-A.png), [p2a-035-bp16-marker-menu-repair.png](evidence/2026-10-12/p2a-035-bp16-marker-menu-repair.png)
+  -- Reasoning and UX: Pass: the Gold border appears only on compile-excluded sites, and fixing one condition restores only eligible sites. UX friction for review: the secondary reasons (closed B, unsaved source) are hidden on Gold-bordered sites until their config is selected.
 
 For every BP case, record selected A/B configs, source site, marker color/border/tooltip, build artifact/export evidence, launch preview, actual stop, and thread/session identity. See [Blue breakpoint reachability](../../ldi-debugging/design-blue-breakpoint-reachability.md).
 
@@ -479,18 +499,18 @@ Use the BP-11–20 screenshots and results before choosing a release behavior. S
 - What becomes simpler or clearer? _Write after test._
 - What user work is lost (site, condition, partner choice), and how many steps restore it? _Write after test._
 - Is closing B an unambiguous request to delete this breakpoint? What warning or undo would be needed? _Write after test._
-- Result for Rust / C# / all-window reopen: _Write after test._
+- Result for Rust / C# / all-window reopen: Facts on b7d173f: closing B keeps Rust Blues (pending, re-pairable in 2 clicks) but **deletes C# Blues** (BP-15); closing every solution window and a full restart keep reds but drop all Blues (BP-17/18). Judgement: _for the UX pass._
 
 **B. Keep Blue as an actionable marker that can reopen or re-pair B**
 
 - What should left-click, right-click, hover, and the Debug panel offer? Can A recover without first deleting Blue? _Write after test._
-- How is a closed B distinguished from a hidden B, an incompatible config, and a proven unreachable call? _Write after test._
+- How is a closed B distinguished from a hidden B, an incompatible config, and a proven unreachable call? Today's copy: closed “Debugging window is no longer open”; hidden “Show the Native window before starting Rust Native Debugging”; dirty B “Save or discard the Native window's edits…”; incompatible “Select a Rust Debug Power Config and a CMake Library Build Power Config”; unreachable = Gold border “Unreachable under the selected Power Config…”. Secondary reasons are hidden on Gold-bordered sites (BP-14/20). Judgement: _for the UX pass._
 - What should persist across all-window close and full IDE restart: source site, condition, native config, exact window instance, or none? _Write after test._
-- How do we prevent duplicate B windows and stale debugger bindings? Result for Rust / C#: _Write after test._
+- How do we prevent duplicate B windows and stale debugger bindings? Result for Rust / C#: Facts: re-pair reused an open B and refused a hidden one with an actionable error (no duplicates seen); all saved Rust Blues move to the new B ID (BP-16); a running Rust session freezes bindings until restart. The ghost-site copy still asks to duplicate an existing B (BP-13). Design: _for the UX pass._
 
 **C. Keep today's behavior and improve wording/discoverability**
 
-- Does “Use Native Power Config → Open …” already recover the Blue reliably, or only appear after a non-obvious click? _Write after test._
+- Does “Use Native Power Config → Open …” already recover the Blue reliably, or only appear after a non-obvious click? Facts: it recovered a closed B reliably (2 clicks, BP-13/16), only appears after left-clicking a pending/Gold Blue or right-clicking any marker, and errors instead of showing a hidden B (BP-14). Left-clicking a healthy Blue deletes it without a menu. Judgement: _for the UX pass._
 - Which exact tooltip/menu/panel labels should change? Does clearer copy suffice without changing state behavior? _Write after test._
 - What remains confusing after a newcomer follows the revised wording once? Result for Rust / C#: _Write after test._
 
@@ -589,6 +609,7 @@ Use `experiments/netcoredbg-thread-control/thread-control.cln` in two windows: A
   -- Variant C: B finished (`native-c` 20/20) → A released once. Worker 2, already at Blue, started **LDI #3** (`2001`). Finishing #3 → A wrote its own results `1001/2001`, then **LDI #4** (`2002`). Gold Stop during #4 → A and B `terminated`, no remaining dotnet/driver processes. [r2-074-cl04-A-after-release.png](evidence/2026-10-10/r2-074-cl04-A-after-release.png), [r2-075-cl04-A-next-handoff.png](evidence/2026-10-10/r2-075-cl04-A-next-handoff.png), [r2-076-cl04-A-after-gold-stop.png](evidence/2026-10-10/r2-076-cl04-A-after-gold-stop.png), [r2-077-cl04-B-after-gold-stop.png](evidence/2026-10-10/r2-077-cl04-B-after-gold-stop.png)
   -- Variant C++: B finished → release and new token **LDI #7** (`1001`). A's own result was not confirmed before Gold Stop (clean termination). [r2-081-cl04-cpp-A-next.png](evidence/2026-10-10/r2-081-cl04-cpp-A-next.png)
   -- Reasoning and UX: Finish and Stop are truthful. Cancel, exception and closing either window were not run.
+  -- Retest (b7d173f, 12 Oct): closing B during an active reproduction released A once and ran its own calls to `1040/2040`, with no stale handoff (BP-15 C# variant). Cancel, exception and closing A remain unrun.
 
 - [ ] **CL-05** Remove/restore a prepared Blue during a run, edit its condition, and add a new Blue site after Gold launch. The prepared site follows its documented current-run rules; an unprepared site asks for Gold Restart rather than silently binding. Red on the same line remains independent.
 
@@ -681,6 +702,7 @@ Use the solution map above for each EDGE ID. EDGE-01 uses the two independent C#
   -- Observed: On 856859e, MT-01/02/04 passed in C#, Rust and C++, while MT-03 failed for LLDB. The 10 October repair checkpoint disabled source Step on the Rust main thread's libc frame; C/C++ source-less variants and later source-breakpoint recovery remain untested. MT-05/06, GUI and most of MT-07/08 were not run.
   -- Evidence: MT entries and repair checkpoints above.
   -- Reasoning and UX: The focused repair does not complete the per-language gate.
+  -- Retest (b7d173f): MT-03 now passes in C#, Rust and C++. MT-05/06, GUI and parts of MT-07/08 remain unrun, so the gate stays open.
 
 - [ ] **Gate B — native ⇥:** NX-01–06 pass in Craidd for Rust, C, and C++ on a recorded qualified LLDB build. Document NX-07 and other limitations with actual evidence.
 
@@ -688,6 +710,7 @@ Use the solution map above for each EDGE ID. EDGE-01 uses the two independent C#
   -- Observed: On 856859e, NX-02–04 passed for Rust, C++ and C; NX-01/NX-05 failed. The 10–12 October working-tree checkpoint passed the Rust source-less control, normal worker step, and blocked-join Pause → Continue recovery. C/C++ recovery, the lock fixture, NX-06 remainder, and NX-07 were not run on the repair.
   -- Evidence: NX entries and repair checkpoints above.
   -- Reasoning and UX: Re-run the full cases on a committed build before qualifying native ⇥.
+  -- Retest (b7d173f): NX-01 and NX-05 now pass for Rust, C++ and C; NX-02–04 passed earlier. NX-06 has a C-only result, and NX-07 is unrun.
 
 - [ ] **Gate C — Blue reachability and lifecycle:** BP-01–05 pass through both Rust+native pairings with four saved Blues and a real two-window launch. BP-11–20 have desktop results, and the close/reopen worksheet records the chosen release behavior. BP-06/07 require new fixtures; BP-08 remains open until C# parity is built and tested.
 
@@ -695,6 +718,7 @@ Use the solution map above for each EDGE ID. EDGE-01 uses the two independent C#
   -- Observed: BP-01 passed on 856859e; BP-02 remains partial because C++ Lib was not launched. BP-03–05, 14, 15 and 17–19 were not run. BP-16 failed on a stale partner ID in that build; the 10 October working-tree checkpoint moved all four IDs after one re-pair, but did not repeat the marker-menu and native-entry launch paths. The worksheet remains pending.
   -- Evidence: BP entries and repair checkpoint above.
   -- Reasoning and UX: Lifecycle evidence is incomplete.
+  -- Retest (b7d173f): BP-03, 14, 15, 16, 19 and 20 pass. BP-13 fails (ghost copy ignores an open B). BP-17/18 record that Blue intent is not persisted. BP-02 and BP-10/11 await human judgement; BP-04/05 are unrun. The worksheet decision is still pending.
 
 - [ ] **Gate D — linked MT:** RL-01–08 and CL-01–08 have separate desktop results. Mark current Rust B native-child UI limitation and any C# recovery gaps openly.
 
