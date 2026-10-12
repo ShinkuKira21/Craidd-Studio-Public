@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import { refreshNativeThreads, selectNativeThread, useNativeDebug } from "../../store/nativeDebugStore";
 
+function elapsed(ms: number): string {
+  return ms < 1000 ? `${Math.max(0, Math.round(ms))}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
 /** B inspects A's one LLDB session. Selecting here changes the shared step target. */
 export default function NativeThreadDropdown() {
   const context = useNativeDebug((state) => state.context);
   const snapshot = useNativeDebug((state) => state.threads);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => performance.now());
 
   useEffect(() => {
     if (!context) return;
@@ -20,6 +25,13 @@ export default function NativeThreadDropdown() {
   }, [context?.token]);
 
   useEffect(() => { setOpen(false); setError(null); }, [context?.token]);
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible" && document.hasFocus()) setNow(performance.now());
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [open]);
   if (!context) return null;
   const current = snapshot?.token === context.token ? snapshot : null;
   const selected = current?.threads.find((thread) => thread.id === current.selectedThreadId);
@@ -42,15 +54,24 @@ export default function NativeThreadDropdown() {
         {current?.stale && <p role="status" className="px-1 pb-2 text-amber-300">Thread list may be stale; waiting for LLDB.</p>}
         {error && <p role="alert" className="px-1 pb-2 text-red-300">{error}</p>}
         <div className="space-y-1">
-          {current?.threads.map((thread) => <button key={`${current.sessionKey}:${thread.incarnation}`}
+          {current?.threads.map((thread) => {
+            const sinceSnapshot = Math.max(0, now - (thread.receivedAt ?? now));
+            const observedFor = elapsed(thread.observedMs + sinceSnapshot);
+            const ranFor = elapsed(thread.ranMs + (thread.state === "running" ? sinceSnapshot : 0));
+            const duration = thread.runObserved ? `ran for ${ranFor}`
+              : thread.state === "paused" ? "running time unavailable" : `observed for ${observedFor}`;
+            return <button key={`${current.sessionKey}:${thread.incarnation}`}
             type="button" disabled={thread.state !== "paused" || current.stepPending}
-            aria-label={`${thread.name}, ID ${thread.id}, ${thread.state}${thread.state === "paused" ? ", inspect" : ", pause to inspect"}`}
+            aria-label={`${thread.name}, ID ${thread.id}, ${thread.state} ${duration}${thread.state === "paused" ? ", inspect" : ", pause to inspect"}`}
             onClick={() => void selectNativeThread(thread.id).then(() => setOpen(false))
               .catch((failure) => setError(String(failure)))}
             className={`block w-full rounded px-1.5 py-1 text-left ${thread.state === "paused" ? "hover:bg-zinc-800" : "opacity-70 cursor-default"} ${thread.id === current.selectedThreadId ? "bg-zinc-800" : ""}`}>
-            <span className="text-zinc-200">{thread.name}</span> <span className="text-zinc-500">#{thread.id}</span>
-            <span className={thread.reason === "exception" ? "text-red-300" : thread.state === "paused" ? "text-amber-300" : "text-zinc-500"}> · {thread.state}</span>
-          </button>)}
+            <span className="block truncate text-zinc-200">{thread.name} <span className="text-zinc-500">#{thread.id}</span></span>
+            <span className={thread.reason === "exception" ? "text-red-300" : thread.state === "paused" ? "text-amber-300" : "text-zinc-500"}>{thread.reason === "exception" ? "● exception · paused" : thread.state === "paused" ? "● paused" : thread.state}</span>
+            <span className="ml-2 text-zinc-500" title={thread.runObserved
+              ? `Cumulative debugger-observed running time, excluding pauses; not CPU time. Total observed for ${observedFor}.`
+              : `The debugger has not established a running interval for this thread. Total observed for ${observedFor}.`}>· {duration}</span>
+          </button>})}
           {!current?.threads.length && <p className="px-1 text-zinc-500">Waiting for LLDB threads.</p>}
         </div>
       </div>

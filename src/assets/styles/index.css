@@ -236,8 +236,8 @@ select {
   background: conic-gradient(#ef4444 0deg 120deg, #3b82f6 120deg 360deg);
 }
 .craidd-breakpoint-unreachable {
-  border: 2px solid #b77935;
-  box-sizing: border-box;
+  outline: 2px solid #fbbf24;
+  outline-offset: 2px;
 }
 .craidd-breakpoint-pending {
   outline: 2px dotted #93c5fd;
