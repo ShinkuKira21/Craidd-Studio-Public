@@ -9,7 +9,7 @@ import { useLdi } from "../../store/ldiStore";
 import { detectLinkedStartupSuggestions } from "../../lib/linkedStartup";
 import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
 import WindowManager from "./WindowManager";
-import { useDebug } from "../../store/debugStore";
+import { hasDebugSourceLine, useDebug } from "../../store/debugStore";
 import { useNativeDebug } from "../../store/nativeDebugStore";
 import ThreadDropdown from "./ThreadDropdown";
 
@@ -73,7 +73,7 @@ function Toolbar() {
   const liveLinked = Boolean(native) || liveOwner;
   const viewedStatus = native?.status ?? remote?.status ?? (["building", "starting", "running", "paused"].includes(debugStatus) ? debugStatus : status);
   const localStepUnavailable = !remote && !native && threadSessionKey && viewedStatus === "paused"
-    && (selectedThreadId == null || !debugFrames[0]?.source?.path || !debugFrames[0]?.line);
+    && (selectedThreadId == null || !hasDebugSourceLine(debugFrames[0]));
   const localStepReason = selectedThreadId == null
     ? "Select a paused thread before stepping"
     : debugFrames.length === 0

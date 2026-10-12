@@ -723,8 +723,8 @@ pub(crate) fn set_blue(
     let binding = Binding {
         blue: blue.clone(),
         native,
-        origin: a,
-        partner: b,
+        origin: a.clone(),
+        partner: b.clone(),
         artifact: None,
     };
     let manager = app.state::<NativeDebugManager>();
@@ -737,11 +737,47 @@ pub(crate) fn set_blue(
     {
         return Err("Limit of 64 Rust Native Breakpoints per window".into());
     }
+    // Re-pairing one saved Blue from a closed B is an explicit recovery of
+    // that native view. Move its other saved call sites to the replacement B,
+    // including cfg-excluded sites; missing exports remain saved but unarmed.
+    // A live B is never moved implicitly; it may intentionally own only one
+    // of several call sites.
+    let old_partner = points.iter().find(|point| point.blue.file == blue.file && point.blue.line == line)
+        .map(|point| point.partner.label.clone());
+    if let Some(old_partner) = old_partner.filter(|old| old != partner
+        && app.get_webview_window(old).is_none()) {
+        rebind_closed_partner_points(points, &old_partner, &a, &b, blue.pending_restart);
+    }
     points.retain(|p| p.blue.file != blue.file || p.blue.line != line);
     points.push(binding);
     drop(state);
     let _ = app.emit("craidd:ldi-blues", ());
     Ok(blue)
+}
+
+fn rebind_closed_partner_points(points: &mut [Binding], old_label: &str,
+    origin: &LdiSelection, partner: &LdiSelection, pending_restart: bool) {
+    for saved in points.iter_mut().filter(|point| point.partner.label == old_label) {
+        // Even an export this build cannot provide belongs to the replacement
+        // window now. The resolver will show it as unreachable; retaining the
+        // closed window's ID would make that saved source site look stranded.
+        let native = definition(&partner.spec.cwd, &saved.blue.entry_point).ok();
+        saved.origin = origin.clone();
+        saved.partner = partner.clone();
+        if let Some(native) = native.as_ref() { saved.native = native.clone(); }
+        saved.artifact = None;
+        saved.blue.origin_instance = origin.instance_id.clone();
+        saved.blue.partner_label = partner.label.clone();
+        saved.blue.partner_instance = partner.instance_id.clone();
+        saved.blue.partner_window_id = partner.window_id;
+        saved.blue.library = partner.spec.label.clone();
+        saved.blue.native_points = native.as_ref().map(|native| matching_reds(&origin.solution, native))
+            .unwrap_or_default();
+        saved.blue.landing = if saved.blue.native_points.is_empty() { "automatic-entry" } else { "red" }.into();
+        saved.blue.warning = None;
+        saved.blue.unreachable = None;
+        saved.blue.pending_restart = pending_restart;
+    }
 }
 pub(crate) fn remove_blue(
     app: &AppHandle,
@@ -1798,6 +1834,64 @@ mod tests {
             Err(ResolutionFailure::Unreachable(_))));
         assert_eq!(saved.origin.configuration.as_deref(), Some("rust"),
             "Resolving another config must not rewrite the saved source intent");
+    }
+    #[test]
+    fn replacing_closed_native_window_rebinds_all_compatible_saved_sites() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let file = root.join("RustLinkedStep/src/main.rs");
+        let native_root = root.join("Native");
+        let calls = calls(&fs::read_to_string(&file).unwrap()).unwrap();
+        let mut points = ["step_pair_c", "step_pair_cpp"].into_iter().map(|symbol| {
+            let mut saved = binding("rust", "closed-native");
+            saved.blue.file = file.to_string_lossy().into();
+            saved.blue.line = calls.iter().find(|call| call.symbol == symbol).unwrap().line;
+            saved.blue.entry_point = symbol.into();
+            saved.native = definition(native_root.to_str().unwrap(), symbol).unwrap();
+            saved
+        }).collect::<Vec<_>>();
+        let origin = points[0].origin.clone();
+        let mut replacement = points[0].partner.clone();
+        replacement.label = "replacement-native".into();
+        replacement.instance_id = "replacement-instance".into();
+        replacement.window_id = 4;
+        replacement.spec.cwd = native_root.to_string_lossy().into();
+        rebind_closed_partner_points(&mut points, "closed-native", &origin, &replacement, false);
+        assert_eq!(points.len(), 2);
+        for saved in &points {
+            assert_eq!(saved.blue.partner_label, "replacement-native");
+            assert_eq!(saved.blue.partner_window_id, 4);
+            assert_eq!(saved.partner.instance_id, "replacement-instance");
+            assert!(matches!(saved.blue.entry_point.as_str(), "step_pair_c" | "step_pair_cpp"));
+        }
+    }
+    #[test]
+    fn replacing_closed_native_window_moves_missing_export_without_arming_it() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("experiments/lldb-native-thread-control");
+        let native_root = root.join("Native");
+        let mut saved = binding("rust", "closed-native");
+        saved.origin.solution = root.join("thread-control.cln").to_string_lossy().into();
+        saved.origin.spec.cwd = root.join("RustLinkedStep").to_string_lossy().into();
+        saved.origin.spec.args = ["run", "--features", "native_threads"].map(str::to_owned).to_vec();
+        saved.partner.solution = saved.origin.solution.clone();
+        saved.blue.file = root.join("RustLinkedStep/src/main.rs").to_string_lossy().into();
+        saved.blue.line = 26;
+        saved.blue.entry_point = "step_pair_c".into();
+        saved.native = definition(native_root.to_str().unwrap(), "step_pair_c").unwrap();
+        let origin = saved.origin.clone();
+        let mut replacement = saved.partner.clone();
+        replacement.label = "different-native".into();
+        replacement.instance_id = "different-instance".into();
+        replacement.window_id = 5;
+        replacement.spec.cwd = root.join("CExclusiveStep").to_string_lossy().into();
+        let mut points = vec![saved];
+        rebind_closed_partner_points(&mut points, "closed-native", &origin, &replacement, false);
+        assert_eq!(points[0].blue.partner_label, "different-native");
+        assert_eq!(points[0].blue.partner_window_id, 5);
+        assert!(points[0].blue.native_points.is_empty());
+        assert!(matches!(resolve_binding_for_selected(&points[0], &origin, Ok(replacement)),
+            Err(ResolutionFailure::Unreachable(_))));
     }
     #[test]
     #[ignore = "requires Python, Cargo, CMake, compiler, LLDB-DAP and ptrace permission"]

@@ -61,12 +61,13 @@ struct Session {
 }
 
 #[derive(Clone, Copy)]
-enum NativeStepPhase { Holding, Selecting, Stepping, AwaitingStop, Releasing, ReleaseFailed }
+enum NativeStepPhase { Holding, Selecting, Stepping, AwaitingStop, CheckingPlan, SelectingForDiscard, Discarding, Releasing, ReleaseFailed }
 
 struct NativeStepRequest {
     sequence: u64,
     thread_id: i64,
     phase: NativeStepPhase,
+    plan_index: Option<u32>,
     held_ids: Vec<i64>,
     holds_known: bool,
     failure: Option<String>,
@@ -403,7 +404,9 @@ fn secondary_native_stop(message: &Value, pending: Option<&NativeStepRequest>,
     let Some(reported) = message["body"]["threadId"].as_i64() else { return false; };
     if let Some(step) = pending {
         return step.holds_known
-            && matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop | NativeStepPhase::Releasing)
+            && matches!(step.phase, NativeStepPhase::Stepping | NativeStepPhase::AwaitingStop
+                | NativeStepPhase::CheckingPlan | NativeStepPhase::SelectingForDiscard
+                | NativeStepPhase::Discarding | NativeStepPhase::Releasing)
             && reported != step.thread_id && step.held_ids.contains(&reported);
     }
     // This LLDB-DAP build can report the previously selected, held thread as
@@ -427,6 +430,62 @@ fn begin_native_release(session: &Session, step: &mut NativeStepRequest) -> Resu
     step.phase = NativeStepPhase::Releasing;
     session.transport_busy.store(true, Ordering::Release);
     Ok(())
+}
+
+fn begin_native_plan_check(session: &Session, step: &mut NativeStepRequest) -> Result<(), String> {
+    // A Pause can report a completed DAP stop while LLDB's one-thread step
+    // plan is still active. Releasing SBThread suspension alone then leaves
+    // the debuggee in a tracing stop after Continue.
+    let sequence = request_native_eval(session, format!("thread plan list -t {}", step.thread_id))?;
+    step.sequence = sequence;
+    step.phase = NativeStepPhase::CheckingPlan;
+    session.transport_busy.store(true, Ordering::Release);
+    Ok(())
+}
+
+fn active_native_plan_index(result: &str) -> Result<Option<u32>, String> {
+    let mut in_active = false;
+    let mut found_active = false;
+    let mut highest = None;
+    for line in result.lines() {
+        let trimmed = line.trim();
+        if trimmed == "Active plan stack:" {
+            in_active = true;
+            found_active = true;
+            continue;
+        }
+        if trimmed.ends_with("plan stack:") { in_active = false; }
+        if !in_active { continue; }
+        if let Some(rest) = trimmed.strip_prefix("Element ") {
+            if let Some((index, _)) = rest.split_once(':') {
+                if let Ok(index) = index.parse::<u32>() {
+                    if index > 0 { highest = Some(highest.map_or(index, |old: u32| old.max(index))); }
+                }
+            }
+        }
+    }
+    if !found_active { return Err("LLDB did not report the active thread plan; Stop this debugger session".into()); }
+    Ok(highest)
+}
+
+fn debug_frame_has_source(frame: &Value) -> bool {
+    let Some(path) = frame["source"]["path"].as_str() else { return false; };
+    let source = Path::new(path);
+    frame["line"].as_u64().is_some_and(|line| line > 0)
+        && source.is_file()
+        && matches!(source.extension().and_then(|extension| extension.to_str()),
+            Some("rs" | "c" | "C" | "h" | "H" | "hh" | "cc" | "cpp" | "cxx" | "c++"
+                | "hpp" | "hxx" | "h++" | "inl" | "ipp" | "tpp" | "cs" | "S" | "s"
+                | "asm" | "m" | "mm"))
+}
+
+fn annotate_debug_frames(mut frames: Value) -> Value {
+    if let Some(items) = frames.as_array_mut() {
+        for frame in items {
+            frame["craiddSourceAvailable"] = json!(debug_frame_has_source(frame));
+        }
+    }
+    frames
 }
 
 fn fail_native_step(session: &Session, step: &mut NativeStepRequest, reason: String) -> Result<(), String> {
@@ -1267,7 +1326,7 @@ pub(crate) fn launch_prepared(
                                     && (matches!(message["body"]["reason"].as_str(), Some("pause" | "exception"))
                                         || (matches!(message["body"]["reason"].as_str(), Some("step" | "breakpoint"))
                                             && message["body"]["threadId"].as_i64() == Some(step.thread_id))) {
-                                    if let Err(error) = begin_native_release(&session, &mut step) {
+                                    if let Err(error) = begin_native_plan_check(&session, &mut step) {
                                         step.phase = NativeStepPhase::ReleaseFailed;
                                         release_error = Some(error);
                                         session.transport_busy.store(false, Ordering::Release);
@@ -1454,6 +1513,59 @@ pub(crate) fn launch_prepared(
                                         session.transport_busy.store(false, Ordering::Release);
                                     }
                                 }
+                                NativeStepPhase::CheckingPlan => {
+                                    let inspected = native_eval_error(&message).map(Err)
+                                        .unwrap_or_else(|| active_native_plan_index(result));
+                                    match inspected {
+                                        Ok(Some(index)) => {
+                                            match request_native_eval(&session, format!("thread select -t {}", step.thread_id)) {
+                                                Ok(seq) => {
+                                                    step.sequence = seq;
+                                                    step.phase = NativeStepPhase::SelectingForDiscard;
+                                                    // The plan index belongs to this selected thread. A normal
+                                                    // one-thread step has one user-visible plan above the base.
+                                                    step.plan_index = Some(index);
+                                                }
+                                                Err(error) => {
+                                                    step.phase = NativeStepPhase::ReleaseFailed;
+                                                    outcome = Some(("nativeReleaseFailed", error));
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => if let Err(error) = begin_native_release(&session, &mut step) {
+                                            step.phase = NativeStepPhase::ReleaseFailed;
+                                            outcome = Some(("nativeReleaseFailed", error));
+                                        },
+                                        Err(error) => {
+                                            step.phase = NativeStepPhase::ReleaseFailed;
+                                            outcome = Some(("nativeReleaseFailed", error));
+                                        }
+                                    }
+                                }
+                                NativeStepPhase::SelectingForDiscard => {
+                                    if let Some(error) = native_eval_error(&message) {
+                                        step.phase = NativeStepPhase::ReleaseFailed;
+                                        outcome = Some(("nativeReleaseFailed", error));
+                                    } else {
+                                        let index = step.plan_index.unwrap_or(1);
+                                        match request_native_eval(&session, format!("thread plan discard {index}")) {
+                                            Ok(seq) => { step.sequence = seq; step.phase = NativeStepPhase::Discarding; }
+                                            Err(error) => {
+                                                step.phase = NativeStepPhase::ReleaseFailed;
+                                                outcome = Some(("nativeReleaseFailed", error));
+                                            }
+                                        }
+                                    }
+                                }
+                                NativeStepPhase::Discarding => {
+                                    if let Some(error) = native_eval_error(&message) {
+                                        step.phase = NativeStepPhase::ReleaseFailed;
+                                        outcome = Some(("nativeReleaseFailed", error));
+                                    } else if let Err(error) = begin_native_release(&session, &mut step) {
+                                        step.phase = NativeStepPhase::ReleaseFailed;
+                                        outcome = Some(("nativeReleaseFailed", error));
+                                    }
+                                }
                                 NativeStepPhase::Releasing => {
                                     let parsed = native_eval_error(&message).map(Err)
                                         .unwrap_or_else(|| parse_native_ids(result, "CRAIDD_RELEASE:"));
@@ -1518,7 +1630,8 @@ pub(crate) fn launch_prepared(
                     }
                     match selected.stage {
                         "stackTrace" => {
-                            let frames = message["body"]["stackFrames"].as_array().cloned().unwrap_or_default();
+                            let frames = annotate_debug_frames(message["body"]["stackFrames"].clone())
+                                .as_array().cloned().unwrap_or_default();
                             emit_current_session(&app_reader, &label_reader, &session, json!({"status":"inspection", "threadId":selected.thread_id,
                                 "sessionKey":format!("{}:{}", session.pgid, session.birth),
                                 "selectionEpoch":selected.selection_epoch, "frames":frames, "variables":[]}));
@@ -1705,7 +1818,7 @@ pub(crate) fn launch_prepared(
                         }
                     }
                     "stackTrace" => {
-                        let frames = message["body"]["stackFrames"].clone();
+                        let frames = annotate_debug_frames(message["body"]["stackFrames"].clone());
                         let first = frames.as_array().and_then(|items| items.first());
                         let (native_routed, skip_private_entry) = super::native_debug::on_frames(
                             &app_reader, &label_reader, pgid, stop_generation, &frames, &stop_reason);
@@ -1733,8 +1846,10 @@ pub(crate) fn launch_prepared(
                         }
                         emit(&app_reader, &label_reader, json!({"status":"paused", "frames":frames,
                             "nativeRouted":native_routed,
-                            "file":first.and_then(|frame| frame["source"]["path"].as_str()),
-                            "line":first.and_then(|frame| frame["line"].as_u64())}));
+                            "file":first.filter(|frame| debug_frame_has_source(frame))
+                                .and_then(|frame| frame["source"]["path"].as_str()),
+                            "line":first.filter(|frame| debug_frame_has_source(frame))
+                                .and_then(|frame| frame["line"].as_u64())}));
                         if let Some(id) = first.and_then(|frame| frame["id"].as_i64()) {
                             if let Ok(seq) = request(&session, "scopes", json!({"frameId":id})) {
                                 pending.insert(seq, "scopes".into()); inspection_generations.insert(seq, stop_generation);
@@ -1971,7 +2086,7 @@ pub async fn debug_step_native_thread_only(
         match result {
             Ok(sequence) => {
                 *pending = Some(NativeStepRequest { sequence, thread_id, phase: NativeStepPhase::Holding,
-                    held_ids: Vec::new(), holds_known: false, failure: None });
+                    plan_index: None, held_ids: Vec::new(), holds_known: false, failure: None });
                 Ok(())
             }
             Err(error) => { session.transport_busy.store(false, Ordering::Release); Err(error) }
@@ -2013,7 +2128,7 @@ pub async fn debug_release_native_holds(
         if matches!(step.phase, NativeStepPhase::AwaitingStop) {
             step.failure = Some("One-thread Step was interrupted; native holds were released".into());
         }
-        if let Err(error) = begin_native_release(&session, step) {
+        if let Err(error) = begin_native_plan_check(&session, step) {
             step.phase = NativeStepPhase::ReleaseFailed;
             session.transport_busy.store(false, Ordering::Release);
             return Err(error);
@@ -2573,9 +2688,28 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_lldb_step_plan_is_discarded_before_hold_release() {
+        let interrupted = "thread #1: tid = 0x48e2d:\n  Active plan stack:\n    Element 0: Base thread plan.\n    Element 1: Stepping over line syscall_cancel.S:56.\n  Completed plan stack:\n    Element 0: Single thread timeout, state(AsyncInterrupt)\n";
+        let completed = "thread #2: tid = 0x48e2e:\n  Active plan stack:\n    Element 0: Base thread plan.\n  Completed plan stack:\n    Element 0: Stepping over line main.rs:21.\n";
+        assert_eq!(active_native_plan_index(interrupted).unwrap(), Some(1));
+        assert_eq!(active_native_plan_index(completed).unwrap(), None);
+        assert!(active_native_plan_index("error: thread is running").is_err());
+    }
+
+    #[test]
+    fn disassembly_and_missing_source_are_not_source_step_targets() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+            .join("experiments/lldb-native-thread-control/RustExclusiveStep/src/main.rs");
+        assert!(debug_frame_has_source(&json!({"line":21,"source":{"path":source}})));
+        assert!(!debug_frame_has_source(&json!({"line":15,"source":{"path":"/usr/lib/libc.so.6"}})));
+        assert!(!debug_frame_has_source(&json!({"line":56,"source":{"path":"/usr/src/debug/missing/syscall_cancel.S"}})));
+        assert!(!debug_frame_has_source(&json!({"line":0,"source":{"path":source}})));
+    }
+
+    #[test]
     fn queued_lldb_stop_for_held_worker_does_not_replace_selected_step_stop() {
         let mut step = NativeStepRequest { sequence: 7, thread_id: 3,
-            phase: NativeStepPhase::Stepping, held_ids: vec![1, 2], holds_known: true, failure: None };
+            phase: NativeStepPhase::Stepping, plan_index: None, held_ids: vec![1, 2], holds_known: true, failure: None };
         let old_step = json!({"body":{"reason":"step","threadId":2,"allThreadsStopped":true}});
         let old_breakpoint = json!({"body":{"reason":"breakpoint","threadId":2}});
         let target_step = json!({"body":{"reason":"step","threadId":3}});

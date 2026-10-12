@@ -6,7 +6,9 @@ import type { OrderRequest } from "../types/project";
 import { appendOutput } from "../lib/outputPresentation";
 
 type DebugStatus = "idle" | "building" | "starting" | "running" | "paused" | "terminated" | "error";
-export interface DebugFrame { id: number; name: string; line: number; source?: { path?: string; name?: string } }
+export interface DebugFrame { id: number; name: string; line: number; source?: { path?: string; name?: string }; craiddSourceAvailable?: boolean }
+export const hasDebugSourceLine = (frame?: DebugFrame): boolean => frame?.craiddSourceAvailable === true
+  && Boolean(frame.source?.path) && frame.line > 0;
 export interface DebugVariable { name: string; value: string; type?: string; variablesReference: number }
 export interface DebugThread { id: number; name: string; state: "running" | "paused" | "unknown"; reason?: string | null; incarnation: number; observedMs: number; ranMs: number; runObserved: boolean; receivedAt?: number }
 export interface CompletedDebugThread { id: number; name: string; incarnation: number; observedMs: number; ranMs: number; runObserved: boolean }
@@ -119,7 +121,7 @@ export const useDebug = create<DebugState>((set, get) => ({
     const selected = state.threads.find((thread) => thread.id === state.selectedThreadId);
     if (!sessionKey || state.nativeSingleStepSessionKey !== sessionKey || state.status !== "paused"
       || state.threadsStale || !state.allThreadsStopped || state.nativeStepTarget || state.nativeReleaseFailed || state.exclusiveStepTarget
-      || !selected || selected.state !== "paused" || !state.frames[0]?.source?.path || !state.frames[0]?.line) {
+      || !selected || selected.state !== "paused" || !hasDebugSourceLine(state.frames[0])) {
       throw new Error("Select a paused native thread at a source line after all threads have stopped");
     }
     set({ nativeStepTarget: { sessionKey, id: selected.id, name: selected.name }, nativeStepOutcome: null });
@@ -148,7 +150,7 @@ export const useDebug = create<DebugState>((set, get) => ({
     const selected = state.threads.find((thread) => thread.id === id);
     if (!sessionKey || state.exclusiveNextSessionKey !== sessionKey || state.status !== "paused"
       || state.threadsStale || !state.allThreadsStopped || state.exclusiveStepTarget || state.nativeStepTarget || state.nativeReleaseFailed
-      || !selected || selected.state !== "paused" || !state.frames[0]?.source?.path || !state.frames[0]?.line) {
+      || !selected || selected.state !== "paused" || !hasDebugSourceLine(state.frames[0])) {
       throw new Error("Select a stopped thread with a source line in a debugger session that supports one-thread Step");
     }
     set({ exclusiveStepTarget: { sessionKey, id: selected.id, name: selected.name }, exclusiveStepOutcome: null });
@@ -254,11 +256,13 @@ export async function listenToDebug(): Promise<() => void> {
         || message.sessionKey !== state.threadSessionKey) return;
       const first = message.frames?.[0];
       useDebug.setState({
-        ...(message.frames ? { frames: message.frames, file: first?.source?.path ?? null, line: first?.line ?? null } : {}),
+        ...(message.frames ? { frames: message.frames,
+          file: hasDebugSourceLine(first) ? first?.source?.path ?? null : null,
+          line: hasDebugSourceLine(first) ? first?.line ?? null : null } : {}),
         ...(message.variables ? { variables: message.variables } : {}),
         inspectionError: message.error ?? null,
       });
-      if (first?.source?.path && first.line) {
+      if (hasDebugSourceLine(first) && first?.source?.path) {
         void revealDebugSource(first.source.path, first.line, 1, () => !disposed
           && useDebug.getState().selectedThreadId === message.threadId
           && useDebug.getState().selectionEpoch === message.selectionEpoch);

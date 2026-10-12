@@ -39,7 +39,7 @@ test("native capability remains in the same session across LLDB's later starting
     stale: false, allThreadsStopped: true });
   emit({ status: "paused", reason: "breakpoint", threadId: 123 });
   emit({ status: "inspection", sessionKey, threadId: 123, selectionEpoch: 0,
-    frames: [{ id: 1, name: "worker", line: 21, source: { path: "/lab/main.rs" } }] });
+    frames: [{ id: 1, name: "worker", line: 21, source: { path: "/lab/main.rs" }, craiddSourceAvailable: true }] });
   assert.equal(useDebug.getState().threadSessionKey, sessionKey);
   assert.equal(useDebug.getState().nativeSingleStepSessionKey, sessionKey);
   assert.equal(useDebug.getState().allThreadsStopped, true);
@@ -65,7 +65,7 @@ test("managed experiment capability survives startup and dispatches its own thre
     stale: false, allThreadsStopped: true });
   emit({ status: "paused", reason: "breakpoint", threadId: 30192 });
   emit({ status: "inspection", sessionKey, threadId: 30192, selectionEpoch: 0,
-    frames: [{ id: 2, name: "worker", line: 21, source: { path: "/lab/Program.cs" } }] });
+    frames: [{ id: 2, name: "worker", line: 21, source: { path: "/lab/Program.cs" }, craiddSourceAvailable: true }] });
   assert.equal(useDebug.getState().exclusiveNextSessionKey, sessionKey);
   assert.equal(useDebug.getState().nativeSingleStepSessionKey, null);
   await useDebug.getState().stepThreadOnly();
@@ -73,5 +73,23 @@ test("managed experiment capability survives startup and dispatches its own thre
     args: { sessionKey, threadId: 30192, incarnation: 2 } }]);
   emit({ status: "terminated" });
   assert.equal(useDebug.getState().exclusiveNextSessionKey, null);
+  unlisten();
+});
+
+test("a debugger-generated libc location is not a source step target", async () => {
+  listener.calls.length = 0;
+  const unlisten = await listenToDebug();
+  const emit = (payload) => listener.callback({ payload });
+  const sessionKey = "28032:102";
+  emit({ status: "building" });
+  emit({ status: "capabilities", sessionKey, nativeSingleStep: true });
+  emit({ status: "threads", sessionKey, threads: [{ id: 441, name: "main", state: "paused", incarnation: 1 }],
+    stale: false, allThreadsStopped: true });
+  emit({ status: "paused", reason: "breakpoint", threadId: 441 });
+  emit({ status: "inspection", sessionKey, threadId: 441, selectionEpoch: 0,
+    frames: [{ id: 3, name: "libc.so.6`syscall", line: 15,
+      source: { path: "/usr/lib/libc.so.6" }, craiddSourceAvailable: false }] });
+  await assert.rejects(useDebug.getState().stepNativeThreadOnly(), /source line/);
+  assert.deepEqual(listener.calls, []);
   unlisten();
 });

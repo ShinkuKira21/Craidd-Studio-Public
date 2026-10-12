@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useDebug } from "../../store/debugStore";
+import { hasDebugSourceLine, useDebug } from "../../store/debugStore";
 import type { DebugThread } from "../../store/debugStore";
 import { useLdi } from "../../store/ldiStore";
 import { useLinkedWindows } from "../../store/linkedWindowsStore";
@@ -239,7 +239,7 @@ export default function ThreadDropdown() {
           <div className="text-[10px] text-zinc-500 mt-1">Select a paused B thread to inspect it in B. A’s held call stays the same.</div>
         </div>}
         {stale && <div role="status" className="px-1 pb-2 text-amber-300">Thread list may be stale; waiting for the debugger.</div>}
-        {focused && frames.length > 0 && (!frames[0].source?.path || !frames[0].line) &&
+        {focused && frames.length > 0 && !hasDebugSourceLine(frames[0]) &&
           <div role="status" className="px-1 pb-2 text-amber-300">This thread is paused in runtime code without a source line. One-thread Step cannot start here. Continue to its next source breakpoint; other threads may run too.</div>}
         <div className="px-1.5 pb-1 text-[10px] uppercase tracking-wide text-zinc-500">This window · threads</div>
         <div className="space-y-1">
