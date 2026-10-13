@@ -23,6 +23,8 @@ The archived
 [future-directions sketch](archives/design-thread-debugging-future-directions.md)
 record the earlier exploration; this plan replaces their execution-control
 direction.
+The [future language and instruction investigations](future/README.md) extend
+these evidence gates without changing the current Rust/C/C++/C# experiment.
 
 ## Decision after the C# feasibility prototype
 
