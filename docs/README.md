@@ -6,10 +6,10 @@ Start here for the project model and working conventions:
 
 - [Working protocol](working-protocol.md) — how the user and assistant collaborate.
 - [`.craidd` and `.cln` model](craidd-cln-model.md) — the project and solution contract.
-- [Current place](roadmaps/Current-place.md) — a map of the codebase.
+- [Current place](roadmaps/Roadmap-Current_Place_Roadmap-v0.0.4A.md) — a map of the codebase.
 - [Current roadmap](roadmaps/Roadmap-v0.0.4A.md) — phase meanings, delivery order and acceptance gates.
 - [Playground direction](roadmaps/playground/Playground-direction.md) — real linked-debugging acceptance.
-- [Documentation maintenance](documentation-guide.md) — phase labels, authorship and the scope of this cleanup.
+- [Documentation conventions](../AGENT.md) — reading order, document footers and contributor attribution.
 - [Roadmap archive](roadmaps/archive/README.md) — original historical phase snapshots.
 
 The rest of the docs are grouped by purpose:
@@ -27,9 +27,11 @@ The rest of the docs are grouped by purpose:
 
 The philosophy documents are grouped by topic. Start with the [philosophy index](philosophies/README.md); feature designs live under `feats/`. The Git workspaces documents are proposals, not implemented behavior.
 
+The [future MT debugging investigations](feats/mt-debugging/future/README.md) cover Python/CPython, Java/JNI, assembly/disassembly, and maintenance of the optional patched Samsung netcoredbg experiment. They do not expand the current support claim.
+
 The [Docs viewer design collection](feats/editor/docs-viewer/README.md) records editable Markdown Preview with View Source / View Preview controls and a preferred Docs sidebar direction backed by File Discovery. It retains docs-as-project as an alternative, explores potential HTML/PDF viewers, and identifies the editing, discovery and document-management decisions needed before implementation. It is unscheduled design work.
 
 ---
 
-*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
+*Last updated: Phase 3.x, 13 October 2026. Author(s): ShinkuKira21.*
 *This document is a record.*

@@ -11,7 +11,9 @@ export default function BreakpointMenu({ file, line, x, y, callSite, onClose }: 
   const active = !!red;
   const linked = useLinkedWindows();
   const blue = useLdi((state) => state.blues.find((point) => point.file === file && point.line === line && point.originLabel === linked.ownWindowLabel));
-  const partners = linked.windows.filter((item) => callSite?.partnerLabels.includes(item.windowLabel));
+  const partners = linked.windows.filter((item) => item.ldiRole === "native-library"
+    && (callSite?.partnerLabels.includes(item.windowLabel)
+      || (item.selectedConfigName !== null && callSite?.configNames.includes(item.selectedConfigName))));
   const [editingCondition, setEditingCondition] = useState<"red" | "blue" | null>(null);
   const [condition, setCondition] = useState("");
   const [menuError, setMenuError] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export default function BreakpointMenu({ file, line, x, y, callSite, onClose }: 
         Remove Blue Breakpoint</button>
         : null}
       {partners.filter((partner) => partner.windowLabel !== blue?.partnerLabel).map((partner) => <button key={partner.windowLabel} role="menuitem"
-          title={`${file.endsWith(".rs") ? "Rust White Debug · Live Native" : "Gold Linked Debug"} · ${callSite?.entryPoint ?? "native call"}`}
+          title={`${file.endsWith(".rs") ? "Rust Gold Debug · shared Native view" : "Gold Linked Debug"} · ${callSite?.entryPoint ?? "native call"}`}
           className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
           onClick={() => { void setLdiBlue(file, line, partner.windowLabel).then(onClose).catch((error) => setMenuError(String(error))); }}>
           {blue ? "Use Native partner" : "Set Native Debugging Breakpoint"} → CS{partner.windowId}: {partner.selectedConfigName ?? partner.projectName}</button>)}

@@ -298,8 +298,20 @@ const watchURL = await load("../src/components/panels/WatchSection.tsx", {
   "../../store/solutionStore": solution, "../../lib/debugInspect": inspectURL,
   "./VariableTree": variableTreeURL,
 });
+// Rust+Native Gold orchestration is loaded for real so Toolbar and Debug panel
+// render its owner and closed-view states from the same LDI store.
+const goldBuild = url(`export * from ${JSON.stringify(build)}; export const resolveSpec=(config)=>({label:config.name});`);
+const goldLinked = url(`export * from ${JSON.stringify(linked)};
+export async function focusLinkedWindow(...args){globalThis.${mockName}.calls.push({command:'focus-window',args});return true;}
+export async function setLinkedWindowVisible(...args){globalThis.${mockName}.calls.push({command:'window-visible',args});}
+export async function waitForLinkedWindowReady(){}`);
+const goldURL = await load("../src/lib/rustNativeGold.ts", {
+  "../store/buildStore": goldBuild, "../store/ldiStore": ldiURL,
+  "../store/linkedWindowsStore": goldLinked, "../store/solutionStore": solution,
+});
 const sidebarURL = await load("../src/components/panels/DebugSidebar.tsx", {
-  "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
+  react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
+  "../../store/ldiStore": ldiURL, "../../lib/rustNativeGold": goldURL,
   "../../store/debugStore": debugURL, "../../store/breakpointStore": breakpoints, "../../store/solutionStore": solution,
   "../../store/linkedWindowsStore": linked, "../../store/nativeDebugStore": nativeSnapshotURL,
   "./LdiSessionCard": url("export default function LdiSessionCard(){return null;}"),
@@ -324,13 +336,14 @@ export function useDebug(selector){return selector?selector(store.getState()):st
 useDebug.getState=store.getState;`);
 const linkedSnapshot = url(`import {useLinkedWindows as store} from ${JSON.stringify(linked)};
 export function useLinkedWindows(selector){return selector?selector(store.getState()):store.getState();}
-export async function previewLinkedAction(){} export async function startLinkedAction(){} export async function stopLinkedAction(){}`);
+export async function previewLinkedAction(){} export async function startLinkedAction(){} export async function stopLinkedAction(){}
+export async function dispatchLinkedWindowCommand(){};`);
 const toolbarURL = await load("../src/components/layout/Toolbar.tsx", {
   react:import.meta.resolve("react"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),
   "../../store/solutionStore":snapshotFacade(solution,"useSolution"),
   "../../store/buildStore":build,"../../store/debugStore":debugSnapshot,
   "../../store/linkedWindowsStore":linkedSnapshot,"../../store/ldiStore":snapshotFacade(ldiURL,"useLdi"),
-  "../../store/nativeDebugStore":nativeSnapshotURL,"../../lib/viewedActions":actionsURL,
+  "../../store/nativeDebugStore":nativeSnapshotURL,"../../lib/viewedActions":actionsURL,"../../lib/rustNativeGold":goldURL,
   "../../lib/linkedStartup":url("export const detectLinkedStartupSuggestions=()=>[];"),
   "../dialogs/configurations/ConfigurationsDialog":url("export default function C(){return null;}"),
   "../dialogs/LinkedLaunchPlanDialog":url("export default function C(){return null;}"),
@@ -339,13 +352,35 @@ const toolbarURL = await load("../src/components/layout/Toolbar.tsx", {
   "./NativeThreadDropdown":url("export default function NativeThreadDropdown(){return null;}"),
 });
 const {default:Toolbar}=await import(toolbarURL);
-test("Native+Rust explains disabled Gold and keeps White Debug as the launch", () => {
+test("Native+Rust without Blue offers Gold with breakpoint setup guidance", () => {
   useSolution.setState({solution:labSolution});
-  useLinkedWindows.setState({windows:[{windowLabel:"native",ldiRole:"native-library"},{windowLabel:"rust",ldiRole:"live-native"}],linked:false,canBuild:false,canRun:false,canDebug:false});
+  ldi.useLdi.setState({blues:[]});
+  useLinkedWindows.setState({windows:[{windowLabel:"native",ldiRole:"native-library"},{windowLabel:"rust",ldiRole:"live-native",canDebug:true,status:"idle"}],linked:false,canBuild:false,canRun:false,canDebug:false});
   const html=renderToStaticMarkup(createElement(Toolbar));
-  assert.ok(html.includes("Rust + Native uses one LLDB session"));
-  assert.ok(html.includes("use White Debug in A"));
+  assert.ok(!html.includes("linked instances"));
+  assert.ok(html.includes("Gold Debug: start one paired Rust and Native session"));
+  assert.ok(html.includes("Set Blue on a Rust native call"));
   assert.ok(html.includes("Debug — no debug configurations"));
+});
+test("Native+Rust with a Rust Blue offers one Gold Debug for the paired Rust and Native session", () => {
+  useSolution.setState({solution:labSolution});
+  ldi.useLdi.setState({blues:[{file:"/lab/Rust/main.rs",line:26,entryPoint:"step_pair_c",library:"Native Build",
+    originLabel:"rust",partnerLabel:"native",partnerWindowId:2,mode:"live-native",warning:null,unreachable:null,nativePoints:[]}]});
+  useLinkedWindows.setState({windows:[{windowLabel:"native",ldiRole:"native-library"},{windowLabel:"rust",ldiRole:"live-native",canDebug:true,status:"idle"}],linked:false,canBuild:false,canRun:false,canDebug:false});
+  const html=renderToStaticMarkup(createElement(Toolbar));
+  assert.ok(html.includes("Gold Debug: start one paired Rust and Native session"));
+  assert.ok(html.includes("1 Rust process and LLDB session"));
+  assert.ok(!html.includes("linked instances"));
+  ldi.useLdi.setState({blues:[]});
+});
+test("Native B can stop the Rust owner before its first native stop", () => {
+  useSolution.setState({solution:labSolution});
+  useLinkedWindows.setState({ownWindowLabel:"native",viewedWindowLabel:"native",windows:[
+    {windowLabel:"native",ldiRole:"native-library",status:"idle"},
+    {windowLabel:"rust",ldiRole:"live-native",canDebug:true,status:"running"}],linked:false,activeAction:null});
+  const html=renderToStaticMarkup(createElement(Toolbar));
+  assert.ok(html.includes("Gold Stop: end the paired Rust and Native session"));
+  assert.ok(html.includes("Saved Blue changes apply on the next Gold Debug launch"));
 });
 test("Native toolbar exposes Gold Rust Stop outside native frames and only offers owner navigation while paused in Rust", () => {
   native.useNativeDebug.setState({context:context({nativeStop:false,file:null,line:null,frames:[],variables:[]})});

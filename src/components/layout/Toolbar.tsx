@@ -4,7 +4,7 @@ import { useBuild, syncMainChoices, choicesForConfig } from "../../store/buildSt
 import { controlViewedDebug, selectViewedConfiguration, selectViewedProfile, startViewedAction, stopViewedAction } from "../../lib/viewedActions";
 import type { ConfigEntry, CraiddProject } from "../../types/project";
 import ConfigurationsDialog from "../dialogs/configurations/ConfigurationsDialog";
-import { useLinkedWindows, previewLinkedAction, startLinkedAction, stopLinkedAction, type LinkedSnapshot, type LinkedLaunchPlanPhase } from "../../store/linkedWindowsStore";
+import { useLinkedWindows, previewLinkedAction, startLinkedAction, stopLinkedAction, dispatchLinkedWindowCommand, type LinkedSnapshot, type LinkedLaunchPlanPhase } from "../../store/linkedWindowsStore";
 import { useLdi } from "../../store/ldiStore";
 import { detectLinkedStartupSuggestions } from "../../lib/linkedStartup";
 import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
@@ -13,6 +13,7 @@ import { hasDebugSourceLine, useDebug } from "../../store/debugStore";
 import { stepNativeThreadOnly, useNativeDebug } from "../../store/nativeDebugStore";
 import ThreadDropdown from "./ThreadDropdown";
 import NativeThreadDropdown from "./NativeThreadDropdown";
+import { NativeConfigChoiceNeeded, rustNativeGoldOwner, startRustNativeGold } from "../../lib/rustNativeGold";
 
 type Kind = "build" | "run" | "debug";
 
@@ -70,9 +71,14 @@ function Toolbar() {
   const hasNativeViewStep = Boolean(native && activeNativeThreads?.nativeSingleStep);
   const hasThreadOnlyStep = hasNativeSingleStep || hasExclusiveStep || hasNativeViewStep;
   const threadStepPending = Boolean(nativeStepTarget || exclusiveStepTarget || activeNativeThreads?.stepPending);
-  const showGold = linked.windows.length > 1 || linked.linked || Boolean(linked.activeAction);
+  const nativeGoldOwner = rustNativeGoldOwner(linked, blues);
+  const rustNativePair = linked.windows.some((item) => item.ldiRole === "live-native")
+    && linked.windows.some((item) => item.ldiRole === "native-library");
+  const showGold = linked.linked || Boolean(linked.activeAction)
+    || (linked.windows.length > 1 && !rustNativePair) || Boolean(nativeGoldOwner);
+  const showOrdinaryGold = showGold && !nativeGoldOwner;
   const liveOwner = !remote && blues.some((blue) => blue.mode === "live-native"
-    && blue.originLabel === linked.ownWindowLabel && !blue.warning && !blue.unreachable)
+    && blue.originLabel === linked.ownWindowLabel && !blue.unreachable)
     && ["building", "starting", "running", "paused"].includes(debugStatus);
   const liveLinked = Boolean(native) || liveOwner;
   const viewedStatus = native?.status ?? remote?.status ?? (["building", "starting", "running", "paused"].includes(debugStatus) ? debugStatus : status);
@@ -112,7 +118,7 @@ function Toolbar() {
   return (
     <div className="h-10 bg-zinc-900 border-b border-zinc-800 flex items-center px-3 gap-1.5 shrink-0 text-xs">
       <KindButton kind="build" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices ? previewChoices.build : remote ? remoteChoices?.build ?? null : undefined} onFire={(name) => fire("build", name)} />
-      {showGold && <GoldButton kind="build" linked={linked} />}
+      {showOrdinaryGold && <GoldButton kind="build" linked={linked} />}
 
       <ConfigChip
         hasSolution={!!solution}
@@ -138,7 +144,7 @@ function Toolbar() {
       )}
 
       <KindButton kind="run" configs={configs} scopeConfig={previewConfig ?? selectedConfig} running={running} mainChoiceOverride={previewChoices ? previewChoices.run : remote ? remoteChoices?.run ?? null : undefined} onFire={(name) => fire("run", name)} />
-      {showGold && <GoldButton kind="run" linked={linked} />}
+      {showOrdinaryGold && <GoldButton kind="run" linked={linked} />}
 
       <button
         title={native ? "Stop owning Rust debugger (Shift+F5)" : running ? "Stop (Shift+F5)" : "Nothing is running"}
@@ -157,7 +163,7 @@ function Toolbar() {
         className="relative w-8 h-8 rounded text-amber-400 hover:bg-amber-900/30 flex items-center justify-center">
         <GoldActionIcon kind="debug" stop />
         <sup className="absolute top-0 right-0 text-[9px]">2</sup>
-      </button> : showGold && <GoldButton kind="debug" linked={linked} />}
+      </button> : showGold && <GoldButton kind="debug" linked={linked} nativeOwner={nativeGoldOwner} />}
       {(native || (remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {viewedStatus === "paused"
           ? (!native || native.nativeStop)
@@ -218,13 +224,33 @@ function DebugTransport({ label, icon, onClick, disabled = false, disabledReason
   </span>;
 }
 
-function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
+function GoldButton({ kind, linked, nativeOwner }: { kind: Kind; linked: LinkedSnapshot; nativeOwner?: string | null }) {
   const [plan, setPlan] = useState<LinkedLaunchPlanPhase[] | null>(null);
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
-  const isStop = linked.activeAction === kind;
+  const [nativeChoice, setNativeChoice] = useState<NativeConfigChoiceNeeded | null>(null);
+  const nativeDebug = kind === "debug" && Boolean(nativeOwner);
   const available = kind === "build" ? linked.canBuild : kind === "run" ? linked.canRun : linked.canDebug;
-  const disabled = !isStop && (launching || !linked.linked || linked.busy || !available);
+  const nativeRunning = linked.windows.some((item) => item.windowLabel === nativeOwner
+    && ["building", "starting", "running", "paused"].includes(item.status));
+  const isStop = linked.activeAction === kind || (nativeDebug && nativeRunning);
+  const disabled = !isStop && (launching || linked.busy || (nativeDebug ? nativeRunning : !linked.linked || !available));
+  const stopNative = async () => {
+    if (!nativeOwner) return;
+    if (nativeOwner === useLinkedWindows.getState().ownWindowLabel) await useDebug.getState().control("stop");
+    else await dispatchLinkedWindowCommand(nativeOwner, "stop");
+  };
+  const launchNative = async (selection?: { blue: NativeConfigChoiceNeeded["blue"]; config: string }) => {
+    if (!nativeOwner) return;
+    setLaunching(true); setLaunchError(null);
+    try {
+      await startRustNativeGold(nativeOwner, selection);
+      setNativeChoice(null);
+    } catch (error) {
+      if (error instanceof NativeConfigChoiceNeeded && error.choices.length > 0) setNativeChoice(error);
+      else setLaunchError(String(error));
+    } finally { setLaunching(false); }
+  };
   const launch = async () => {
     setLaunching(true);
     setLaunchError(null);
@@ -251,7 +277,7 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     } finally { setLaunching(false); }
   };
   const projects = linked.members.map((member) => member.projectName).join(" + ");
-  const count = linked.members.length || linked.windows.length;
+  const count = nativeDebug ? 2 : linked.members.length || linked.windows.length;
   const rustNativePair = linked.windows.some((member) => member.ldiRole === "live-native")
     && linked.windows.some((member) => member.ldiRole === "native-library");
   const activeCount = linked.activeCount;
@@ -260,9 +286,13 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     missingDebug.length > 0 ? `Select a supported Debug configuration in ${missingDebug.map((member) => `CS${member.windowId} (${member.projectName})`).join(", ")}` : null,
     !linked.debugAdapterAvailable ? "Install/select the required lldb-dap or netcoredbg adapter in Preferences → Toolchain, then rescan" : null,
   ].filter(Boolean).join("; ");
-  const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
+  const title = nativeDebug
+      ? nativeRunning
+        ? "Gold Stop · end the one Rust debugger and shared Native view. Saved Blue changes apply on the next Gold Debug launch."
+        : "Gold Debug · 2 windows, 1 Rust process and LLDB session. Set Blue on a Rust native call, then start here; the Native view opens at the first eligible stop."
+    : isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
     : !linked.linked && rustNativePair && kind === "debug"
-      ? "Rust + Native uses one LLDB session. Select the Native library in B, set Blue on the Rust call in A, then use White Debug in A. Gold Debug starts multiple processes."
+      ? "Rust + Native uses one LLDB session. Select the Native library in B, set Blue on the Rust call in A, then use Gold Debug."
     : !linked.linked && rustNativePair && kind === "run"
       ? "The Native library has no separate Run process. Use White Run in Rust; use White Debug in Rust for linked native inspection."
     : !linked.linked ? `${count} solution windows; no eligible linked ${kind} group. Libraries have no Run/Debug process. Use White Run/Debug in the caller; Native shows its live inspector and Stop.`
@@ -271,11 +301,13 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     : linked.busy ? "A linked action is active"
     : `${KIND_TITLE[kind]} ${count} linked instances: ${projects}`;
   return (
-    <span className="inline-flex" title={title} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? title : undefined}>
-      <button type="button" aria-label={isStop ? `Stop ${activeCount} active linked ${activeCount === 1 ? "instance" : "instances"} of ${count}` : `${KIND_TITLE[kind]} ${count} linked instances`}
+    <span className="relative inline-flex" title={title} tabIndex={disabled ? 0 : undefined} aria-label={disabled ? title : undefined}>
+      <button type="button" aria-label={nativeDebug ? isStop ? "Gold Stop: end the paired Rust and Native session" : "Gold Debug: start one paired Rust and Native session"
+        : isStop ? `Stop ${activeCount} active linked ${activeCount === 1 ? "instance" : "instances"} of ${count}` : `${KIND_TITLE[kind]} ${count} linked instances`}
       disabled={disabled}
-      onClick={() => void reviewOrLaunch().catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
+      onClick={() => void (nativeDebug ? isStop ? stopNative() : launchNative() : reviewOrLaunch()).catch((error) => alert(`Linked ${kind} failed: ${String(error)}`))}
       onContextMenu={(event) => {
+        if (nativeDebug) return;
         event.preventDefault();
         if (window.confirm("Reset linked action state? Use this if the gold button is stuck.")) {
           void import("@tauri-apps/api/core").then(({ invoke }) => invoke("reset_linked_action"))
@@ -287,10 +319,18 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     >
       <GoldActionIcon kind={kind} stop={isStop} />
       <sup aria-hidden="true" className="absolute top-0 right-0 text-[9px] leading-none font-semibold tabular-nums">{count}</sup>
-      {isStop && <sub aria-hidden="true" className="absolute bottom-0 right-0 text-[9px] leading-none font-semibold tabular-nums text-zinc-100">{activeCount}</sub>}
+      {isStop && <sub aria-hidden="true" className="absolute bottom-0 right-0 text-[9px] leading-none font-semibold tabular-nums text-zinc-100">{nativeDebug ? 1 : activeCount}</sub>}
       </button>
       {plan && <LinkedLaunchPlanDialog action={kind} phases={plan} launching={launching} error={launchError}
         onStart={() => void launch()} onClose={() => { if (!launching) setPlan(null); }} />}
+      {nativeDebug && (nativeChoice || launchError) && <div role="dialog" aria-label="Rust Native Gold Debug" className="absolute top-10 z-[150] w-72 rounded border border-zinc-700 bg-zinc-900 p-3 text-xs text-zinc-200 shadow-xl">
+        {nativeChoice ? <><p className="mb-2">Choose the Native Power Config for {nativeChoice.blue.entryPoint}:</p>
+          {nativeChoice.choices.map((config) => <button key={config} type="button" disabled={launching}
+            onClick={() => void launchNative({ blue: nativeChoice.blue, config })}
+            className="block w-full rounded px-2 py-1.5 text-left text-blue-300 hover:bg-zinc-800">{config}</button>)}</> : null}
+        {launchError && <p role="alert" className="text-amber-300">{launchError}</p>}
+        <button type="button" className="mt-2 text-zinc-400 hover:text-white" onClick={() => { setNativeChoice(null); setLaunchError(null); }}>Dismiss</button>
+      </div>}
     </span>
   );
 }

@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdio>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <thread>
 
@@ -13,6 +14,11 @@ extern "C" int step_pair_cpp(int left, int right) { // BREAK_CPP_PAIR_ENTRY
     mkdir("runs/native-cpp", 0777);
     int owner = left / 1000;
     auto worker = [owner](int number) {
+        if (number == 2) {
+            char name[16];
+            std::snprintf(name, sizeof(name), "native cpp %d", owner);
+            pthread_setname_np(pthread_self(), name);
+        }
         char path[100];
         std::snprintf(path, sizeof(path), "runs/native-cpp/owner-%d-worker-%d.txt", owner, number);
         for (int beat = 1; beat <= 12; beat++) {
