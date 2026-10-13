@@ -163,6 +163,42 @@ take turns; the example does not run seven independent LDI reproductions at
 once. Selecting a thread chooses what to inspect and where to send Step, but
 the debugger adapter may resume other threads too.
 
+### Step by Thread experiments
+
+Start with the [Step by Thread experiment guide](experiments/README.md) for
+the two debugger routes, exact `.cln` solutions, counter checks, linked-window
+ownership and recovery steps.
+
+The ⇥ control requests **one Step Over on the selected thread** from an
+all-thread stop at a source line. Ordinary ↷, ↓, ↑ and Continue keep their
+debugger-dependent scope. A waiting thread can still block progress, so Pause,
+the experiment recovery controls, and Stop remain important.
+
+**Rust, C and C++:** The [native thread-control experiment](experiments/lldb-native-thread-control/README.md)
+uses the installed `lldb-dap` and LLDB's built-in scripting API. It needs no
+custom debugger build. Direct two-worker probes passed, and the user reported
+working thread switching and stepping in the Craidd desktop lab on Linux with
+LLDB-DAP 23.1.1. This is a bounded experiment, not a guarantee for every
+program or LLDB version. The C fixture currently uses Craidd's CMake/C++
+project route.
+
+**Craidd Studio — C# Step by Thread:** The C# experiment works with an
+experiment-specific build of [Samsung's netcoredbg](https://github.com/Samsung/netcoredbg)
+made from a pinned upstream revision and the tracked Craidd experiment patch.
+The ordinary installed `netcoredbg` did not provide this control in our tests.
+The source checkout includes a [patched Linux x64 experiment build](experiments/netcoredbg-thread-control/debugger/linux-x64/BUILD.md)
+beside the patch and fixtures. Craidd does not select it by default or put it
+in the app bundle. To test C# ⇥, select its `netcoredbg` executable in
+**File → User Preferences → Toolchain → C# → Debugger**. The
+[C# experiment guide](experiments/netcoredbg-thread-control/README.md)
+has the exact path, rebuild steps and recovery procedure. The C# managed
+desktop A/B counter check still needs a fresh run. This build is bounded to
+the pinned Samsung revision and Linux x64; a future standard debugger
+capability could remove the need for the patch.
+
+The [per-thread execution design](docs/feats/mt-debugging/design-per-thread-execution-control.md)
+records the control boundaries and remaining validation work.
+
 ## What to expect from this alpha
 
 Craidd currently concentrates on project and solution workflows, external

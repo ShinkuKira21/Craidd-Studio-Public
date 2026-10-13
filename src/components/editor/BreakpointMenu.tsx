@@ -39,21 +39,28 @@ export default function BreakpointMenu({ file, line, x, y, callSite, onClose }: 
       {red && <button role="menuitem" className="block w-full px-3 py-1.5 text-left text-red-300 hover:bg-red-900"
         onClick={() => { setCondition(red.condition ?? ""); setEditingCondition("red"); }}>
         {red.condition ? "Edit red condition…" : "Set red condition…"}</button>}
+      {blue?.unreachable && <div className="max-w-64 px-3 py-2 text-amber-300">
+        Unreachable under this Power Config: {blue.unreachable}. Blue remains at this call site.
+      </div>}
+      {blue?.warning && <div className="max-w-64 px-3 py-2 text-sky-300">
+        Needs recheck: {blue.warning}. Blue remains at this call site.
+      </div>}
       {blue ? <button role="menuitem"
         className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
         onClick={() => { void removeLdiBlue(file, line).then(onClose).catch((error) => setMenuError(String(error))); }}>
         Remove Blue Breakpoint</button>
-        : partners.map((partner) => <button key={partner.windowLabel} role="menuitem"
+        : null}
+      {partners.filter((partner) => partner.windowLabel !== blue?.partnerLabel).map((partner) => <button key={partner.windowLabel} role="menuitem"
           title={`${file.endsWith(".rs") ? "Rust White Debug · Live Native" : "Gold Linked Debug"} · ${callSite?.entryPoint ?? "native call"}`}
           className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
           onClick={() => { void setLdiBlue(file, line, partner.windowLabel).then(onClose).catch((error) => setMenuError(String(error))); }}>
-          Set Native Debugging Breakpoint → CS{partner.windowId}: {partner.selectedConfigName ?? partner.projectName}</button>)}
-      {!blue && (callSite?.configNames ?? []).filter((name) => !partners.some((partner) => partner.selectedConfigName === name))
+          {blue ? "Use Native partner" : "Set Native Debugging Breakpoint"} → CS{partner.windowId}: {partner.selectedConfigName ?? partner.projectName}</button>)}
+      {(callSite?.configNames ?? []).filter((name) => !partners.some((partner) => partner.selectedConfigName === name))
         .map((name) => <button key={name} role="menuitem"
           title={`Open Native Power Config ${name} and set Blue`}
           className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
           onClick={() => { void setupLdiBlue(file, line, name, !red && partners.length === 0).then(onClose).catch((error) => setMenuError(String(error))); }}>
-          Set Blue Breakpoint → Open {name}</button>)}
+          {blue ? "Use Native Power Config" : "Set Blue Breakpoint"} → Open {name}</button>)}
       {blue && blue.mode !== "live-native" && <button role="menuitem" className="block w-full px-3 py-1.5 text-left text-blue-300 hover:bg-blue-900"
         onClick={() => { setCondition(blue.condition ?? ""); setEditingCondition("blue"); }}>
         {blue.condition ? "Edit blue condition…" : "Set blue condition…"}</button>}

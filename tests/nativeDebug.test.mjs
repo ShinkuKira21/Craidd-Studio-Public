@@ -17,6 +17,7 @@ const core = url(`export async function invoke(command,args) {
   const g=globalThis.${mockName}; g.calls.push({command,args});
   if(command === 'get_native_debug_context') { g.queryStarted=true; return g.restore ?? null; }
   if(command === 'native_debug_control' && g.rejectedToken === args.token) throw new Error('Native inspection changed');
+  if(command === 'native_debug_threads') return g.nativeThreads;
   if(command === 'stat_files') return [{exists:!g.missingSource,readable:!g.missingSource}];
   if(command === 'get_ldi_blues') return g.refreshQueue?.shift() ?? (g.blue ? [g.blue] : []);
   if(command === 'set_ldi_blue') return g.blue;
@@ -62,15 +63,15 @@ const sourceURL = await load("../src/lib/debugSource.ts", {
   "../store/solutionStore": solution, "../store/sessionFeedbackStore": feedback, "@tauri-apps/api/core": core,
 });
 const { revealDebugSource } = await import(sourceURL);
-const nativeURL = await load("../src/store/nativeDebugStore.ts", {
-  "../lib/debugSource": sourceURL,
-  zustand, "./solutionStore": solution, "./linkedWindowsStore": linked,
-  "@tauri-apps/api/core": core, "@tauri-apps/api/webviewWindow": webview,
-});
 const outputURL = await load("../src/lib/outputPresentation.ts", {});
 const debugURL = await load("../src/store/debugStore.ts", {
   "../lib/debugSource": sourceURL,
   zustand, "./solutionStore": solution, "./breakpointStore": breakpoints, "../lib/outputPresentation": outputURL,
+  "@tauri-apps/api/core": core, "@tauri-apps/api/webviewWindow": webview,
+});
+const nativeURL = await load("../src/store/nativeDebugStore.ts", {
+  "../lib/debugSource": sourceURL,
+  zustand, "./debugStore": debugURL, "./solutionStore": solution, "./linkedWindowsStore": linked,
   "@tauri-apps/api/core": core, "@tauri-apps/api/webviewWindow": webview,
 });
 const actionsURL = await load("../src/lib/viewedActions.ts", {
@@ -85,18 +86,32 @@ const { useBuild } = await import(build);
 const { useSolution } = await import(solution);
 const context = (extra = {}) => ({ token: "1:100:1", originLabel: "rust", partnerLabel: "native", entryPoint: "demo_add",
   callFile: "/lab/Rust/src/main.rs", callLine: 10,
-  status: "paused", nativeStop: true, file: "/lab/Native/scalar.cpp", line: 13,
-  frames: [{ id: 1, name: "demo_add", line: 13, source: { path: "/lab/Native/scalar.cpp", name: "scalar.cpp" } }],
+  status: "paused", nativeStop: true, selectedThreadId: 101, file: "/lab/Native/scalar.cpp", line: 13,
+  frames: [{ id: 1, name: "demo_add", line: 13, source: { path: "/lab/Native/scalar.cpp", name: "scalar.cpp" }, craiddSourceAvailable: true }],
   variables: [{ name: "left", value: "20", variablesReference: 0 }], ...extra });
 function emit(name, payload) { const handler = mocks.listeners.get(name); assert.ok(handler, name); handler({ payload }); }
 async function until(predicate) { for (let i=0; i<30; i++) { if (predicate()) return; await new Promise(setImmediate); } assert.fail("Listener did not register"); }
 beforeEach(() => {
-  Object.assign(mocks, { calls: [], reveals: [], notices: [], missingSource:false, blue:null,refreshQueue:[],onOpen:null,listeners: new Map(), windowLabel: "native", restore: null, rejectedToken: null, queryStarted: false });
-  native.useNativeDebug.setState({ context: null });
+  Object.assign(mocks, { calls: [], reveals: [], notices: [], missingSource:false, blue:null,refreshQueue:[],onOpen:null,listeners: new Map(), windowLabel: "native", restore: null, rejectedToken: null, queryStarted: false,
+    nativeThreads: {sessionKey:"100:1",selectedThreadId:101,stale:false,allThreadsStopped:true,nativeSingleStep:true,stepPending:false,
+      threads:[{id:101,name:"native worker 1",state:"paused",incarnation:1,observedMs:10,ranMs:10,runObserved:true}]}});
+  native.useNativeDebug.setState({ context: null, threads: null });
   useDebug.setState({ status: "idle", file: null, line: null, frames: [], variables: [], output: "", reason: null });
   useLinkedWindows.setState({ ownWindowLabel: "native", viewedWindowLabel: "native", windows: [], members: [], activeAction: null });
   useBuild.setState({ selectedConfigName: "Native · Scalar" });
   useSolution.setState({solution:null,rootPath:'/lab',tabs:[]});
+});
+
+test("Native B uses the owning LLDB thread list and token-scoped one-thread step", async () => {
+  native.useNativeDebug.setState({ context: context() });
+  await native.refreshNativeThreads();
+  assert.equal(native.useNativeDebug.getState().threads.selectedThreadId, 101);
+  await native.stepNativeThreadOnly();
+  assert.ok(mocks.calls.some(({command,args}) => command === "native_debug_step_thread_only"
+    && args.token === "1:100:1" && args.sessionKey === "100:1" && args.threadId === 101 && args.incarnation === 1));
+  await native.selectNativeThread(101);
+  assert.ok(mocks.calls.some(({command,args}) => command === "native_debug_select_thread"
+    && args.token === "1:100:1" && args.threadId === 101));
 });
 
 test("native starting is active and Stop routes to the debugger, not the runner", async () => {
@@ -269,12 +284,26 @@ test("Rust owner keeps its Rust editor on routed stops; ordinary red C++ stops s
 // SSR uses Zustand's initial (not updated) server snapshot. Read the current
 // native store snapshot for this component contract test, without mocking data.
 const nativeSnapshotURL = url(`import {useNativeDebug as store} from ${JSON.stringify(nativeURL)};
-export const useNativeDebug=(selector)=>selector(store.getState());`);
+export const useNativeDebug=(selector)=>selector(store.getState());
+export async function stepNativeThreadOnly(){}`);
+const inspectURL = await load("../src/lib/debugInspect.ts", {
+  "@tauri-apps/api/core": core,
+});
+const variableTreeURL = await load("../src/components/panels/VariableTree.tsx", {
+  react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
+  "../../lib/debugInspect": inspectURL,
+});
+const watchURL = await load("../src/components/panels/WatchSection.tsx", {
+  react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
+  "../../store/solutionStore": solution, "../../lib/debugInspect": inspectURL,
+  "./VariableTree": variableTreeURL,
+});
 const sidebarURL = await load("../src/components/panels/DebugSidebar.tsx", {
   "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
   "../../store/debugStore": debugURL, "../../store/breakpointStore": breakpoints, "../../store/solutionStore": solution,
   "../../store/linkedWindowsStore": linked, "../../store/nativeDebugStore": nativeSnapshotURL,
   "./LdiSessionCard": url("export default function LdiSessionCard(){return null;}"),
+  "./WatchSection": watchURL, "./VariableTree": variableTreeURL,
   "../../lib/debugSource": sourceURL,
 });
 const { default: DebugSidebar } = await import(sidebarURL);
@@ -289,26 +318,33 @@ test("Native inspector renders real Rust-owned frames/locals while Native's adap
 const snapshotFacade = (module, exportName) => url(`import {${exportName} as store} from ${JSON.stringify(module)};
 export function ${exportName}(selector){return selector?selector(store.getState()):store.getState();}
 ${exportName}.getState=store.getState;`);
+const debugSnapshot = url(`import {useDebug as store, hasDebugSourceLine} from ${JSON.stringify(debugURL)};
+export {hasDebugSourceLine};
+export function useDebug(selector){return selector?selector(store.getState()):store.getState();}
+useDebug.getState=store.getState;`);
 const linkedSnapshot = url(`import {useLinkedWindows as store} from ${JSON.stringify(linked)};
 export function useLinkedWindows(selector){return selector?selector(store.getState()):store.getState();}
 export async function previewLinkedAction(){} export async function startLinkedAction(){} export async function stopLinkedAction(){}`);
 const toolbarURL = await load("../src/components/layout/Toolbar.tsx", {
   react:import.meta.resolve("react"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),
   "../../store/solutionStore":snapshotFacade(solution,"useSolution"),
-  "../../store/buildStore":build,"../../store/debugStore":snapshotFacade(debugURL,"useDebug"),
+  "../../store/buildStore":build,"../../store/debugStore":debugSnapshot,
   "../../store/linkedWindowsStore":linkedSnapshot,"../../store/ldiStore":snapshotFacade(ldiURL,"useLdi"),
   "../../store/nativeDebugStore":nativeSnapshotURL,"../../lib/viewedActions":actionsURL,
   "../../lib/linkedStartup":url("export const detectLinkedStartupSuggestions=()=>[];"),
   "../dialogs/configurations/ConfigurationsDialog":url("export default function C(){return null;}"),
   "../dialogs/LinkedLaunchPlanDialog":url("export default function C(){return null;}"),
   "./WindowManager":url("export default function C(){return null;}"),
+  "./ThreadDropdown":url("export default function ThreadDropdown(){return null;}"),
+  "./NativeThreadDropdown":url("export default function NativeThreadDropdown(){return null;}"),
 });
 const {default:Toolbar}=await import(toolbarURL);
-test("Native+Rust keeps disabled Gold presence and no standalone Native Debug launch", () => {
+test("Native+Rust explains disabled Gold and keeps White Debug as the launch", () => {
   useSolution.setState({solution:labSolution});
-  useLinkedWindows.setState({windows:[{windowLabel:"native"},{windowLabel:"rust"}],linked:false,canBuild:false,canRun:false,canDebug:false});
+  useLinkedWindows.setState({windows:[{windowLabel:"native",ldiRole:"native-library"},{windowLabel:"rust",ldiRole:"live-native"}],linked:false,canBuild:false,canRun:false,canDebug:false});
   const html=renderToStaticMarkup(createElement(Toolbar));
-  assert.ok(html.includes("2 solution windows; no eligible linked debug group"));
+  assert.ok(html.includes("Rust + Native uses one LLDB session"));
+  assert.ok(html.includes("use White Debug in A"));
   assert.ok(html.includes("Debug — no debug configurations"));
 });
 test("Native toolbar exposes Gold Rust Stop outside native frames and only offers owner navigation while paused in Rust", () => {

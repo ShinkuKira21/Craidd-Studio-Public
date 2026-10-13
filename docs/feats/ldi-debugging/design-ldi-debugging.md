@@ -15,6 +15,8 @@ This is not a claim that all gates below passed.
 
 This develops [the LDI philosophy](../../philosophies/debugging/ldi-debugging/philosophy-ldi-debugging.md) and
 [the mixed-debugging philosophy](../../philosophies/debugging/mixed-debugging/philosophy-mixed-debugging.md).
+The target UX for retaining one Blue call-site marker across Power Configs is
+specified in [Blue breakpoint reachability](design-blue-breakpoint-reachability.md).
 
 ## The general shape
 

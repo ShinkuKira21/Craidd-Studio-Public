@@ -1,0 +1,5 @@
+[project]
+name = "Rust Native Library Thread Step"
+language = "rust"
+root = "."
+kind = "application"

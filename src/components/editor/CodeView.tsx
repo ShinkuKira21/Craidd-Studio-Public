@@ -39,6 +39,7 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
   const lines = [...new Set(points.filter((point) => point.file === file).map((point) => point.line))];
   return [...lines.map((line) => {
     const condition = points.find((point) => point.file === file && point.line === line)?.condition;
+    const pairedBlue = blues.some((blue) => blue.file === file && blue.line === line && blue.originLabel === linked.ownWindowLabel);
     const unmatchedLibrary = library && !blues.some((blue) => blue.nativePoints.some((point) => point.file === file && point.line === line));
     const reminder = unmatchedLibrary && !linked.windows.some((item) => item.ldiRole === "live-native")
       ? `LDI reminder: right-click the C# gutter in ${managed ? `CS${managed.windowId}` : "a linked managed window"} where this extern function is called (not defined), and choose Native Debugging Breakpoint. A red library marker alone does not launch a reproduction; use a .c/.cpp implementation, not a header prototype.`
@@ -47,17 +48,22 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
       range: new monaco.Range(liveRedLines.get(`${file}:${line}`) ?? line, 1, liveRedLines.get(`${file}:${line}`) ?? line, 1),
       options: {
         isWholeLine: false,
-        glyphMarginClassName: unmatchedLibrary && !linked.windows.some((item) => item.ldiRole === "live-native") ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
+        glyphMarginClassName: pairedBlue ? undefined
+          : unmatchedLibrary && !linked.windows.some((item) => item.ldiRole === "live-native") ? "craidd-breakpoint craidd-breakpoint-warning" : "craidd-breakpoint",
         glyphMarginHoverMessage: { value: `${reminder}${condition ? `\nCondition: ${condition}` : ""}` },
       },
     };
   }), ...blues.filter((blue) => blue.file === file && blue.originLabel === linked.ownWindowLabel).map((blue) => {
+    const pairedRed = points.find((point) => point.file === file && point.line === blue.line);
+    const unreachable = Boolean(blue.unreachable);
     const warning = [blue.warning, dirty ? "Unsaved edits: Blue still uses the last saved call site. Save to revalidate it." : null]
       .filter(Boolean).join("\n");
     return { range: new monaco.Range(liveBlueLines.get(blueKey(blue)) ?? blue.line, 1,
       liveBlueLines.get(blueKey(blue)) ?? blue.line, 1),
-      options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${warning || blue.pendingRestart ? " craidd-breakpoint-warning" : ""}`,
-        glyphMarginHoverMessage: { value: (warning ? `⚠ ${warning}` : blue.mode === "live-native"
+      options: { isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-blue${pairedRed ? " craidd-breakpoint-dual" : ""}${unreachable ? " craidd-breakpoint-unreachable" : warning || blue.pendingRestart ? " craidd-breakpoint-pending" : ""}`,
+        glyphMarginHoverMessage: { value: (pairedRed ? `Red Breakpoint · line ${blue.line}${pairedRed.condition ? ` · Condition: ${pairedRed.condition}` : ""}\n` : "") + (unreachable
+          ? `Native Blue · ${blue.entryPoint}. Unreachable under the selected Power Config: ${blue.unreachable}. The breakpoint stays here; choose a compatible Power Config to arm it. Left-click for options.`
+          : warning ? `⚠ ${warning}` : blue.mode === "live-native"
           ? `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}\nRust White Debug: inspect the real process in Native. No driver or separate Rust call-site hold.`
           : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}`)
           + (blue.pendingRestart ? `\n\nApplies after ${blue.mode === "live-native" ? "Rust Debug restarts" : "Gold Restart Debug"}. The running session keeps its original Blue bindings.` : "") } } };
@@ -288,7 +294,8 @@ export default function CodeView() {
             setBreakpointError(null);
             const { blue, red } = markersAtLine(file, line);
             const site = callSitesRef.current.find((item) => item.line === line);
-            if (blue) void removeLdiBlue(file, blue.line).catch((error) => setBreakpointError(String(error)));
+            if (blue && (red || blue.unreachable || blue.warning)) setBreakpointMenu({ x: event.event.posx, y: event.event.posy, line: blue.line });
+            else if (blue) void removeLdiBlue(file, blue.line).catch((error) => setBreakpointError(String(error)));
             else if (!red && site?.partnerLabels.length === 1) {
               void setLdiBlue(file, line, site.partnerLabels[0]).catch((error) => setBreakpointError(String(error)));
             } else if (!red && site?.partnerLabels.length === 0 && site.configNames.length === 1) {

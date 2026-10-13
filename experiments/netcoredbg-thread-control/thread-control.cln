@@ -1,0 +1,136 @@
+[solution]
+name = "C# Thread Control Experiment"
+version = "1.0"
+projects = ["CSharpExclusiveStep/CSharpExclusiveStep.craidd", "LinkedCSharpStep/LinkedCSharpStep.craidd", "Native/Native.craidd"]
+default_project = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+default_config = "C# Exclusive Step"
+
+[[config]]
+name = "C# Exclusive Step"
+kind = "run"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+[config.slots]
+build = "C# Exclusive Step · Build"
+run = "C# Exclusive Step · Run"
+debug = "C# Exclusive Step · Debug"
+
+[[config]]
+name = "C# Exclusive Step · Build"
+kind = "build"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+method = "dotnet"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "C# Exclusive Step · Run"
+kind = "run"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+method = "dotnet"
+command = "dotnet run --project ThreadControlExperiment.csproj --no-launch-profile -- runs/basic"
+
+[[config]]
+name = "C# Threads + C Threads"
+kind = "run"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+[config.slots]
+build = "Prepare C# Linked"
+run = "C# + C Lib · Run"
+debug = "C# + C Lib · Debug"
+
+[[config]]
+name = "C# Threads + C++ Threads"
+kind = "run"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+[config.slots]
+build = "Prepare C# Linked"
+run = "C# + C++ Lib · Run"
+debug = "C# + C++ Lib · Debug"
+
+[[config]]
+name = "Native Libraries · C# LDI"
+kind = "build"
+target = "Native/Native.craidd"
+[config.slots]
+build = "Native Libraries · C# Build"
+
+[[config]]
+name = "Prepare C# Linked"
+kind = "build"
+method = "plan"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "C# Linked · Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native Libraries · C# Build"
+[[config.order.steps]]
+kind = "install"
+configuration = "Native Libraries · C# Build"
+destination = "C# Linked · Build"
+
+[[config]]
+name = "C# Linked · Build"
+kind = "build"
+method = "dotnet"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--configuration", "Debug", "--nologo"]
+
+[[config]]
+name = "Native Libraries · C# Build"
+kind = "build"
+method = "cmake"
+target = "Native/Native.craidd"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug"]
+
+[[config]]
+name = "C# + C Lib · Run"
+kind = "run"
+method = "dotnet"
+command = "dotnet run --project LinkedCSharpStep.csproj --no-launch-profile -- c runs/c"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+[config.order]
+before = "Prepare C# Linked"
+
+[[config]]
+name = "C# + C++ Lib · Run"
+kind = "run"
+method = "dotnet"
+command = "dotnet run --project LinkedCSharpStep.csproj --no-launch-profile -- cpp runs/cpp"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+[config.order]
+before = "Prepare C# Linked"
+
+[[config]]
+name = "C# + C Lib · Debug"
+kind = "debug"
+method = "dotnet"
+command = "dotnet run --project LinkedCSharpStep.csproj --no-launch-profile -- c runs/c"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+[config.order]
+before = "Prepare C# Linked"
+
+[[config]]
+name = "C# + C++ Lib · Debug"
+kind = "debug"
+method = "dotnet"
+command = "dotnet run --project LinkedCSharpStep.csproj --no-launch-profile -- cpp runs/cpp"
+target = "LinkedCSharpStep/LinkedCSharpStep.craidd"
+[config.order]
+before = "Prepare C# Linked"
+
+[[config]]
+name = "C# Exclusive Step · Debug"
+kind = "debug"
+target = "CSharpExclusiveStep/CSharpExclusiveStep.craidd"
+method = "dotnet"
+command = "dotnet run --project ThreadControlExperiment.csproj --no-launch-profile -- runs/basic"

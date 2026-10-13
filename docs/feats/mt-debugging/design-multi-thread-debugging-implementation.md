@@ -14,6 +14,10 @@ frozen origin. The seven-worker `mt-lab` variant and real LLDB-DAP probe cover
 native thread discovery. Ordered callers provide one active reproduction at
 a time; they do not establish independent stepping or simultaneous native
 call correlation. Remaining cross-window cases need explicit desktop records.
+The separate [per-thread execution design](design-per-thread-execution-control.md)
+records the bounded Rust/C/C++ LLDB experiment and optional patched-netcoredbg
+C# experiment combined on `feat/mt-debugging-control`. This document's
+ordinary selector and linked-window scope rules still apply.
 
 **Supersedes for UI scope:** The combined cross-window dropdown in
 [design-thread-scope.md](design-thread-scope.md). The session identity, stop
@@ -86,7 +90,7 @@ thread on its first immediate `threads` reply; the ordinary native session
 uses LLDB's process-wide stop model and retries one incomplete reply before
 discarding the stopped worker.
 
-### Pattern to investigate for independent worker debugging
+### Ordinary step focus and the separate execution-control experiment
 
 The first proposed UX improvement is honest **step focus**: send the selected thread ID,
 show which thread actually stops next, and preserve the user's selected row
@@ -350,5 +354,5 @@ and [DAP specification](https://microsoft.github.io/debug-adapter-protocol/speci
 
 ---
 
-*Last updated: Phase 3.x. Author: ShinkuKira21.*
+*Last updated: Phase 3.x, 9 October 2026. Author(s): ShinkuKira21.*
 *This document is a record.*

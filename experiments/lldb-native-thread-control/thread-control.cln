@@ -1,0 +1,228 @@
+[solution]
+name = "Native Thread Control Experiment"
+version = "1.0"
+projects = ["RustExclusiveStep/RustExclusiveStep.craidd", "CppExclusiveStep/CppExclusiveStep.craidd", "CExclusiveStep/CExclusiveStep.craidd", "RustLinkedStep/RustLinkedStep.craidd", "Native/Native.craidd"]
+default_project = "RustExclusiveStep/RustExclusiveStep.craidd"
+default_config = "Rust Exclusive Step"
+
+[[config]]
+name = "Rust Exclusive Step"
+kind = "debug"
+target = "RustExclusiveStep/RustExclusiveStep.craidd"
+method = "cargo"
+command = "cargo run -- runs/rust"
+
+[[config]]
+name = "C++ Exclusive Step"
+kind = "debug"
+target = "CppExclusiveStep/CppExclusiveStep.craidd"
+method = "cmake"
+command = "cmake --build build --target cpp-exclusive-step -- runs/cpp"
+
+[[config]]
+name = "C Exclusive Step"
+kind = "debug"
+target = "CExclusiveStep/CExclusiveStep.craidd"
+method = "cmake"
+command = "cmake --build build --target c-exclusive-step -- runs/c"
+
+[[config]]
+name = "Rust + C Lib"
+kind = "run"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.slots]
+build = "Rust + C Lib · Build"
+run = "Rust + C Lib · Run"
+debug = "Rust + C Lib · Debug"
+
+[[config]]
+name = "Rust + C++ Lib"
+kind = "run"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.slots]
+build = "Rust + C++ Lib · Build"
+run = "Rust + C++ Lib · Run"
+debug = "Rust + C++ Lib · Debug"
+
+[[config]]
+name = "Native Libraries · Rust"
+kind = "build"
+target = "Native/Native.craidd"
+[config.slots]
+build = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Native Libraries · Rust Build"
+kind = "build"
+method = "cmake"
+target = "Native/Native.craidd"
+default_profile = "Debug"
+[[config.profile]]
+name = "Debug"
+args = ["--config", "Debug"]
+
+[[config]]
+name = "Rust + C Lib · Build"
+kind = "build"
+method = "plan"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native Libraries · Rust Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Rust + C Lib · Cargo Build"
+
+[[config]]
+name = "Rust + C++ Lib · Build"
+kind = "build"
+method = "plan"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native Libraries · Rust Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Rust + C++ Lib · Cargo Build"
+
+[[config]]
+name = "Rust + C Lib · Cargo Build"
+kind = "build"
+method = "cargo"
+command = "cargo build --offline"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+
+[[config]]
+name = "Rust + C++ Lib · Cargo Build"
+kind = "build"
+method = "cargo"
+command = "cargo build --offline --features cpp"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+
+[[config]]
+name = "Rust + C Lib · Run"
+kind = "run"
+method = "cargo"
+command = "cargo run --offline -- runs/c"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Rust + C Lib · Build"
+
+[[config]]
+name = "Rust + C++ Lib · Run"
+kind = "run"
+method = "cargo"
+command = "cargo run --offline --features cpp -- runs/cpp"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Rust + C++ Lib · Build"
+
+[[config]]
+name = "Rust + C Lib · Debug"
+kind = "debug"
+method = "cargo"
+command = "cargo run --offline -- runs/c"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C++ Lib · Debug"
+kind = "debug"
+method = "cargo"
+command = "cargo run --offline --features cpp -- runs/cpp"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C Threads"
+kind = "run"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.slots]
+build = "Rust + C Threads · Build"
+run = "Rust + C Threads · Run"
+debug = "Rust + C Threads · Debug"
+
+[[config]]
+name = "Rust + C++ Threads"
+kind = "run"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.slots]
+build = "Rust + C++ Threads · Build"
+run = "Rust + C++ Threads · Run"
+debug = "Rust + C++ Threads · Debug"
+
+[[config]]
+name = "Rust + C Threads · Build"
+kind = "build"
+method = "plan"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native Libraries · Rust Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Rust + C Threads · Cargo Build"
+
+[[config]]
+name = "Rust + C++ Threads · Build"
+kind = "build"
+method = "plan"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[[config.order.steps]]
+kind = "build"
+configuration = "Native Libraries · Rust Build"
+[[config.order.steps]]
+kind = "build"
+configuration = "Rust + C++ Threads · Cargo Build"
+
+[[config]]
+name = "Rust + C Threads · Cargo Build"
+kind = "build"
+method = "cargo"
+command = "cargo build --offline --features native_threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+
+[[config]]
+name = "Rust + C++ Threads · Cargo Build"
+kind = "build"
+method = "cargo"
+command = "cargo build --offline --features cpp,native_threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+
+[[config]]
+name = "Rust + C Threads · Run"
+kind = "run"
+method = "cargo"
+command = "cargo run --offline --features native_threads -- runs/c-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C++ Threads · Run"
+kind = "run"
+method = "cargo"
+command = "cargo run --offline --features cpp,native_threads -- runs/cpp-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C Threads · Debug"
+kind = "debug"
+method = "cargo"
+command = "cargo run --offline --features native_threads -- runs/c-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"
+
+[[config]]
+name = "Rust + C++ Threads · Debug"
+kind = "debug"
+method = "cargo"
+command = "cargo run --offline --features cpp,native_threads -- runs/cpp-threads"
+target = "RustLinkedStep/RustLinkedStep.craidd"
+[config.order]
+before = "Native Libraries · Rust Build"

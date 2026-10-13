@@ -1,0 +1,8 @@
+.local-tools/
+**/bin/
+**/obj/
+**/build/
+**/.runs/
+.runs/
+**/runs/
+**/__pycache__/

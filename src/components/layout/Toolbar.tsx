@@ -9,9 +9,10 @@ import { useLdi } from "../../store/ldiStore";
 import { detectLinkedStartupSuggestions } from "../../lib/linkedStartup";
 import LinkedLaunchPlanDialog from "../dialogs/LinkedLaunchPlanDialog";
 import WindowManager from "./WindowManager";
-import { useDebug } from "../../store/debugStore";
-import { useNativeDebug } from "../../store/nativeDebugStore";
+import { hasDebugSourceLine, useDebug } from "../../store/debugStore";
+import { stepNativeThreadOnly, useNativeDebug } from "../../store/nativeDebugStore";
 import ThreadDropdown from "./ThreadDropdown";
+import NativeThreadDropdown from "./NativeThreadDropdown";
 
 type Kind = "build" | "run" | "debug";
 
@@ -33,7 +34,15 @@ function Toolbar() {
   const debugInspectionError = useDebug((s) => s.inspectionError);
   const selectedThreadId = useDebug((s) => s.selectedThreadId);
   const threadSessionKey = useDebug((s) => s.threadSessionKey);
+  const nativeSingleStepSessionKey = useDebug((s) => s.nativeSingleStepSessionKey);
+  const nativeStepTarget = useDebug((s) => s.nativeStepTarget);
+  const nativeReleaseFailed = useDebug((s) => s.nativeReleaseFailed);
+  const exclusiveNextSessionKey = useDebug((s) => s.exclusiveNextSessionKey);
+  const exclusiveStepTarget = useDebug((s) => s.exclusiveStepTarget);
+  const threadsStale = useDebug((s) => s.threadsStale);
+  const allThreadsStopped = useDebug((s) => s.allThreadsStopped);
   const nativeContext = useNativeDebug((s) => s.context);
+  const nativeThreads = useNativeDebug((s) => s.threads);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [startupSetupRequested, setStartupSetupRequested] = useState(false);
   const [previewName, setPreviewName] = useState<string | null>(null);
@@ -53,19 +62,32 @@ function Toolbar() {
     && item.windowLabel !== linked.ownWindowLabel);
   const heldByLdi = Boolean(ldi?.held && ldi.phase !== "stopped" && ldi.originLabel === (remote?.windowLabel ?? linked.ownWindowLabel));
   const native = !remote ? nativeContext : null;
+  const hasNativeSingleStep = !remote && !native && Boolean(threadSessionKey)
+    && nativeSingleStepSessionKey === threadSessionKey;
+  const hasExclusiveStep = !remote && !native && Boolean(threadSessionKey)
+    && exclusiveNextSessionKey === threadSessionKey;
+  const activeNativeThreads = native && nativeThreads?.token === native.token ? nativeThreads : null;
+  const hasNativeViewStep = Boolean(native && activeNativeThreads?.nativeSingleStep);
+  const hasThreadOnlyStep = hasNativeSingleStep || hasExclusiveStep || hasNativeViewStep;
+  const threadStepPending = Boolean(nativeStepTarget || exclusiveStepTarget || activeNativeThreads?.stepPending);
   const showGold = linked.windows.length > 1 || linked.linked || Boolean(linked.activeAction);
   const liveOwner = !remote && blues.some((blue) => blue.mode === "live-native"
-    && blue.originLabel === linked.ownWindowLabel && !blue.warning)
+    && blue.originLabel === linked.ownWindowLabel && !blue.warning && !blue.unreachable)
     && ["building", "starting", "running", "paused"].includes(debugStatus);
   const liveLinked = Boolean(native) || liveOwner;
   const viewedStatus = native?.status ?? remote?.status ?? (["building", "starting", "running", "paused"].includes(debugStatus) ? debugStatus : status);
-  const localStepUnavailable = !remote && !native && threadSessionKey && viewedStatus === "paused"
-    && (selectedThreadId == null || !debugFrames[0]?.source?.path || !debugFrames[0]?.line);
+  const localStepUnavailable = !remote && viewedStatus === "paused" && (native
+    ? !native.nativeStop || !hasDebugSourceLine(native.frames[0])
+      || (native.selectedThreadId != null && native.selectedThreadId !== activeNativeThreads?.selectedThreadId)
+    : Boolean(threadSessionKey) && (selectedThreadId == null || !hasDebugSourceLine(debugFrames[0])));
   const localStepReason = selectedThreadId == null
     ? "Select a paused thread before stepping"
     : debugFrames.length === 0
       ? debugInspectionError ? "The selected thread's stack could not be inspected; choose another paused thread" : "Waiting for the selected thread's stack"
-    : "This thread has no source line at its current instruction. Inspect it or select a thread stopped in code; Continue remains available.";
+      : "This thread has no source line at its current instruction. Continue to its next source breakpoint; other threads may run too.";
+  const nativeStepReason = !native?.nativeStop ? "Select a paused native thread in this shared Rust debugger"
+    : !hasDebugSourceLine(native.frames[0]) ? "This native thread has no source line. Continue to its next source breakpoint"
+    : "Wait for this Native window to inspect the selected thread";
   const running = ["waiting", "starting", "building", "running", "paused"].includes(viewedStatus);
   const viewedConfigName = remote ? remote.selectedConfigName : selectedConfigName;
   const viewedProfileName = remote ? remote.selectedProfileName : selectedProfileName;
@@ -79,6 +101,11 @@ function Toolbar() {
     .catch((error) => alert(`Could not stop the viewed window: ${String(error)}`));
   const debugViewed = (action: "continue" | "pause" | "stepOver" | "stepInto" | "stepOut") => void controlViewedDebug(action)
     .catch((error) => alert(`Debug ${action} failed: ${String(error)}`));
+  const stepThreadOnly = () => void (hasNativeViewStep
+    ? stepNativeThreadOnly()
+    : hasNativeSingleStep ? useDebug.getState().stepNativeThreadOnly()
+    : useDebug.getState().stepThreadOnly())
+    .catch((error) => alert(`Could not step this thread only: ${String(error)}`));
   const onChipSelect = (name: string) => void selectViewedConfiguration(name)
     .catch((error) => alert(`Could not select configuration: ${String(error)}`));
 
@@ -134,20 +161,34 @@ function Toolbar() {
       {(native || (remote ? remote.debugging && (viewedStatus === "paused" || viewedStatus === "running") : (debugStatus === "paused" || debugStatus === "running"))) && <div className="flex items-center gap-0.5 border-l border-zinc-700 pl-1.5 ml-0.5">
         {viewedStatus === "paused"
           ? (!native || native.nativeStop)
-            ? <DebugTransport label={heldByLdi ? "Continue C# · stop this native reproduction" : "Continue"}
+            ? <DebugTransport disabled={threadStepPending || nativeReleaseFailed}
+                disabledReason={nativeReleaseFailed ? "Native hold release is unverified; retry release or Stop" : "Wait for the one-thread Step to stop or Pause it"}
+                label={heldByLdi ? "Continue C# · stop this native reproduction" : "Continue"}
                 icon="▶" onClick={() => debugViewed("continue")} />
             : <button type="button" className="px-2 text-blue-300 hover:text-blue-200"
               onClick={() => void linked.selectWindow(native.originLabel).catch((error) => alert(String(error)))}>Paused in Rust · show owner</button>
           : <DebugTransport label="Pause" icon="⏸" onClick={() => debugViewed("pause")} />}
         {!remote && !native && (threadSessionKey || (ldi?.held && ldi.originLabel === linked.ownWindowLabel)) && <ThreadDropdown />}
+        {native && <NativeThreadDropdown />}
         {viewedStatus === "paused" && (!native || native.nativeStop) && <>
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Over" icon="↷" onClick={() => debugViewed("stepOver")} />
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Into" icon="↓" onClick={() => debugViewed("stepInto")} />
-          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable)} disabledReason={heldByLdi ? undefined : localStepReason} label="Step Out" icon="↑" onClick={() => debugViewed("stepOut")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable) || threadStepPending || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : threadStepPending ? "Wait for the one-thread Step to stop" : heldByLdi ? undefined : native ? nativeStepReason : localStepReason}
+            label="Step Over · may resume all threads" icon="↷" onClick={() => debugViewed("stepOver")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable) || threadStepPending || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : threadStepPending ? "Wait for the one-thread Step to stop" : heldByLdi ? undefined : native ? nativeStepReason : localStepReason}
+            label="Step Into · may resume all threads" icon="↓" onClick={() => debugViewed("stepInto")} />
+          <DebugTransport disabled={heldByLdi || Boolean(localStepUnavailable) || threadStepPending || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : threadStepPending ? "Wait for the one-thread Step to stop" : heldByLdi ? undefined : native ? nativeStepReason : localStepReason}
+            label="Step Out · may resume all threads" icon="↑" onClick={() => debugViewed("stepOut")} />
+          {hasThreadOnlyStep && <DebugTransport
+            disabled={heldByLdi || (native ? !activeNativeThreads || activeNativeThreads.stale || !activeNativeThreads.allThreadsStopped
+              : threadsStale || !allThreadsStopped) || Boolean(localStepUnavailable) || threadStepPending || nativeReleaseFailed}
+            disabledReason={nativeReleaseFailed ? "Native hold release is unverified" : (native ? activeNativeThreads?.stale : threadsStale) ? "Wait for the current thread list" : (native ? !activeNativeThreads?.allThreadsStopped : !allThreadsStopped) ? "Pause all threads before stepping one" : threadStepPending ? "Wait for the current one-thread Step to stop; use Pause if it is blocked" : heldByLdi ? undefined : native ? nativeStepReason : localStepReason}
+            label="Experimental: Step selected thread only" icon="⇥" onClick={stepThreadOnly} />}
         </>}
       </div>}
 
-      <div className="ml-auto text-zinc-500 text-[11px] truncate max-w-[220px]">
+      <div className={`ml-auto text-zinc-500 text-[11px] truncate max-w-[220px]${native ? " hidden 2xl:block" : ""}`}>
         {native ? <span className="text-blue-300" title="Controls operate the owning Rust process; your Native Power Config is unchanged">Native view · Rust · {native.status}</span> : running && (remote ? remote.selectedConfigName : activeConfigName) ? (
           <>
             <span className="text-zinc-500">White{remote ? ` CS${remote.windowId}` : ""} · </span><span className="text-zinc-400">{remote ? remote.selectedConfigName : activeConfigName}</span>
@@ -158,6 +199,7 @@ function Toolbar() {
           <><span className="text-zinc-500">White{remote ? ` CS${remote.windowId}` : ""} · </span><span>{viewedStatus}</span></>
         )}
       </div>
+      {native && <div className="ml-auto 2xl:hidden" />}
 
       <WindowManager />
 
@@ -210,6 +252,8 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
   };
   const projects = linked.members.map((member) => member.projectName).join(" + ");
   const count = linked.members.length || linked.windows.length;
+  const rustNativePair = linked.windows.some((member) => member.ldiRole === "live-native")
+    && linked.windows.some((member) => member.ldiRole === "native-library");
   const activeCount = linked.activeCount;
   const missingDebug = linked.members.filter((member) => !member.canDebug && member.ldiRole !== "native-library");
   const debugBlockers = [
@@ -217,6 +261,10 @@ function GoldButton({ kind, linked }: { kind: Kind; linked: LinkedSnapshot }) {
     !linked.debugAdapterAvailable ? "Install/select the required lldb-dap or netcoredbg adapter in Preferences → Toolchain, then rescan" : null,
   ].filter(Boolean).join("; ");
   const title = isStop ? `${count} linked ${count === 1 ? "window" : "windows"} (gold upper number); ${activeCount} still starting or running (light lower number). Stop the remaining instances.`
+    : !linked.linked && rustNativePair && kind === "debug"
+      ? "Rust + Native uses one LLDB session. Select the Native library in B, set Blue on the Rust call in A, then use White Debug in A. Gold Debug starts multiple processes."
+    : !linked.linked && rustNativePair && kind === "run"
+      ? "The Native library has no separate Run process. Use White Run in Rust; use White Debug in Rust for linked native inspection."
     : !linked.linked ? `${count} solution windows; no eligible linked ${kind} group. Libraries have no Run/Debug process. Use White Run/Debug in the caller; Native shows its live inspector and Stop.`
     : kind === "debug" && !linked.canDebug ? `Cannot debug ${count} linked windows: ${debugBlockers}`
     : !available ? `Cannot ${kind} all ${count} linked instances: a configuration is missing`
