@@ -141,7 +141,7 @@ export async function removeLdiBlue(file: string, line: number) {
 }
 function notifyRustRestart() {
   showSessionNotice({ key: `rust-native-next-launch:${Date.now()}`,
-    message: "Rust Native Breakpoint changes apply on the next Rust Debug launch. The running process keeps its original bindings; Stop and start Rust White Debug to rearm them." });
+    message: "Rust Native Breakpoint changes apply on the next Rust Debug launch. The running process keeps its original bindings; Stop and start Gold Debug to reopen the Native view and rearm them." });
 }
 function notifyLdiRestart() {
   const linked = useLinkedWindows.getState();

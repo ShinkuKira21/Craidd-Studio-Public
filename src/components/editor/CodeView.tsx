@@ -64,22 +64,23 @@ function breakpointDecorations(monaco: Monaco, points: Breakpoint[], file: strin
         glyphMarginHoverMessage: { value: (pairedRed ? `Red Breakpoint · line ${blue.line}${pairedRed.condition ? ` · Condition: ${pairedRed.condition}` : ""}\n` : "") + (unreachable
           ? `Native Blue · ${blue.entryPoint}. Unreachable under the selected Power Config: ${blue.unreachable}. The breakpoint stays here; choose a compatible Power Config to arm it. Left-click for options.`
           : warning ? `⚠ ${warning}` : blue.mode === "live-native"
-          ? `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}\nRust White Debug: inspect the real process in Native. No driver or separate Rust call-site hold.`
+          ? `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}\nRust Gold Debug opens the Native view; White Debug in Rust also uses this shared LLDB session.`
           : `Native Debugging Breakpoint → CS${blue.partnerWindowId} · ${blue.entryPoint}${blue.condition ? `\nCondition: ${blue.condition}` : ""}\nB stops at ${blue.landing === "automatic-entry" ? "the native export entry (automatic)" : "the matching red breakpoint"}.\n\nGold Linked Debug only. ${blue.mode === "typed-interposer" ? "A advances to a pre-call native hold; B reproduces before A's real call." : "A remains at this stop until B finishes."}`)
           + (blue.pendingRestart ? `\n\nApplies after ${blue.mode === "live-native" ? "Rust Debug restarts" : "Gold Restart Debug"}. The running session keeps its original Blue bindings.` : "") } } };
   }), ...callSites.filter((site) => !lines.includes(site.line)
     && !blues.some((blue) => blue.file === file && blue.line === site.line && blue.originLabel === linked.ownWindowLabel))
     .map((site) => {
-      const partners = site.partnerLabels.map((label) => linked.windows.find((item) => item.windowLabel === label))
-        .filter((item) => item !== undefined);
+      const partners = linked.windows.filter((item) => item.ldiRole === "native-library"
+        && (site.partnerLabels.includes(item.windowLabel)
+          || (item.selectedConfigName !== null && site.configNames.includes(item.selectedConfigName))));
       const names = partners.map((item) => `CS${item.windowId}: ${item.selectedConfigName ?? item.projectName}`).join(", ");
       const needsWindow = partners.length === 0 && site.configNames.length > 0;
       const choices = site.configNames.join(", ");
       return { range: new monaco.Range(site.line, 1, site.line, 1), options: {
         isWholeLine: false, glyphMarginClassName: `craidd-breakpoint craidd-breakpoint-ghost-blue${needsWindow ? " craidd-breakpoint-ghost-needs-window" : ""}`,
         glyphMarginHoverMessage: { value: needsWindow
-          ? `⚠ You need to duplicate this window and open Power Config: ${choices}, where ${site.entryPoint} exists. ${site.configNames.length === 1 ? "If you left-click, the IDE will try to do this for you." : "Left-click to choose which native configuration to open."} Right-click for other breakpoint options.`
-          : `Set Native Debugging Breakpoint → ${names} (${site.entryPoint}). ${site.partnerLabels.length === 1 ? "Left-click to set it" : "Left-click to choose the partner"}; right-click for other breakpoint options. ${file?.endsWith(".rs") ? "Rust White Debug · live process." : "Gold Linked Debug only."}` },
+          ? `⚠ Select Native Power Config: ${choices}, where ${site.entryPoint} exists. ${site.configNames.length === 1 ? "Left-click to open the Native view and set Blue." : "Left-click to choose a Native configuration."} Right-click for other breakpoint options.`
+          : `Set Native Debugging Breakpoint → ${names} (${site.entryPoint}). ${partners.length === 1 && site.configNames.length === 1 ? "Left-click to set it" : "Left-click to choose the partner"}; right-click for other breakpoint options. ${file?.endsWith(".rs") ? "Rust Gold Debug · shared native view." : "Gold Linked Debug only."}` },
       } };
     }), ...(pausedLine ? [{ range: new monaco.Range(pausedLine, 1, pausedLine, 1), options: { isWholeLine: true, className: "craidd-paused-line" } }] : [])];
 }

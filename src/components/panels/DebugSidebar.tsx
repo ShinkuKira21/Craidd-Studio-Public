@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { hasDebugSourceLine, useDebug } from "../../store/debugStore";
 import { useBreakpoints } from "../../store/breakpointStore";
 import { useSolution } from "../../store/solutionStore";
@@ -7,6 +8,8 @@ import { useNativeDebug } from "../../store/nativeDebugStore";
 import { revealDebugSource } from "../../lib/debugSource";
 import WatchSection from "./WatchSection";
 import { VariableRow } from "./VariableTree";
+import { refreshLdiBlues, useLdi } from "../../store/ldiStore";
+import { NativeConfigChoiceNeeded, openNativeViewForBlue } from "../../lib/rustNativeGold";
 
 export default function DebugSidebar() {
   const debug = useDebug();
@@ -14,7 +17,28 @@ export default function DebugSidebar() {
   const windows = useLinkedWindows((state) => state.windows);
   const remote = useLinkedWindows((state) => state.windows.find((item) => item.windowLabel === state.viewedWindowLabel && item.windowLabel !== state.ownWindowLabel));
   const context = useNativeDebug((state) => state.context);
+  const blues = useLdi((state) => state.blues);
   const native = !remote ? context : null;
+  const [nativeChoice, setNativeChoice] = useState<NativeConfigChoiceNeeded | null>(null);
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const closedNativeBlue = blues.find((blue) => blue.mode === "live-native"
+    && blue.originLabel === useLinkedWindows.getState().ownWindowLabel && !blue.unreachable
+    && blue.warning?.includes("no longer open"));
+  const pendingNativeBlue = blues.some((blue) => blue.mode === "live-native"
+    && blue.originLabel === useLinkedWindows.getState().ownWindowLabel && !blue.unreachable
+    && !blue.warning && blue.pendingRestart);
+  const reopenNative = async (config?: string) => {
+    if (!closedNativeBlue) return;
+    setNativeError(null);
+    try {
+      await openNativeViewForBlue(closedNativeBlue, config);
+      await refreshLdiBlues();
+      setNativeChoice(null);
+    } catch (error) {
+      if (error instanceof NativeConfigChoiceNeeded && error.choices.length > 0) setNativeChoice(error);
+      else setNativeError(String(error));
+    }
+  };
   const reveal = useSolution((state) => state.revealFile);
   const revealBreakpoint = async (file: string, line: number) => {
     if (!remote) { await reveal(file, line, 1); return; }
@@ -54,6 +78,20 @@ export default function DebugSidebar() {
   return <div className="min-h-0 flex-1 w-full flex flex-col overflow-hidden text-xs">
     <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden scroll-thin overscroll-contain" tabIndex={0} aria-label="Debugger details">
       <LdiSessionCard />
+      {closedNativeBlue && ["building", "starting", "running", "paused"].includes(debug.status) && <section className="border-b border-blue-900 bg-blue-950/20 p-3">
+        <div className="font-semibold text-blue-300">Native view closed</div>
+        <p className="mt-1 text-zinc-300">Rust Debug continues here with the same LLDB threads. Reopen the Native window to restore the separate view. Saved Blue breakpoints arm on the next Debug launch.</p>
+        <button type="button" onClick={() => void reopenNative()} className="mt-2 rounded border border-blue-700 px-2 py-1 text-blue-300 hover:bg-blue-900/40">Reopen Native view</button>
+        {nativeChoice && <div className="mt-2 rounded border border-zinc-700 bg-zinc-900 p-2">
+          <p className="mb-1">Choose the Native Power Config:</p>
+          {nativeChoice.choices.map((config) => <button key={config} type="button" onClick={() => void reopenNative(config)}
+            className="block w-full rounded px-2 py-1 text-left text-blue-300 hover:bg-zinc-800">{config}</button>)}
+        </div>}
+        {nativeError && <p role="alert" className="mt-2 text-amber-300">{nativeError}</p>}
+      </section>}
+      {!closedNativeBlue && pendingNativeBlue && ["building", "starting", "running", "paused"].includes(debug.status) && <section className="border-b border-blue-900 bg-blue-950/20 p-3 text-blue-200">
+        Native pairing changes are saved for the next launch. Stop this Rust Debug, then use Gold Debug to arm them in the Native view.
+      </section>}
       {native && <section className="p-3 border-b border-blue-900 bg-blue-950/20">
         <div className="text-blue-300 font-semibold">Native debugging · Live Rust FFI</div>
         <div className="mt-1 font-mono">{native.nativeStop ? native.entryPoint : "Linked to the Rust debugger"}</div>

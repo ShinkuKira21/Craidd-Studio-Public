@@ -16,7 +16,7 @@ export default function LdiSessionCard() {
         {!blue.warning && !blue.unreachable && <div className="text-zinc-400">{blue.mode === "live-native" ? "B inspects the real Rust process at native entry." : `B stops at ${blue.landing === "automatic-entry" ? "native entry (automatic)" : "matching red"}.`}</div>}
         {blue.condition && <div className="text-zinc-400">When {blue.condition}</div>}
         {blue.pendingRestart && <div className="text-amber-300">{blue.mode === "live-native" ? "Bindings are frozen until Rust Debug restarts" : "Pending Gold Restart Debug"}</div>}
-        {!blue.unreachable && !blue.warning && <div className="text-zinc-400">{blue.mode === "live-native" ? "Rust White Debug activates this pair. No driver or separate call-site hold." : "Gold Linked Debug activates this pair."}</div>}
+        {!blue.unreachable && !blue.warning && <div className="text-zinc-400">{blue.mode === "live-native" ? "Rust Gold Debug opens the Native view and starts one shared LLDB session. White Debug in Rust also uses this pairing." : "Gold Linked Debug activates this pair."}</div>}
         {blue.warning && <div className="text-amber-300 mt-1">⚠ {blue.warning}</div>}
       </div>)}
     </section> : null;

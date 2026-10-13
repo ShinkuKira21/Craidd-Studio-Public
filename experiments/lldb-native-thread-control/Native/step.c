@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <pthread.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -12,6 +13,9 @@ int step_pair_c(int left, int right);
 
 static void *run_c_child(void *arg) {
     int encoded = *(int *)arg;
+    char name[16];
+    snprintf(name, sizeof(name), "native c %d", encoded / 10);
+    pthread_setname_np(pthread_self(), name);
     step_pair_c(encoded, -1);
     return 0;
 }
