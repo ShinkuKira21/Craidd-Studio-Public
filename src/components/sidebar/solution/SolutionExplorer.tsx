@@ -16,6 +16,8 @@ import { detectTauriSetup, isTauriSuggestionSuppressed, type TauriSetupProposal 
 import ToolchainConfigurationDialog from "../../dialogs/ToolchainConfigurationDialog";
 import { useBuild } from "../../../store/buildStore";
 import { useLinkedWindows } from "../../../store/linkedWindowsStore";
+import PathActions from "../PathActions";
+import { openInSideGroup } from "../../../store/splitStore";
 
 export default function SolutionExplorer() {
   const rootPath = useSolution((s) => s.rootPath);
@@ -37,6 +39,12 @@ export default function SolutionExplorer() {
   const [newFileTarget, setNewFileTarget] = useState<{ parentPath: string; language: Language | null; mode: NewFileMode } | null>(null);
   const [newFolderTarget, setNewFolderTarget] = useState<{ parentPath: string } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
+  // Project → Add → New Blank Project… in the menu bar.
+  useEffect(() => {
+    const open = () => setNewOpen(true);
+    window.addEventListener("craidd:new-project", open);
+    return () => window.removeEventListener("craidd:new-project", open);
+  }, []);
   const [declareTarget, setDeclareTarget] = useState<CraiddProject | null>(null);
   const [treeCtxMenu, setTreeCtxMenu] = useState<{
     x: number; y: number;
@@ -367,6 +375,10 @@ export default function SolutionExplorer() {
             style={{ left: treeCtxMenu.x, top: treeCtxMenu.y }}
             className="fixed z-50 min-w-[220px] bg-zinc-900 border border-zinc-700 rounded shadow-2xl py-1 text-xs"
           >
+            <PathActions path={buildAbsFromNode(treeCtxMenu.basePath, treeCtxMenu.node)} isFile={treeCtxMenu.node.kind !== "folder"}
+              onDone={() => setTreeCtxMenu(null)}
+              onOpenToSide={() => openInSideGroup(buildAbsFromNode(treeCtxMenu.basePath, treeCtxMenu.node))} />
+            <div className="my-1 h-px bg-zinc-800" />
             <button
               onClick={() => {
                 requestRename(
@@ -469,6 +481,14 @@ export default function SolutionExplorer() {
             ) : ctxMenu.projectId ? (
               // ── Normal project ──
               <>
+                {(() => {
+                  const project = solution?.projects.find((p) => p.id === ctxMenu.projectId);
+                  if (!project || !rootPath) return null;
+                  const folder = project.folder.startsWith("/") ? project.folder
+                    : project.folder && project.folder !== "." ? `${rootPath.replace(/\/+$/, "")}/${project.folder}` : rootPath;
+                  return <><PathActions path={folder} isFile={false} onDone={() => setCtxMenu(null)} />
+                    <div className="my-1 h-px bg-zinc-800" /></>;
+                })()}
                 <button
                   onClick={() => { refreshProject(ctxMenu.projectId!); setCtxMenu(null); }}
                   className="w-full px-3 py-1 text-left text-zinc-200 hover:bg-blue-700 hover:text-white"

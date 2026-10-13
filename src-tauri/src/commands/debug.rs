@@ -47,6 +47,8 @@ struct Session {
     exclusive_step_in_flight: AtomicBool,
     threads: Mutex<ThreadBook>,
     inspection_requests: Mutex<HashMap<u64, SelectionRequest>>,
+    /// Responses awaited by `debug_inspect` (variable expansion, Watch).
+    client_requests: Mutex<HashMap<u64, std::sync::mpsc::Sender<Value>>>,
     transport_busy: AtomicBool,
     pgid: i32,
     birth: u64,
@@ -1210,6 +1212,7 @@ pub(crate) fn launch_prepared(
         exclusive_step_in_flight: AtomicBool::new(false),
         threads: Mutex::new(ThreadBook::default()),
         inspection_requests: Mutex::new(HashMap::new()),
+        client_requests: Mutex::new(HashMap::new()),
         transport_busy: AtomicBool::new(false), pgid, birth, stopping: AtomicBool::new(false),
         breakpoint_files: Mutex::new(HashSet::new()),
         breakpoints_ready: AtomicBool::new(false),
@@ -1457,6 +1460,9 @@ pub(crate) fn launch_prepared(
                 }
             } else if message["type"] == "response" {
                 let response_seq = message["request_seq"].as_u64().unwrap_or(0);
+                let client = session.client_requests.lock().ok()
+                    .and_then(|mut requests| requests.remove(&response_seq));
+                if let Some(reply) = client { let _ = reply.send(message); continue; }
                 if message["command"] == "evaluate" {
                     let mut handled = false;
                     let mut outcome: Option<(&'static str, String)> = None;
@@ -1961,6 +1967,37 @@ pub(crate) fn launch_prepared(
 pub async fn debug_control(window: WebviewWindow, app: AppHandle, action: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || control_debug_by_label(&app, window.label(), &action))
         .await.map_err(|error| error.to_string())?
+}
+
+/// Expand a variable or evaluate an expression in a paused session. Only
+/// `variables` and `evaluate` are accepted; both are read-only in the adapters
+/// Craidd uses, apart from expressions with side effects that the user types.
+#[tauri::command]
+pub async fn debug_inspect(window: WebviewWindow, app: AppHandle, target_label: Option<String>,
+    command: String, arguments: Value) -> Result<Value, String> {
+    if command != "variables" && command != "evaluate" { return Err(format!("{command} is not an inspection request")); }
+    let label = target_label.unwrap_or_else(|| window.label().to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = app.state::<DebugManager>().0.lock().map_err(|error| error.to_string())?
+            .get(&label).cloned().ok_or("No debug session is active")?;
+        if !session.alive.load(Ordering::Acquire) || session.stopping.load(Ordering::Acquire) {
+            return Err("Debugger session ended".into());
+        }
+        let (reply, response) = std::sync::mpsc::channel();
+        {
+            // Hold the lock until the request is recorded, so a fast reply finds its sender.
+            let mut pending = session.client_requests.lock().map_err(|error| error.to_string())?;
+            let seq = request(&session, &command, arguments)?;
+            pending.insert(seq, reply);
+        }
+        let message = response.recv_timeout(Duration::from_secs(5))
+            .map_err(|_| format!("The debugger did not answer the {command} request"))?;
+        if message["success"] == false {
+            return Err(message["message"].as_str().or_else(|| message["body"]["error"]["format"].as_str())
+                .unwrap_or("request failed").to_string());
+        }
+        Ok(message["body"].clone())
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

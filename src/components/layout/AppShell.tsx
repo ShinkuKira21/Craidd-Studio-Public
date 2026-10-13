@@ -5,7 +5,7 @@ import StatusBar from "./StatusBar";
 import ActivityBar from "./ActivityBar";
 import Sidebar from "../sidebar/Sidebar";
 import EditorPane from "../editor/EditorPane";
-import DebugSidebar from "../panels/DebugSidebar";
+import RightPanel from "../panels/RightPanel";
 import BottomPanel from "../panels/BottomPanel";
 import ResizeHandle from "./ResizeHandle";
 import CommandPalette from "../command-palette/CommandPalette";
@@ -313,7 +313,7 @@ export default function AppShell({ startProjectDialog = false, onCloseStartProje
         {rightPanelVisible && (
           <>
             <ResizeHandle orientation="vertical" onDrag={(delta) => setRightPanelWidth(rightPanelWidth - delta)} />
-            <div style={{ width: rightPanelWidth }} className="h-full shrink-0"><DebugSidebar /></div>
+            <div style={{ width: rightPanelWidth }} className="h-full shrink-0"><RightPanel /></div>
           </>
         )}
       </div>

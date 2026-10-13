@@ -3,11 +3,16 @@ import { usePreferences } from "../../store/preferencesStore";
 import { useSolution } from "../../store/solutionStore";
 import { saveActiveFile, saveActiveFileAs } from "../../lib/fileActions";
 import { choicesForConfig, useBuild } from "../../store/buildStore";
-import { startViewedAction, stopViewedAction } from "../../lib/viewedActions";
+import { debugKeyViewed, debugOrContinueViewed, startViewedAction, stopViewedAction } from "../../lib/viewedActions";
 import { useDebug } from "../../store/debugStore";
 import { useLinkedWindows, waitForLinkedWindowSession } from "../../store/linkedWindowsStore";
 import type { LinkedMember } from "../../store/linkedWindowsStore";
 import { shouldShowDuplicate } from "../../lib/duplicateWindowPolicy";
+import { openFolderDialog, openSolutionDialog } from "../../lib/workspaceActions";
+import { shortcutLabel as key } from "../../lib/shortcuts";
+import { triggerEditorCommand } from "../../lib/activeEditor";
+import { useLayout } from "../../store/layoutStore";
+import AboutDialog from "../dialogs/AboutDialog";
 
 interface MenuItem { label: string; shortcut?: string; action?: () => void; disabled?: boolean; submenu?: MenuItem[]; }
 interface MenuSeparator { separator: true; }
@@ -17,10 +22,12 @@ interface Menu { label: string; items: MenuEntry[]; }
 export default function MenuBar({ openCommandPalette, openPreferences }: { openCommandPalette: () => void; openPreferences: () => void }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
   const prefs = usePreferences();
   const activeFileId = useSolution((s) => s.activeFileId);
   const clnPath = useSolution((s) => s.clnPath);
+  const rootPath = useSolution((s) => s.rootPath);
   const selectedConfigName = useBuild((s) => s.selectedConfigName);
   const solution = useSolution((s) => s.solution);
   const selectedProfileName = useBuild((s) => s.selectedProfileName);
@@ -37,6 +44,9 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
   const canRun = (kind: "build" | "run" | "debug") => Boolean(viewed ? remoteChoices?.[kind] : mainChoices[kind]);
   const runViewed = (kind: "build" | "run" | "debug") => void startViewedAction(kind)
     .catch((error) => alert(`${kind} failed: ${String(error)}`));
+  const debugState = viewed && !viewed.visible ? viewed.status : debugStatus;
+  const paused = debugState === "paused";
+  const debugKey = (action: () => Promise<void>) => () => void action().catch((error) => alert(`Debug failed: ${String(error)}`));
   const stopViewed = () => void stopViewedAction().catch((error) => alert(`Stop failed: ${String(error)}`));
   const runSave = (action: () => Promise<void>) => {
     void action().catch((err) => alert(`Save failed: ${String(err)}`));
@@ -67,6 +77,13 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
       }
     } catch (error) { alert(`Could not duplicate window: ${String(error)}`); }
   };
+  // The dialog lives in the Solution Explorer, which owns the Fine Tune
+  // follow-up, so make sure it is mounted before asking it to open.
+  const openNewProject = () => {
+    if (!usePreferences.getState().sidebarVisible) usePreferences.getState().toggleSidebar();
+    useLayout.getState().setActiveView("solution");
+    window.setTimeout(() => window.dispatchEvent(new CustomEvent("craidd:new-project")), 0);
+  };
   const exitScope = (scope: "window" | "solution" | "ide") =>
     window.dispatchEvent(new CustomEvent("craidd:exit-scope", { detail: scope }));
 
@@ -78,105 +95,86 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
     return () => window.removeEventListener("mousedown", onClick);
   }, []);
 
-  const doOpenFolder = async () => {
-    try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const selected = await open({ directory: true, multiple: false });
-      if (typeof selected !== "string") return;
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("open_workspace_window", { entry: {
-        path: selected, kind: "folder", name: selected.split("/").filter(Boolean).pop() ?? selected, windowLabel: "",
-      } });
-    } catch (err) {
-      console.error("[craidd] Open Folder failed:", err);
-      alert(`Could not open folder: ${String(err)}`);
-    }
-  };
-
-  const doOpenSolution = async () => {
-    try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: "Craidd Solution", extensions: ["cln"] }],
-      });
-      if (typeof selected !== "string") return;
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("open_workspace_window", { entry: {
-        path: selected, kind: "solution", name: selected.split("/").filter(Boolean).pop() ?? selected, windowLabel: "",
-      } });
-    } catch (err) {
-      console.error("[craidd] Open Solution failed:", err);
-      alert(`Could not open solution: ${String(err)}`);
-    }
-  };
+  const doOpenFolder = () => void openFolderDialog().catch((err) => {
+    console.error("[craidd] Open Folder failed:", err);
+    alert(`Could not open folder: ${String(err)}`);
+  });
+  const doOpenSolution = () => void openSolutionDialog().catch((err) => {
+    console.error("[craidd] Open Solution failed:", err);
+    alert(`Could not open solution: ${String(err)}`);
+  });
 
   const menus: Menu[] = [
     {
       label: "File",
       items: [
-        { label: "New Solution…", shortcut: "Ctrl+Shift+N", disabled: true },
-        { label: "Open Folder…", shortcut: "Ctrl+K Ctrl+O", action: doOpenFolder },
-        { label: "Open Solution…", shortcut: "Ctrl+Shift+O", action: doOpenSolution },
+        { label: "New Solution… (Coming soon)", disabled: true },
+        { label: "Open Folder…", shortcut: key("openFolder"), action: doOpenFolder },
+        { label: "Open Solution…", shortcut: key("openSolution"), action: doOpenSolution },
         { label: "Open Recent…", action: openWelcome },
         { label: "Get Started…", action: openWelcome },
         { label: "Duplicate Window", disabled: !clnPath, action: () => void duplicateWindow() },
         { separator: true },
-        { label: "Save", shortcut: "Ctrl+S", disabled: !activeFileId || (!!viewed && !remoteEditing), action: () => runSave(saveActiveFile) },
-        { label: "Save As…", shortcut: "Ctrl+Shift+S", disabled: !activeFileId || (!!viewed && !remoteEditing), action: () => runSave(saveActiveFileAs) },
+        { label: "Save", shortcut: key("save"), disabled: !activeFileId || (!!viewed && !remoteEditing), action: () => runSave(saveActiveFile) },
+        { label: "Save As…", shortcut: key("saveAs"), disabled: !activeFileId || (!!viewed && !remoteEditing), action: () => runSave(saveActiveFileAs) },
         { separator: true },
-        { label: "Preferences…", shortcut: "Ctrl+,", action: openPreferences },
+        { label: "Preferences…", shortcut: key("preferences"), action: openPreferences },
         { separator: true },
         { label: "Exit", submenu: [
-          { label: "This Window", shortcut: "Ctrl+Q", action: () => exitScope("window") },
-          { label: "This Solution", shortcut: "Ctrl+Shift+Q", disabled: !clnPath, action: () => exitScope("solution") },
-          { label: "This Application", shortcut: "Ctrl+Alt+Q", action: () => exitScope("ide") },
+          { label: "This Window", shortcut: key("exitWindow"), action: () => exitScope("window") },
+          { label: "This Solution", shortcut: key("exitSolution"), disabled: !clnPath, action: () => exitScope("solution") },
+          { label: "This Application", shortcut: key("exitIde"), action: () => exitScope("ide") },
         ] },
       ],
     },
     {
       label: "Edit",
       items: [
-        { label: "Undo", shortcut: "Ctrl+Z", disabled: true },
-        { label: "Redo", shortcut: "Ctrl+Y", disabled: true },
+        { label: "Undo", shortcut: key("undo"), disabled: !activeFileId, action: () => triggerEditorCommand("undo") },
+        { label: "Redo", shortcut: key("redo"), disabled: !activeFileId, action: () => triggerEditorCommand("redo") },
       ],
     },
     {
       label: "View",
       items: [
-        { label: "Command Palette…", shortcut: "Ctrl+Shift+P", action: openCommandPalette },
+        { label: "Command Palette…", shortcut: key("commandPalette"), action: openCommandPalette },
         { separator: true },
-        { label: "Toggle Solution Sidebar", shortcut: "Ctrl+B", action: prefs.toggleSidebar },
-        { label: "Toggle Panel", shortcut: "Ctrl+J", action: prefs.toggleBottomPanel },
-        { label: "Toggle Debug Panel", action: prefs.toggleRightPanel },
+        { label: "Toggle Solution Sidebar", shortcut: key("toggleSidebar"), action: prefs.toggleSidebar },
+        { label: "Toggle Panel", shortcut: key("togglePanel"), action: prefs.toggleBottomPanel },
+        { label: "Toggle Debugger & Profiler Panel", action: prefs.toggleRightPanel },
         { separator: true },
-        { label: "Toggle Word Wrap", shortcut: "Alt+Z", action: prefs.toggleWordWrap },
+        { label: "Toggle Word Wrap", shortcut: key("wordWrap"), action: prefs.toggleWordWrap },
         { separator: true },
-        { label: "Zoom In", shortcut: "Ctrl+=", action: prefs.zoomIn },
-        { label: "Zoom Out", shortcut: "Ctrl+-", action: prefs.zoomOut },
-        { label: "Reset Zoom", shortcut: "Ctrl+0", action: prefs.resetZoom },
+        { label: "Zoom In", shortcut: key("zoomIn"), action: prefs.zoomIn },
+        { label: "Zoom Out", shortcut: key("zoomOut"), action: prefs.zoomOut },
+        { label: "Reset Zoom", shortcut: key("resetZoom"), action: prefs.resetZoom },
       ],
     },
     {
       label: "Project",
       items: [
-        { label: "Add → New Blank Project…", disabled: true },
-        { label: "Add → Existing Project…", disabled: true },
+        { label: "Add → New Blank Project…", disabled: !rootPath, action: openNewProject },
+        { label: "Add → Existing Project… (Coming soon)", disabled: true },
       ],
     },
     {
       label: "Run",
       items: [
-        { label: "Build", shortcut: "Ctrl+Shift+B", action: () => runViewed("build"), disabled: !canRun("build") || busy },
-        { label: "Run Without Debugging", shortcut: "Ctrl+F5", action: () => runViewed("run"), disabled: !canRun("run") || busy },
-        { label: "Start Debugging", shortcut: "F5", action: () => runViewed("debug"), disabled: !canRun("debug") || busy },
-        { label: "Stop", shortcut: "Shift+F5", action: stopViewed, disabled: !busy },
+        { label: "Build", shortcut: key("build"), action: () => runViewed("build"), disabled: !canRun("build") || busy },
+        { label: "Run Without Debugging", shortcut: key("run"), action: () => runViewed("run"), disabled: !canRun("run") || busy },
+        { label: paused ? "Continue" : "Start Debugging", shortcut: key("debugOrContinue"), action: debugKey(debugOrContinueViewed), disabled: paused ? false : !canRun("debug") || busy },
+        { label: "Stop", shortcut: key("stop"), action: stopViewed, disabled: !busy },
+        { separator: true },
+        { label: "Pause", shortcut: key("pause"), action: debugKey(() => debugKeyViewed("pause")), disabled: debugState !== "running" },
+        { label: "Step Over", shortcut: key("stepOver"), action: debugKey(() => debugKeyViewed("stepOver")), disabled: !paused },
+        { label: "Step Into", shortcut: key("stepInto"), action: debugKey(() => debugKeyViewed("stepInto")), disabled: !paused },
+        { label: "Step Out", shortcut: key("stepOut"), action: debugKey(() => debugKeyViewed("stepOut")), disabled: !paused },
       ],
     },
     {
       label: "Help",
       items: [
-        { label: "About Craidd", action: () => alert("Craidd-Studio\nPhase 2.0.6.1\n\nA polyglot IDE.\nOne workspace. Many entrances.") },
+        { label: "About Craidd Studio", action: () => setAboutOpen(true) },
       ],
     },
   ];
@@ -237,6 +235,7 @@ export default function MenuBar({ openCommandPalette, openPreferences }: { openC
           </div>
         );
       })}
+      {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
     </div>
   );
 }

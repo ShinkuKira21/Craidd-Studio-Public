@@ -10,6 +10,8 @@ pub mod build;
 pub mod manifests;
 pub mod infer;
 pub mod window;
+pub mod window_title;
+pub mod external_tools;
 pub mod runner;
 pub mod tauri_dev;
 pub mod containment;

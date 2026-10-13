@@ -5,6 +5,8 @@ import { useLinkedWindows, dispatchLinkedWindowCommand } from "../../store/linke
 import LdiSessionCard from "./LdiSessionCard";
 import { useNativeDebug } from "../../store/nativeDebugStore";
 import { revealDebugSource } from "../../lib/debugSource";
+import WatchSection from "./WatchSection";
+import { VariableRow } from "./VariableTree";
 
 export default function DebugSidebar() {
   const debug = useDebug();
@@ -35,13 +37,21 @@ export default function DebugSidebar() {
   const pausedLine = native?.line ?? (remote ? remote.pausedLine : debug.line);
   const frames = native?.frames ?? remote?.debugFrames ?? debug.frames;
   const variables = native?.variables ?? remote?.debugVariables ?? debug.variables;
+  // The session that owns these frames: the Rust origin for native inspection,
+  // the viewed window, or this window.
+  const inspectTarget = native ? native.originLabel : remote?.windowLabel;
+  const paused = (native?.status ?? (remote ? remote.status : debug.status)) === "paused";
+  // Linked snapshots rebuild these arrays on every broadcast, so key on content.
+  // Adapters may reuse frame IDs between stops; the visible values tell them apart.
+  const snapshot = paused ? JSON.stringify([frames.map((frame) => [frame.id, frame.line]),
+    variables.map((variable) => [variable.name, variable.value])]) : "running";
+  const stopKey = `${inspectTarget ?? "own"}:${snapshot}`;
   const listedPoints = points.filter((point, index, all) =>
     all.findIndex((item) => item.file === point.file && item.line === point.line) === index);
   const removeBreakpoint = async (file: string, line: number) => {
     await useBreakpoints.getState().remove(file, line);
   };
-  return <div className="h-full min-h-0 w-full bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden text-xs">
-    <div className="h-9 px-3 flex items-center border-b border-zinc-800 shrink-0 font-semibold text-zinc-300 uppercase tracking-wide">Debug</div>
+  return <div className="min-h-0 flex-1 w-full flex flex-col overflow-hidden text-xs">
     <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden scroll-thin overscroll-contain" tabIndex={0} aria-label="Debugger details">
       <LdiSessionCard />
       {native && <section className="p-3 border-b border-blue-900 bg-blue-950/20">
@@ -79,11 +89,12 @@ export default function DebugSidebar() {
           <span className="text-zinc-200">{frame.name}</span><span className="ml-1 text-zinc-500">{frame.source?.name}:{frame.line}</span>
         </button>)}
       </section>}
+      <WatchSection targetLabel={inspectTarget} frameId={frames[0]?.id} paused={paused} stopKey={stopKey} />
       {variables.length > 0 && <section className="p-3 border-b border-zinc-800">
         <div className="text-zinc-500 uppercase text-[10px] tracking-wider mb-2">Variables</div>
-        {variables.map((variable, index) => <div key={`${variable.name}-${index}`} className="py-0.5 flex gap-2">
-          <span className="text-blue-300 truncate">{variable.name}</span><span className="text-zinc-300 truncate" title={variable.value}>{variable.value}</span>
-        </div>)}
+        {variables.map((variable, index) => <VariableRow key={`${variable.name}-${index}`}
+          item={{ ...variable, variablesReference: paused ? variable.variablesReference ?? 0 : 0 }}
+          targetLabel={inspectTarget} stopKey={stopKey} />)}
       </section>}
 
       <section className="p-3">

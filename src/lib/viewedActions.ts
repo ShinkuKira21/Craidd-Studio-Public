@@ -76,3 +76,29 @@ export async function controlViewedDebug(action: DebugControl): Promise<void> {
   if (remote) await dispatchLinkedWindowCommand(remote.windowLabel, "debug_control", action);
   else await useDebug.getState().control(action);
 }
+
+/** Debug status of the session the keys act on: native inspection, a hidden viewed window, or this window. */
+export function viewedDebugStatus(): string {
+  const native = currentNativeInspection();
+  if (native) return native.status;
+  const remote = viewedHiddenWindow();
+  if (remote) return remote.status;
+  return useDebug.getState().status;
+}
+
+/** F5 starts debugging, or continues when the viewed session is paused. Keys never start a second session. */
+export async function debugOrContinueViewed(): Promise<void> {
+  const status = viewedDebugStatus();
+  if (status === "paused") { await controlViewedDebug("continue"); return; }
+  if (["building", "starting", "running"].includes(status)) return;
+  const local = !currentNativeInspection() && !viewedHiddenWindow();
+  if (local && ["building", "starting", "running", "paused"].includes(useBuild.getState().status)) return;
+  await startViewedAction("debug");
+}
+
+/** Pause and step keys apply only in the state where they mean something. */
+export async function debugKeyViewed(action: "pause" | "stepOver" | "stepInto" | "stepOut"): Promise<void> {
+  const status = viewedDebugStatus();
+  if (action === "pause" ? status !== "running" : status !== "paused") return;
+  await controlViewedDebug(action);
+}

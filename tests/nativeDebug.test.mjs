@@ -286,11 +286,24 @@ test("Rust owner keeps its Rust editor on routed stops; ordinary red C++ stops s
 const nativeSnapshotURL = url(`import {useNativeDebug as store} from ${JSON.stringify(nativeURL)};
 export const useNativeDebug=(selector)=>selector(store.getState());
 export async function stepNativeThreadOnly(){}`);
+const inspectURL = await load("../src/lib/debugInspect.ts", {
+  "@tauri-apps/api/core": core,
+});
+const variableTreeURL = await load("../src/components/panels/VariableTree.tsx", {
+  react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
+  "../../lib/debugInspect": inspectURL,
+});
+const watchURL = await load("../src/components/panels/WatchSection.tsx", {
+  react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
+  "../../store/solutionStore": solution, "../../lib/debugInspect": inspectURL,
+  "./VariableTree": variableTreeURL,
+});
 const sidebarURL = await load("../src/components/panels/DebugSidebar.tsx", {
   "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
   "../../store/debugStore": debugURL, "../../store/breakpointStore": breakpoints, "../../store/solutionStore": solution,
   "../../store/linkedWindowsStore": linked, "../../store/nativeDebugStore": nativeSnapshotURL,
   "./LdiSessionCard": url("export default function LdiSessionCard(){return null;}"),
+  "./WatchSection": watchURL, "./VariableTree": variableTreeURL,
   "../../lib/debugSource": sourceURL,
 });
 const { default: DebugSidebar } = await import(sidebarURL);

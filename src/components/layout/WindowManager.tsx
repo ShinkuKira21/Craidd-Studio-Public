@@ -7,7 +7,10 @@ import {
   prepareLinkedWindow,
   prepareApplicationWindow,
   waitForLinkedWindowReady,
+  publishLinkedWindow,
 } from "../../store/linkedWindowsStore";
+import { useSolution } from "../../store/solutionStore";
+import { planExit, unregisteredBlocker, type ExitProbe } from "../../lib/exitBlockers";
 import type { LinkedMember } from "../../store/linkedWindowsStore";
 import { windowAttention } from "../../lib/windowAttention";
 
@@ -36,7 +39,7 @@ function stateLabel(item: LinkedMember): string {
 }
 
 type Scope = "window" | "solution" | "ide";
-type FlowPhase = "scope" | "dirty" | "finalize";
+type FlowPhase = "scope" | "dirty" | "finalize" | "blocked";
 
 interface CloseFlow {
   initiator: string;                 // label of the window that got the close
@@ -45,6 +48,7 @@ interface CloseFlow {
   queue: string[];                   // dirty-window labels, in CS order
   current: string | null;            // the window being prompted
   targets: LinkedMember[];           // all windows in the chosen scope
+  blockers?: string[];               // ide scope: reasons a normal exit can't proceed
 }
 
 export default function WindowManager() {
@@ -58,6 +62,7 @@ export default function WindowManager() {
   const [focusNotice, setFocusNotice] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [flow, setFlow] = useState<CloseFlow | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const inFlow = useRef(false);
 
   const problems = useLinkedWindows((s) => s.problems);
@@ -156,11 +161,10 @@ export default function WindowManager() {
 
   // Called when the scope dialog resolves.
   const inspectScope = async (initiator: string, scope: Scope) => {
+    if (scope === "ide") { await inspectApplication(initiator); return; }
     const queue: string[] = [];
     try {
-      const targets = scope === "ide"
-        ? await import("@tauri-apps/api/core").then(({ invoke }) => invoke<LinkedMember[]>("get_application_windows"))
-        : scope === "solution" ? windows : windows.filter((item) => item.windowLabel === initiator);
+      const targets = scope === "solution" ? windows : windows.filter((item) => item.windowLabel === initiator);
       const sorted = [...targets].sort((a, b) => a.solutionPath.localeCompare(b.solutionPath) || a.windowId - b.windowId);
       for (const item of sorted) {
         if (item.restoring) throw new Error(`Wait for ${shortName(item)} to finish opening before exiting.`);
@@ -173,12 +177,63 @@ export default function WindowManager() {
     }
   };
 
+  // Exit → This Application never depends on registry bookkeeping being right:
+  // problems become named blockers with Exit anyway, not errors (§6).
+  const inspectApplication = async (initiator: string) => {
+    setConfirmDiscard(false);
+    const { invoke } = await import("@tauri-apps/api/core");
+    const blockers: string[] = [];
+    let targets = await invoke<LinkedMember[]>("get_application_windows").catch(() => [] as LinkedMember[]);
+    if (!targets.some((item) => item.windowLabel === initiator)) {
+      // A crash restore can wipe the registry while this window lives on. Re-register, then look again.
+      const { solution, clnPath } = useSolution.getState();
+      await publishLinkedWindow(solution, clnPath).catch(() => {});
+      targets = await invoke<LinkedMember[]>("get_application_windows").catch(() => targets);
+      if (!targets.some((item) => item.windowLabel === initiator)) {
+        const blocker = unregisteredBlocker(useSolution.getState().tabs.filter((tab) => tab.dirty).length);
+        if (blocker) blockers.push(blocker);
+      }
+    }
+    const sorted = [...targets].sort((a, b) => a.solutionPath.localeCompare(b.solutionPath) || a.windowId - b.windowId);
+    const probes: ExitProbe[] = [];
+    for (const item of sorted) {
+      const probe: ExitProbe = { label: item.windowLabel, name: shortName(item), restoring: item.restoring, dirty: item.dirtyCount };
+      if (!item.restoring && item.visible) {
+        try { probe.dirty = await prepareApplicationWindow(item.windowLabel, item.solutionPath, "inspect", 5_000); }
+        catch (cause) { probe.dirty = null; probe.error = String(cause).replace(/^Error: /, ""); }
+      }
+      probes.push(probe);
+    }
+    const plan = planExit(probes);
+    blockers.push(...plan.blockers);
+    if (blockers.length > 0) {
+      setFlow({ initiator, scope: "ide", phase: "blocked", queue: plan.queue, current: null, targets: sorted, blockers });
+      return;
+    }
+    await promptNext({ initiator, scope: "ide", phase: "dirty", queue: plan.queue, current: null, targets: sorted });
+  };
+
+  const forceExit = async () => {
+    setPreparing(true);
+    setError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("exit_application", { force: true });
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setPreparing(false);
+    }
+  };
+
   const chooseScope = async (scope: Scope) => {
     if (flow) await inspectScope(flow.initiator, scope);
   };
 
   const beginExitScope = async (scope: Scope) => {
-    if (!own || flow || inFlow.current) return;
+    if (!own || inFlow.current) return;
+    // A new request replaces a stuck flow instead of being ignored silently (§6, 6.4).
+    if (flow) { setFlow(null); setError(null); }
     if (scope === "window") { await beginTrayClose(own); return; }
     inFlow.current = true;
     setError(null);
@@ -228,7 +283,7 @@ export default function WindowManager() {
 
   const finalize = async (args: { scope: Scope; initiator: string; targets: string[] }) => {
     const { invoke } = await import("@tauri-apps/api/core");
-    if (args.scope === "ide") { await invoke("exit_application"); return; }
+    if (args.scope === "ide") { await invoke("exit_application", { force: false }); return; }
     if (args.scope === "solution") await invoke("stop_solution_sessions");
     // Keep one visible window if scope is "window" and it's the last visible.
     if (args.scope === "window" && args.targets.length === 1) {
@@ -533,12 +588,51 @@ export default function WindowManager() {
             >
               Manual Intervention
             </button>
+            {flow!.scope === "ide" && <button
+              onClick={() => { if (confirmDiscard) void forceExit(); else setConfirmDiscard(true); }}
+              disabled={preparing}
+              className="px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950/40"
+              title="Exit without saving any window's unsaved files"
+            >
+              {confirmDiscard ? "Confirm: discard and exit" : "Discard and exit"}
+            </button>}
             <button
               onClick={() => void resolveDirty("save")}
               disabled={preparing}
               className="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-white"
             >
               {preparing ? "Saving…" : "Save All"}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {renderFlow && flow!.phase === "blocked" && (
+        <Modal>
+          <h2 className="text-base font-medium mb-2">Craidd can't check every window</h2>
+          <ul className="text-zinc-300 text-[12.5px] list-disc pl-5 space-y-1">
+            {flow!.blockers?.map((blocker) => <li key={blocker}>{blocker}</li>)}
+          </ul>
+          {flow!.queue.length > 0 && <p className="text-zinc-400 mt-3">
+            {flow!.queue.length} other window{flow!.queue.length === 1 ? " has" : "s have"} unsaved files.
+          </p>}
+          <p className="text-zinc-500 mt-3 text-[12px]">Exit anyway ends every session and closes all windows. Unsaved changes in these windows are lost.</p>
+          {error && <p className="text-red-400 mt-3">{error}</p>}
+          <div className="flex justify-end gap-2 mt-5">
+            <button onClick={() => void cancelFlow()} disabled={preparing} className="px-3 py-1.5 rounded hover:bg-zinc-800">Cancel</button>
+            {flow!.queue.length > 0 && <button
+              onClick={() => void promptNext({ ...flow!, phase: "dirty", blockers: undefined })}
+              disabled={preparing}
+              className="px-3 py-1.5 rounded border border-zinc-700 hover:bg-zinc-800"
+            >
+              Review unsaved
+            </button>}
+            <button
+              onClick={() => { if (confirmDiscard) void forceExit(); else setConfirmDiscard(true); }}
+              disabled={preparing}
+              className="px-3 py-1.5 rounded bg-red-800 hover:bg-red-700 text-white"
+            >
+              {preparing ? "Exiting…" : confirmDiscard ? "Confirm: exit anyway" : "Exit anyway"}
             </button>
           </div>
         </Modal>

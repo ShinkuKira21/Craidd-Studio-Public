@@ -41,3 +41,6 @@ workspaces/rust-debug-smoke/target/
 # Setup script artifacts (not part of the product)
 .setup-applied/
 .setup-checkpoints/
+
+# Claude-only working instructions (not shared with other agents)
+CLAUDE.md

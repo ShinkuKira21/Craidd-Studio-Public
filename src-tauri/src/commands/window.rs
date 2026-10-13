@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 static NEXT_WINDOW: AtomicU64 = AtomicU64::new(1);
 static RECENT_LOCK: Mutex<()> = Mutex::new(());
@@ -148,7 +148,7 @@ pub fn record_workspace_open(
         selection_name,
         restored_tabs: vec![], restored_active_file: None, restored_from_hidden: false, start_hidden: false,
     };
-    if entry.kind == "folder" { let _ = window.set_title(&format!("{} - Craidd Studio", entry.name)); }
+    if entry.kind == "folder" { super::window_title::set_canonical(&window.app_handle(), window.label(), super::window_title::folder_title(&entry.name)); }
     let _guard = RECENT_LOCK.lock().map_err(|e| e.to_string())?;
     let recent = recent_path()?;
     let mut state = read_state(&recent)?;
@@ -214,8 +214,11 @@ pub fn create_workspace_window(app: &AppHandle, requests: &WindowRequests, label
         let mut hidden = requests.1.lock().map_err(|e| e.to_string())?;
         if entry.start_hidden { hidden.insert(label.into()); } else { hidden.remove(label); }
     }
+    let title = if entry.kind == "folder" { super::window_title::folder_title(&entry.name) }
+        else { super::window_title::opening_solution_title(&super::window_title::solution_display_name(&entry.path)) };
+    super::window_title::remember_initial(label, title.clone());
     let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-        .title(format!("{} — Craidd Studio", entry.name)).background_color(tauri::window::Color(9, 9, 11, 255))
+        .title(title).background_color(tauri::window::Color(9, 9, 11, 255))
         .inner_size(entry.width.unwrap_or(1280) as f64, entry.height.unwrap_or(800) as f64)
         .min_inner_size(900.0, 600.0).visible(false);
     if let (Some(x), Some(y)) = (entry.x, entry.y) { builder = builder.position(x as f64, y as f64); }
@@ -231,7 +234,7 @@ pub fn create_workspace_window(app: &AppHandle, requests: &WindowRequests, label
 pub fn open_welcome_window(app: AppHandle) -> Result<(), String> {
     let label = format!("welcome-{}", NEXT_WINDOW.fetch_add(1, Ordering::Relaxed));
     WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
-        .title("Get Started — Craidd Studio")
+        .title(super::window_title::welcome_title())
         .background_color(tauri::window::Color(9, 9, 11, 255))
         .inner_size(1040.0, 720.0).min_inner_size(900.0, 600.0).visible(false)
         .build().map(|_| ()).map_err(|e| e.to_string())

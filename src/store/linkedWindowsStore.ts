@@ -207,9 +207,6 @@ export async function listenToLinkedWindows(): Promise<() => void> {
   useLinkedWindows.setState((state) => ({ ownWindowLabel, viewedWindowLabel: ownWindowLabel,
     ownInstanceId: state.ownInstanceId ?? crypto.randomUUID() }));
   const unlistenState = await currentWindow.listen<LinkedSnapshot>("craidd:linked-state", (event) => applySnapshot(event.payload));
-  const unlistenTitle = await currentWindow.listen<{ title: string }>("craidd:linked-title", (event) => {
-    void currentWindow.setTitle(event.payload.title).catch(() => { /* best effort */ });
-  });
   const stopLocalAction = () => ["building", "starting", "running", "paused"].includes(useDebug.getState().status)
     ? useDebug.getState().control("stop") : useBuild.getState().stop();
   const unlistenCommand = await currentWindow.listen<{ kind: "start" | "stop" | "cancel_member"; action: Action | null; actionId: number }>(
@@ -306,7 +303,7 @@ export async function listenToLinkedWindows(): Promise<() => void> {
     .then(() => invoke("show_main_window"))
     .then(() => invoke("mark_linked_window_ready"))
     .catch((error) => console.error("[craidd] Could not register linked window:", error));
-  return () => { unlistenState(); unlistenCommand(); unlistenReveal(); unlistenTarget(); unlistenPrepare(); unlistenTitle(); };
+  return () => { unlistenState(); unlistenCommand(); unlistenReveal(); unlistenTarget(); unlistenPrepare(); };
 }
 
 async function prepareOwnWindow(decision: "save" | "discard"): Promise<void> {
@@ -336,7 +333,7 @@ export async function prepareLinkedWindow(targetLabel: string, decision: "save" 
   return prepareApplicationWindow(targetLabel, solutionPath, decision);
 }
 
-export async function prepareApplicationWindow(targetLabel: string, solutionPath: string, decision: "save" | "discard" | "inspect"): Promise<number> {
+export async function prepareApplicationWindow(targetLabel: string, solutionPath: string, decision: "save" | "discard" | "inspect", timeoutMs = 30_000): Promise<number> {
   const ownWindowLabel = useLinkedWindows.getState().ownWindowLabel;
   if (!ownWindowLabel) throw new Error("This IDE window is no longer registered");
   if (targetLabel === ownWindowLabel) {
@@ -358,7 +355,7 @@ export async function prepareApplicationWindow(targetLabel: string, solutionPath
       unlisten?.();
       if (error) reject(new Error(error)); else resolve(dirtyCount);
     };
-    const timer = window.setTimeout(() => finish("The IDE window did not respond"), 30_000);
+    const timer = window.setTimeout(() => finish("The IDE window did not respond"), timeoutMs);
     try {
       unlisten = await getCurrentWebviewWindow().listen<{ requestId: string; error: string | null; dirtyCount: number }>("craidd:linked-prepare-result", (event) => {
         if (event.payload.requestId === requestId) finish(event.payload.error, event.payload.dirtyCount);

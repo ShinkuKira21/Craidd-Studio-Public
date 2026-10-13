@@ -10,6 +10,8 @@
     "test:build-output": "node --test tests/buildDiagnostics.test.mjs tests/outputPresentation.test.mjs",
     "test:save-restart": "node --test tests/saveRestartPolicy.test.mjs",
     "test:native-debug": "node --test tests/nativeDebug.test.mjs tests/nativeStepCapability.test.mjs",
+    "test:shortcuts": "node --test tests/shortcuts.test.mjs tests/pathActions.test.mjs",
+    "test:exit": "node --test tests/exitBlockers.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
